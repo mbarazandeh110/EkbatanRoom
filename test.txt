@@ -1,0 +1,11 @@
+MEDIASOUP_LISTEN_IP=127.0.0.1 MEDIASOUP_ANNOUNCED_IP=127.0.0.1 cargo run
+
+# ۱. تست ساخت یک Router (اتاق) در Mediasoup
+grpcurl -plaintext -import-path ./proto -proto sfu/v1/media_engine.proto \
+  -d '{"request_id": "test-1", "room_id": "my-first-room"}' \
+  127.0.0.1:50051 rtc.sfu.v1.SfuMediaEngineService/CreateRouter
+
+# ۲. تست ساخت یک WebRtcTransport روی router_id دریافتی از مرحله قبل
+grpcurl -plaintext -import-path ./proto -proto sfu/v1/media_engine.proto \
+  -d '{"request_id": "test-2", "router_id": "<ROUTER_ID>", "peer_id": "mahdi", "is_publisher": true}' \
+  127.0.0.1:50051 rtc.sfu.v1.SfuMediaEngineService/CreateTransport
