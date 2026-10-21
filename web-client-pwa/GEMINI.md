@@ -8,3 +8,4 @@
    - مهارت مهندسی WebRTC، موبایل/Safari و Adaptive Stream: `.agents/skills/webrtc-pwa-media-ux/SKILL.md`
    - مهارت TDD، دیباگ سیستماتیک و بازبینی کد: `.agents/skills/frontend-tdd-systematic-debugging/SKILL.md`
    - گردش‌کار مرحله‌به‌مرحله: `first-prompt.txt`
+3. حتماً فایل های ` .agents/skills/frontend-observability-qoe-rum/SKILL.md`, ` .agents/skills/frontend-tdd-systematic-debugging/SKILL.md`, ` .agents/skills/nextjs-app-router-patterns/SKILL.md`, ` .agents/skills/nextjs-clean-hexagonal-solid/SKILL.md`, ` .agents/skills/react-state-management/SKILL.md`, ` .agents/skills/senior-frontend/SKILL.md`, ` .agents/skills/twelve-factor-wcag-patterns/SKILL.md`, ` .agents/skills/ui-ux-designer/SKILL.md`, ` .agents/skills/wcag-audit-patterns/SKILL.md`, ` .agents/skills/webrtc-pwa-media-ux/SKILL.md` را مطالعه کن.
