@@ -1,0 +1,14 @@
+.git
+.github
+.agents
+bin/
+*.out
+*.test
+coverage.html
+.env*
+*.md
+Dockerfile*
+Makefile
+.gitignore
+first-promt.txt
+test.txt

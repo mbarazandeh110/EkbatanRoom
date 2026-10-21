@@ -1,0 +1,189 @@
+package livekit
+
+import (
+	"sync"
+
+	"github.com/gorilla/websocket"
+	"google.golang.org/protobuf/proto"
+
+	livekitproto "github.com/livekit/protocol/livekit"
+
+	"ekbatan-room/signaling-coordinator/internal/adapters/outbound/telemetry"
+	"ekbatan-room/signaling-coordinator/internal/domain"
+	"ekbatan-room/signaling-coordinator/internal/ports"
+)
+
+var _ ports.PeerResponderPort = (*LiveKitResponder)(nil)
+
+// LiveKitResponder handles sending LiveKit protobuf signal responses over a WebSocket connection.
+type LiveKitResponder struct {
+	mu           sync.Mutex
+	conn         *websocket.Conn
+	subTransport *domain.TransportInfo
+	closed       bool
+}
+
+func NewLiveKitResponder(conn *websocket.Conn) *LiveKitResponder {
+	return &LiveKitResponder{
+		conn: conn,
+	}
+}
+
+func (r *LiveKitResponder) send(msg *livekitproto.SignalResponse) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return domain.ErrRoomClosed
+	}
+
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	telemetry.DefaultMetrics().RecordWSMessage("livekit", "signal_response", "ok")
+	return r.conn.WriteMessage(websocket.BinaryMessage, data)
+}
+
+func (r *LiveKitResponder) SendJoinResponse(res *domain.JoinResult) error {
+	r.mu.Lock()
+	r.subTransport = res.SubscriberTransport
+	r.mu.Unlock()
+
+	otherParticipants := make([]*livekitproto.ParticipantInfo, 0)
+	for _, p := range res.Room.ListParticipants() {
+		if p.ID == res.Participant.ID {
+			continue
+		}
+		otherParticipants = append(otherParticipants, &livekitproto.ParticipantInfo{
+			Sid:      p.SID,
+			Identity: p.ID,
+			Name:     p.Name,
+			State:    livekitproto.ParticipantInfo_JOINED,
+		})
+	}
+
+	iceServers := make([]*livekitproto.ICEServer, 0, len(res.IceServers))
+	for _, is := range res.IceServers {
+		iceServers = append(iceServers, &livekitproto.ICEServer{
+			Urls:       is.URLs,
+			Username:   is.Username,
+			Credential: is.Credential,
+		})
+	}
+
+	joinMsg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_Join{
+			Join: &livekitproto.JoinResponse{
+				Room: &livekitproto.Room{
+					Sid:  res.Room.ID,
+					Name: res.Room.ID,
+				},
+				Participant: &livekitproto.ParticipantInfo{
+					Sid:      res.Participant.SID,
+					Identity: res.Participant.ID,
+					Name:     res.Participant.Name,
+					State:    livekitproto.ParticipantInfo_JOINED,
+				},
+				OtherParticipants: otherParticipants,
+				ServerVersion:     "1.53.0",
+				IceServers:        iceServers,
+				SubscriberPrimary: false,
+				ServerInfo: &livekitproto.ServerInfo{
+					Edition:  livekitproto.ServerInfo_Standard,
+					Version:  "1.53.0",
+					Protocol: 12,
+				},
+				PingTimeout:  10,
+				PingInterval: 20,
+			},
+		},
+	}
+
+	return r.send(joinMsg)
+}
+
+func (r *LiveKitResponder) SendSubscriberOffer(slots []*domain.SDPSlot, participantSID string) error {
+	r.mu.Lock()
+	subTransport := r.subTransport
+	r.mu.Unlock()
+
+	if subTransport == nil {
+		return domain.ErrTransportNotFound
+	}
+
+	sdpOffer, err := GenerateSubscriberOffer(subTransport, slots, participantSID)
+	if err != nil {
+		return err
+	}
+
+	msg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_Offer{
+			Offer: &livekitproto.SessionDescription{
+				Type: "offer",
+				Sdp:  sdpOffer,
+			},
+		},
+	}
+	return r.send(msg)
+}
+
+func (r *LiveKitResponder) SendTrickle(candidate string, target int) error {
+	msg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_Trickle{
+			Trickle: &livekitproto.TrickleRequest{
+				CandidateInit: candidate,
+				Target:        livekitproto.SignalTarget(target),
+			},
+		},
+	}
+	return r.send(msg)
+}
+
+func (r *LiveKitResponder) SendParticipantUpdate(participants []*domain.Participant) error {
+	protoParts := make([]*livekitproto.ParticipantInfo, 0, len(participants))
+	for _, p := range participants {
+		protoParts = append(protoParts, &livekitproto.ParticipantInfo{
+			Sid:      p.SID,
+			Identity: p.ID,
+			Name:     p.Name,
+			State:    livekitproto.ParticipantInfo_JOINED,
+		})
+	}
+
+	msg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_Update{
+			Update: &livekitproto.ParticipantUpdate{
+				Participants: protoParts,
+			},
+		},
+	}
+	return r.send(msg)
+}
+
+func (r *LiveKitResponder) SendTrackMuted(trackSID string, muted bool) error {
+	msg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_Mute{
+			Mute: &livekitproto.MuteTrackRequest{
+				Sid:   trackSID,
+				Muted: muted,
+			},
+		},
+	}
+	return r.send(msg)
+}
+
+func (r *LiveKitResponder) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	if r.conn != nil {
+		return r.conn.Close()
+	}
+	return nil
+}
