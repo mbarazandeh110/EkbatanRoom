@@ -2,5 +2,5 @@
 
 این مخزن هسته رسانه‌ای مستقل مبتنی بر Rust و `mediasoup` است و منبع اصلی قرارداد `proto/sfu/v1/media_engine.proto` محسوب می‌شود.
 - **قوانین کامل معماری، اعتبارسنجی مرزی و Idempotency:** حتماً فایل `.agents/rules.md` را مطالعه و رعایت کن.
-- **جزئیات فنی Mediasoup:** حتماً فایل `.agents/skills/code-review-and-quality/SKILL.md`, `.agents/skills/code-showcase-systematic-debugging/SKILL.md`, `.agents/skills/rust-mediasoup-sfu/SKILL.md`, `.agents/skills/rust-pro/SKILL.md`, `.agents/skills/tdd-workflows-tdd-cycle/SKILL.md` را مطالعه کن.
+- **جزئیات فنی Mediasoup:** حتماً فایل `.agents/rules.md`,  `.agents/skills/architecture-patterns/SKILL.md`, `.agents/skills/cloud-architect/SKILL.md`, `.agents/skills/code-review-and-quality/SKILL.md`, `.agents/skills/code-showcase-systematic-debugging/SKILL.md`, `.agents/skills/context-driven-development/SKILL.md`, `.agents/skills/cqrs-implementation/SKILL.md`, `.agents/skills/microservices-patterns/SKILL.md`, `.agents/skills/rust-hexagonal-solid/SKILL.md`, `.agents/skills/rust-mediasoup-sfu/SKILL.md`, `.agents/skills/rust-pro/SKILL.md`, `.agents/skills/systematic-debugging/SKILL.md`, `.agents/skills/tdd-workflows-tdd-cycle/SKILL.md`, `.agents/skills/twelve-factor-engineering/SKILL.md` را مطالعه کن.
 - **گردش‌کار اجباری:** پیش از نوشتن کد، مراحل `# Engineering Workflow` در فایل `first-prompt.txt` را مو‌به‌مو اجرا کن.
