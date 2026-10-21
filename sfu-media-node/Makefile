@@ -34,6 +34,9 @@ test-lifecycle: ## Run router and transport lifecycle tests
 test-media: ## Run media produce and consume tests
 	cargo test --test media_tests
 
+test-observability: ## Run observability and metrics tests
+	cargo test --test observability_tests
+
 fmt: ## Format Rust codebase using rustfmt
 	cargo fmt
 

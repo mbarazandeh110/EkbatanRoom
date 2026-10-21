@@ -52,7 +52,14 @@
 | `RTC_MAX_PORT` | `49999` | انتهای بازه پورت‌های UDP برای ترافیک RTC |
 | `GRPC_PORT` | `50051` | پورت گوش فرا دادن سرور gRPC کنترلی |
 | `MEDIASOUP_WORKER_COUNT` | تعداد هسته‌های CPU | تعداد پروسه‌های ایزوله `mediasoup-worker` |
-| `RUST_LOG` | `info` | سطح ثبت لاگ‌های سیستم |
+| `OBS_LOG_LEVEL` | `info` | سطح فیلتر لاگ‌های ساختاریافته (`trace`, `debug`, `info`, `warn`, `error`) |
+| `OBS_LOG_FORMAT` | `json` | قالب خروجی لاگ‌ها (`json` برای لاگ سرورها، `text` برای توسعه محلی) |
+| `OBS_TRACING_ENABLED` | `false` | فعال‌سازی ردیابی توزیع‌شده OpenTelemetry OTLP |
+| `OBS_TRACING_ENDPOINT` | `http://localhost:4317` | آدرس کالکتور OpenTelemetry OTLP gRPC |
+| `OBS_TRACING_SAMPLE_RATE` | `1.0` | نرخ نمونه‌برداری تریسینگ توزیع‌شده (بین 0.0 تا 1.0) |
+| `OBS_METRICS_ENABLED` | `true` | فعال‌سازی سرور HTTP سبک پرومتئوس برای اندپوینت `/metrics` |
+| `OBS_METRICS_ADDR` | `0.0.0.0:9090` | آدرس و پورت شنود سرور متریک‌های پرومتئوس/ویکتوریا‌متریکس |
+| `OBS_LOG_RAW_SDP` | `false` | ثبت خطوط خام کاندیدهای SDP فقط در سطح دیباگ (برای مانیتورینگ امن) |
 
 ---
 
@@ -100,13 +107,45 @@ make test-lifecycle
 # اجرای تست‌های یکپارچگی انتشار و مصرف رسانه (Produce & Consume)
 make test-media
 
+# اجرای تست‌های اعتبارسنجی مشاهده‌پذیری، استخراج W3C TraceContext و متریک‌ها
+make test-observability
+
 # اجرای سرور به صورت محلی
 make run
 ```
 
 ---
 
-## ۶. ساخت و استقرار با Docker
+## ۶. مشاهده‌پذیری، APM، متریک‌ها و گارد کاردینالیتی (Observability)
+
+سیستم مشاهده‌پذیری مطابق استانداردهای `rust-observability-otel` و با رعایت چهار اصل بنیادین پیاده‌سازی شده است:
+
+1. **پیکربندی ۱۰۰٪ پویا با `OBS_*`:**
+   - فیلتر سطوح لاگ از طریق `OBS_LOG_LEVEL`.
+   - قالب‌بندی ساختاریافته JSON با `OBS_LOG_FORMAT=json` برای محیط سرور.
+   - ردیابی توزیع‌شده با صادرکننده استاندارد OTLP gRPC (`OBS_TRACING_ENABLED=true` و `OBS_TRACING_ENDPOINT`). در حالت غیرفعال، لایه تریسینگ به رجیستری متصل نمی‌شود تا سربار پردازشی صفر باشد.
+   - اندپوینت مستقل پرومتئوس `/metrics` روی `OBS_METRICS_ADDR` (پیش‌فرض `0.0.0.0:9090`).
+2. **محافظت از مسیر پرتکرار رسانه (Media Hot-Path Protection):**
+   - هیچ‌گونه لاگ یا Span به ازای هر بسته RTP یا کال‌بک‌های سطح صدا تولید نمی‌شود.
+3. **گارد سخت‌گیرانه کاردینالیتی متریک‌ها (Metric Cardinality Guard):**
+   - متریک‌های استاندارد ثبت‌شده:
+     - `sfu_active_routers` (Gauge)
+     - `sfu_active_transports{direction="pub|sub"}` (Gauge)
+     - `sfu_active_producers{kind="audio|video"}` (Gauge)
+     - `sfu_active_consumers{kind="audio|video"}` (Gauge)
+     - `sfu_grpc_requests_total{method="...", status="..."}` (Counter)
+     - `sfu_grpc_request_duration_seconds{method="...", status="..."}` (Histogram)
+     - `sfu_idempotency_hits_total` (Counter)
+   - **خط قرمز:** شناسه‌های با کاردینالیتی بالا (`room_id`, `peer_id`, `transport_id`, `request_id`) **هرگز** در برچسب‌های متریک قرار نمی‌گیرند و منحصراً در فیلدهای لاگ JSON و اتریبیوت‌های Span تریسینگ ثبت می‌شوند.
+4. **پالایش و امنیت اطلاعات حساس (Security Redaction):**
+   - گذرواژه‌های ICE (`ice_pwd`) و توکن‌ها در لاگ‌ها با مقدار `[REDACTED]` ماسک می‌شوند.
+   - خطوط خام کاندیدهای SDP فقط در صورت فعال‌سازی `OBS_LOG_RAW_SDP=true` و در سطح `debug` لاگ می‌شوند.
+5. **استخراج W3C `traceparent` و `x-request-id`:**
+   - استخراج خودکار متادیتاهای W3C از هدرهای درخواست gRPC در بدو ورود و اتصال به زنجیره ردیابی توزیع‌شده سرتاسری.
+
+---
+
+## ۷. ساخت و استقرار با Docker
 
 ایمیج داکر این پروژه به صورت چندمرحله‌ای (Multi-stage) و سبک طراحی شده و تحت کاربر غیرریشه اجرا می‌شود:
 
@@ -127,16 +166,20 @@ docker run --rm -it \
   -e RTC_MIN_PORT=40000 \
   -e RTC_MAX_PORT=49999 \
   -e GRPC_PORT=50051 \
+  -e OBS_LOG_LEVEL=info \
+  -e OBS_LOG_FORMAT=json \
+  -e OBS_METRICS_ENABLED=true \
+  -e OBS_METRICS_ADDR=0.0.0.0:9090 \
   ekbatan/sfu-media-node:latest
 ```
 
 ---
 
-## ۷. ساختار درختی پروژه
+## ۸. ساختار درختی پروژه
 
 ```text
 .
-├── Cargo.toml                  # تعریف وابستگی‌های پین‌شده (mediasoup, tonic, prost)
+├── Cargo.toml                  # تعریف وابستگی‌های پین‌شده (mediasoup, tonic, opentelemetry, metrics)
 ├── build.rs                    # کامپایل خودکار protobuf با protoc-bin-vendored
 ├── Dockerfile                  # بیلد امن چندمرحله‌ای و اجرای بهینه
 ├── Makefile                    # اتوماسیون بیلد، تست، لینت و داکر
@@ -144,7 +187,7 @@ docker run --rm -it \
 │   └── sfu/v1/
 │       └── media_engine.proto  # قرارداد اصلی سرویس gRPC رسانه
 ├── src/
-│   ├── config.rs               # تنظیمات شبکه، پورت‌ها و ورکرها
+│   ├── config.rs               # تنظیمات شبکه، پورت‌ها، ورکرها و مشاهده‌پذیری
 │   ├── domain/
 │   │   ├── error.rs            # خطاهای تایپ‌شده دامنه و نگاشت به tonic::Status
 │   │   ├── idempotency.rs      # ماشین وضعیت کش Idempotency با هش SHA-256
@@ -153,14 +196,22 @@ docker run --rm -it \
 │   │   ├── codecs.rs           # پیکربندی کدک‌های استاندارد Opus, VP8, H.264
 │   │   ├── media_node.rs       # هسته رسانه، پاکسازی آبشاری و پخش رویدادها
 │   │   └── worker_pool.rs      # استخر ورکرها و تخصیص با کم‌ترین بار
+│   ├── observability/
+│   │   ├── config.rs           # تنظیمات OBS_* مشاهده‌پذیری
+│   │   ├── init.rs             # راه‌اندازی Tracing، OpenTelemetry OTLP و سرور /metrics
+│   │   ├── metrics.rs          # توابع ثبت متریک با رعایت کامل گارد کاردینالیتی
+│   │   ├── redaction.rs        # ماسک‌سازی گذرواژه‌های ICE و داده‌های حساس
+│   │   ├── tracing_extractor.rs# استخراج W3C traceparent و x-request-id
+│   │   └── mod.rs              # ماژول مشاهده‌پذیری
 │   ├── proto.rs                # ماژول تولیدشده از protobuf
 │   ├── transport/
 │   │   └── grpc/
-│   │       └── service.rs      # پیاده‌سازی اینترفیس gRPC SfuMediaEngineService
+│   │       └── service.rs      # پیاده‌سازی اینترفیس gRPC با Instrumentation و متریک
 │   ├── lib.rs                  # اکسپورت کتابخانه هسته SFU
 │   └── main.rs                 # نقطه ورودی باینری و Graceful Shutdown
 └── tests/
     ├── api_verification.rs     # راستی‌آزمایی API هسته mediasoup
     ├── lifecycle_tests.rs      # آزمون‌های چرخه حیات Router و Transport و ICE Restart
-    └── media_tests.rs          # آزمون‌های Produce/Consume، لایه‌ها، آمار و رویدادها
+    ├── media_tests.rs          # آزمون‌های Produce/Consume، لایه‌ها، آمار و رویدادها
+    └── observability_tests.rs  # آزمون‌های استخراج W3C TraceContext و متریک‌های پرومتئوس
 ```

@@ -137,6 +137,7 @@ impl MediaNode {
     }
 
     // --- 1. Router Lifecycle ---
+    #[tracing::instrument(skip(self, req), fields(room_id = %req.room_id, request_id = %req.request_id))]
     pub async fn create_router(
         &self,
         req: proto::CreateRouterRequest,
@@ -188,6 +189,7 @@ impl MediaNode {
                     .insert(req.room_id.clone(), router_id.clone());
                 self.router_transports
                     .insert(router_id.clone(), DashSet::new());
+                crate::observability::metrics::inc_active_routers();
 
                 Ok(proto::CreateRouterResponse {
                     router_id,
@@ -199,6 +201,7 @@ impl MediaNode {
     }
 
     // --- 2. Transport Lifecycle ---
+    #[tracing::instrument(skip(self, req), fields(router_id = %req.router_id, peer_id = %req.peer_id, request_id = %req.request_id))]
     pub async fn create_transport(
         &self,
         req: proto::CreateTransportRequest,
@@ -325,6 +328,7 @@ impl MediaNode {
                     .insert(transport_id.clone(), DashSet::new());
                 self.transport_consumers
                     .insert(transport_id.clone(), DashSet::new());
+                crate::observability::metrics::inc_active_transports(req.is_publisher);
 
                 Ok(proto::CreateTransportResponse {
                     transport_id,
@@ -340,6 +344,7 @@ impl MediaNode {
             .await
     }
 
+    #[tracing::instrument(skip(self, req), fields(router_id = %req.router_id, transport_id = %req.transport_id))]
     pub async fn connect_transport(
         &self,
         req: proto::ConnectTransportRequest,
@@ -377,6 +382,7 @@ impl MediaNode {
         Ok(proto::ConnectTransportResponse {})
     }
 
+    #[tracing::instrument(skip(self, req), fields(router_id = %req.router_id, transport_id = %req.transport_id))]
     pub async fn restart_ice(
         &self,
         req: proto::RestartIceRequest,
@@ -412,6 +418,7 @@ impl MediaNode {
     }
 
     // --- 3. Cascading Close ---
+    #[tracing::instrument(skip(self, req), fields(router_id = %req.router_id, resource_id = %req.resource_id))]
     pub fn close_resource(
         &self,
         req: proto::CloseResourceRequest,
@@ -425,6 +432,7 @@ impl MediaNode {
                     item.is_closed.store(true, Ordering::SeqCst);
                     self.room_to_router.remove(&item.room_id);
                     self.worker_pool.decrement_load(item.worker_index);
+                    crate::observability::metrics::dec_active_routers();
 
                     // Cascade close transports
                     if let Some((_, transport_ids)) =
@@ -462,6 +470,10 @@ impl MediaNode {
             proto::ResourceType::Producer => {
                 if let Some((_, item)) = self.producers.remove(&req.resource_id) {
                     item.is_closed.store(true, Ordering::SeqCst);
+                    crate::observability::metrics::dec_active_producers(&format!(
+                        "{:?}",
+                        item.kind
+                    ));
                     if let Some(set) = self.transport_producers.get(&item.transport_id) {
                         set.remove(&req.resource_id);
                     }
@@ -478,6 +490,10 @@ impl MediaNode {
             proto::ResourceType::Consumer => {
                 if let Some((_, item)) = self.consumers.remove(&req.resource_id) {
                     item.is_closed.store(true, Ordering::SeqCst);
+                    crate::observability::metrics::dec_active_consumers(&format!(
+                        "{:?}",
+                        item.kind
+                    ));
                     if let Some(set) = self.transport_consumers.get(&item.transport_id) {
                         set.remove(&req.resource_id);
                     }
@@ -502,12 +518,17 @@ impl MediaNode {
     fn close_transport_internal(&self, transport_id: &str) {
         if let Some((_, t_item)) = self.transports.remove(transport_id) {
             t_item.is_closed.store(true, Ordering::SeqCst);
+            crate::observability::metrics::dec_active_transports(t_item.is_publisher);
 
             // Close producers on this transport
             if let Some((_, p_ids)) = self.transport_producers.remove(transport_id) {
                 for pid in p_ids {
                     if let Some((_, p)) = self.producers.remove(&pid) {
                         p.is_closed.store(true, Ordering::SeqCst);
+                        crate::observability::metrics::dec_active_producers(&format!(
+                            "{:?}",
+                            p.kind
+                        ));
                     }
                 }
             }
@@ -517,6 +538,10 @@ impl MediaNode {
                 for cid in c_ids {
                     if let Some((_, c)) = self.consumers.remove(&cid) {
                         c.is_closed.store(true, Ordering::SeqCst);
+                        crate::observability::metrics::dec_active_consumers(&format!(
+                            "{:?}",
+                            c.kind
+                        ));
                     }
                 }
             }
@@ -524,6 +549,7 @@ impl MediaNode {
     }
 
     // --- 4. Media Produce & Consume (Slice 3) ---
+    #[tracing::instrument(skip(self, req), fields(router_id = %req.router_id, transport_id = %req.transport_id, peer_id = %req.peer_id, request_id = %req.request_id))]
     pub async fn produce(
         &self,
         req: proto::ProduceRequest,
@@ -648,6 +674,7 @@ impl MediaNode {
                 if let Some(set) = self.transport_producers.get(&req.transport_id) {
                     set.insert(producer_id.clone());
                 }
+                crate::observability::metrics::inc_active_producers(&req.kind);
 
                 Ok(proto::ProduceResponse {
                     producer_id,
@@ -658,6 +685,7 @@ impl MediaNode {
             .await
     }
 
+    #[tracing::instrument(skip(self, req), fields(router_id = %req.router_id, transport_id = %req.subscriber_transport_id, producer_id = %req.producer_id, request_id = %req.request_id))]
     pub async fn consume(
         &self,
         req: proto::ConsumeRequest,
@@ -906,6 +934,10 @@ impl MediaNode {
                 if let Some(set) = self.transport_consumers.get(&req.subscriber_transport_id) {
                     set.insert(consumer_id.clone());
                 }
+                crate::observability::metrics::inc_active_consumers(&format!(
+                    "{:?}",
+                    consumer_kind
+                ));
 
                 Ok(proto::ConsumeResponse {
                     consumer_id,
@@ -926,6 +958,7 @@ impl MediaNode {
             .await
     }
 
+    #[tracing::instrument(skip(self, req), fields(router_id = %req.router_id, resource_id = %req.resource_id))]
     pub async fn set_media_paused(
         &self,
         req: proto::SetMediaPausedRequest,
@@ -975,6 +1008,7 @@ impl MediaNode {
         Ok(proto::SetMediaPausedResponse {})
     }
 
+    #[tracing::instrument(skip(self, req), fields(router_id = %req.router_id, consumer_id = %req.consumer_id))]
     pub async fn set_consumer_preferred_layers(
         &self,
         req: proto::SetConsumerPreferredLayersRequest,
@@ -1009,6 +1043,7 @@ impl MediaNode {
         Ok(proto::SetConsumerPreferredLayersResponse {})
     }
 
+    #[tracing::instrument(skip(self, req), fields(router_id = %req.router_id, resource_id = %req.resource_id))]
     pub async fn get_stats(
         &self,
         req: proto::GetStatsRequest,

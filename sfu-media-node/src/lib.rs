@@ -3,6 +3,7 @@
 pub mod config;
 pub mod domain;
 pub mod engine;
+pub mod observability;
 pub mod proto;
 pub mod transport;
 

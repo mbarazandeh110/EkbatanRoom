@@ -34,8 +34,8 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
     let config = Config::from_env();
+    sfu_media_node::observability::init_observability(&config.observability)?;
 
     tracing::info!(
         listen_ip = %config.listen_ip,
@@ -44,6 +44,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rtc_max_port = config.rtc_max_port,
         grpc_port = config.grpc_port,
         worker_count = config.worker_count,
+        obs_log_level = %config.observability.log_level,
+        obs_log_format = %config.observability.log_format,
+        obs_tracing_enabled = config.observability.tracing_enabled,
+        obs_metrics_enabled = config.observability.metrics_enabled,
+        obs_metrics_addr = %config.observability.metrics_addr,
         "Starting SFU Media Node..."
     );
 

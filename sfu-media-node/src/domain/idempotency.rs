@@ -87,6 +87,7 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
                 } => {
                     if now.duration_since(*completed_at) < self.ttl {
                         if payload_hash == &hash {
+                            crate::observability::metrics::record_idempotency_hit();
                             return Ok(response.clone());
                         } else {
                             return Err(SfuError::IdempotencyConflict(format!(

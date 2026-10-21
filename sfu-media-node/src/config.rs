@@ -1,6 +1,8 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 
+use crate::observability::ObservabilityConfig;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub listen_ip: IpAddr,
@@ -9,6 +11,7 @@ pub struct Config {
     pub rtc_max_port: u16,
     pub grpc_port: u16,
     pub worker_count: usize,
+    pub observability: ObservabilityConfig,
 }
 
 impl Default for Config {
@@ -59,6 +62,8 @@ impl Config {
                     .unwrap_or(1)
             });
 
+        let observability = ObservabilityConfig::from_env();
+
         Self {
             listen_ip,
             announced_ip,
@@ -66,6 +71,7 @@ impl Config {
             rtc_max_port,
             grpc_port,
             worker_count,
+            observability,
         }
     }
 }
