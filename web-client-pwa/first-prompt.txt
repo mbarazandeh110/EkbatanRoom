@@ -1,0 +1,29 @@
+# Engineering Workflow
+
+Before implementation:
+1. Read `GEMINI.md`, `.agents/rules.md`, and ALL THREE skills:
+   - `.agents/skills/nextjs-clean-hexagonal-solid/SKILL.md`
+   - `.agents/skills/webrtc-pwa-media-ux/SKILL.md`
+   - `.agents/skills/frontend-tdd-systematic-debugging/SKILL.md`
+2. Inspect the repository and verify the exact pinned version of `livekit-client` (matching `rtc-compatibility-suite`) as well as Next.js, Zustand, Tailwind CSS, and Vitest configurations.
+3. Identify assumptions, ambiguities, and blockers.
+4. Propose a small, phased implementation plan (3 Vertical Slices) with testable acceptance criteria that strictly follows Clean/Hexagonal Frontend Architecture and SOLID principles.
+5. Do not implement later phases before the current vertical slice compiles, passes `tsc --noEmit`, and passes its unit tests[cite: 5].
+
+During implementation:
+1. Implement one vertical slice at a time while strictly enforcing Hexagonal boundaries (`domain`, `ports`, `application`, `adapters`, `store`, `components`) and SOLID principles (`SRP`, `OCP`, `LSP`, `ISP`, `DIP`):
+   - **Slice 1 (Hexagonal Core, Segregated Ports, Granular Zustand Stores & Mock Engine TDD):**
+     Initialize the Next.js + TypeScript (`strict: true`) + Tailwind project. Implement `src/domain/`, segregated `src/ports/rtc_engine_port.ts`, granular Zustand stores (`use_room_store`, `use_participants_store`, `use_telemetry_store`), `RoomSessionController`, `AdaptiveViewportManager`, and `MockRtcEngineAdapter`. Write and run Vitest unit tests proving state transitions and adaptive layer calculations work with zero SDK coupling.
+   - **Slice 2 (Dual-Protocol Adapters - Official `livekit-client` Adapter & Native ORTC Skeleton):**
+     Implement `src/adapters/rtc_livekit/livekit_adapter.ts` using the exact pinned `livekit-client` package (mapping connection, track publish with Simulcast, remote subscribe, mute/unmute, quality layer selection, and active speaker events to `RtcEnginePort`), plus a clean swappable skeleton in `src/adapters/rtc_ortc/mediasoup_ortc_adapter.ts` and `adapters/factory.ts`. Verify with adapter unit tests and `tsc --noEmit`.
+   - **Slice 3 (Pre-Join Lobby, Mobile-Resilient Video Stage & Adaptive Viewport UI):**
+     Implement the Pre-Join Lobby screen (camera/mic preview + explicit Join button that unlocks iOS Safari `AudioContext` and requests `WakeLock`), the responsive `VideoGrid` and `VideoTile` components (with `<video playsInline>`, `IntersectionObserver`, and `ResizeObserver` wired to `AdaptiveViewportManager`), and the `ControlBar` (mic, camera, screen share, layout switcher, connection quality indicator).
+2. Run formatter, linter, `npm run typecheck` (`tsc --noEmit`), and `npm run test` (Vitest) after each slice[cite: 5].
+3. Inspect logs and test evidence; do not infer success from compilation alone[cite: 5].
+
+Before reporting completion:
+1. List changed files, explain how Hexagonal boundaries and SOLID principles were enforced, and document important design decisions[cite: 5].
+2. Report exact commands executed (`npm run typecheck`, `npm run test`, `npm run build`) and their actual terminal outputs[cite: 5].
+3. Separate passed, failed, blocked, and not-run tests[cite: 5].
+4. List known limitations and unresolved assumptions[cite: 5].
+5. Never claim a test passed unless it actually ran and passed[cite: 5].
