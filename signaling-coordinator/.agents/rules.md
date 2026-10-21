@@ -34,3 +34,8 @@
 3. **کیفیت کد Go:**
    - اجرای تمام تست‌ها با فلگ `-race` (`go test -race ./...`) برای اثبات نبودن Race Condition الزامی است.
    - تمام فراخوانی‌های gRPC به نود Rust باید دارای `context.WithTimeout` و `request_id` یکتا باشند[cite: 3, 5].
+
+## ۳. قوانین Observability، لاگ امن و ردیابی توزیع‌شده
+1. **استقلال لایه دامنه از ابزارهای تله‌متری:** راه‌اندازی OpenTelemetry، Prometheus و تنظیمات `slog` باید خارج از `internal/domain` انجام شود.
+2. **ممنوعیت افشای اطلاعات حساس در لاگ:** چاپ کردن توکن JWT، کلیدهای امضا، `ice_pwd` و همچنین چاپ متن کامل SDP در سطح `info` اکیداً ممنوع است (متن SDP فقط با فلگ صریح `OBS_LOG_RAW_SDP=true` در سطح `debug` مجاز است).
+3. **انتشار Context و گارد کاردینالیتی:** تمامی فراخوانی‌های gRPC به نود Rust باید حامل `context.Context` حاوی W3C TraceContext و `request_id` باشند. استفاده از `room_id` یا `participant_id` در لیبل‌های متریک‌های Prometheus ممنوع است.
