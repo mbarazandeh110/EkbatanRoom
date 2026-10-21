@@ -1,0 +1,24 @@
+
+# Engineering Workflow
+
+Before implementation:
+1. Read `GEMINI.md`, `.agents/rules.md`, `.agents/skills/api-design-principles/SKILL.md`, `.agents/skills/architect-review/SKILL.md`, `.agents/skills/architecture-decision-records/SKILL.md`, `.agents/skills/architecture-patterns/SKILL.md`, `.agents/skills/code-review-and-quality/SKILL.md`, `.agents/skills/code-reviewer/SKILL.md`, `.agents/skills/context-driven-development/SKILL.md`, `.agents/skills/cqrs-implementation/SKILL.md`, `.agents/skills/error-debugging-error-analysis/SKILL.md`, `.agents/skills/go-hexagonal-actor-solid/SKILL.md`, `.agents/skills/golang-pro/SKILL.md`, `.agents/skills/livekit-sdp-synthesizer/SKILL.md`, `.agents/skills/microservices-patterns/SKILL.md`, `.agents/skills/tdd-workflows-tdd-cycle/SKILL.md`, `.agents/skills/twelve-factor-engineering/SKILL.md`, and `proto/sfu/v1/media_engine.proto`.
+2. Verify that `proto/sfu/v1/media_engine.proto` matches the exact contract in `sfu-media-node` and inspect the pinned `github.com/livekit/protocol` and `github.com/pion/sdp/v3` packages.
+3. Identify assumptions, ambiguities, and blockers.
+4. Propose a small, phased implementation plan with testable acceptance criteria that strictly follows Hexagonal Architecture, Constructor Dependency Injection, and SOLID principles.
+5. Do not implement later phases before the current vertical slice passes its tests (with `-race`).
+
+During implementation:
+1. Strictly enforce Hexagonal Architecture (`domain`, `ports`, `application`, `adapters`) and SOLID principles (`SRP`, `OCP`, `LSP`, `ISP`, `DIP`) across all slices:
+   - **Slice 1 (Hexagonal Skeleton, Segregated Ports, gRPC Adapter & Join Handshake):** Initialize `go.mod` (`ekbatan-room/signaling-coordinator`), generate protobuf code, create pure `internal/domain` and segregated `internal/ports`, implement the outbound gRPC adapter (with `request_id` and timeouts), and implement `/rtc` connection + `SignalResponse_Join` handshake (plus a clean skeleton for `/ws/ortc`). Verify with `go test -race ./...`.
+   - **Slice 2 (Single-Track Publish/Subscribe Vertical Slice & Actor State Machine):** Implement `RoomActor` and `ParticipantSession` (`Stable -> WaitingForAnswer -> Stable` state machine), Publisher Offer parsing in `adapters/inbound/livekit` (with explicit DTLS role extraction from `a=setup`), `Produce`, `Consume`, and Subscriber Offer generation via `PeerResponderPort`. Prove a 2-peer audio/video session works.
+   - **Slice 3 (Concurrency/Glare Queuing, Simulcast Settings & ICE Restart):** Add mid-negotiation change queuing, `m-line` slot inactivation/recycling (`a=inactive`), `SignalRequest_Mute`, `SignalRequest_TrackSetting` (mapping quality to `SetConsumerPreferredLayers`), and `ICE Restart`.
+2. Write comprehensive unit tests (using mock ports to verify `DIP`/`LSP`) for `ParticipantSession` state transitions and `sdp_mapper` with every slice.
+3. Run `go vet ./...` and `go test -v -race ./...` and inspect actual logs.
+
+Before reporting completion:
+1. List changed files, explain how Hexagonal boundaries and SOLID principles were preserved, and document important design decisions.
+2. Report exact commands executed and their actual outputs.
+3. Separate passed, failed, blocked, and not-run tests.
+4. List known limitations and unresolved assumptions.
+5. Never claim a test passed unless it actually ran and passed.

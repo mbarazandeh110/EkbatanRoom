@@ -1,0 +1,228 @@
+syntax = "proto3";
+
+package rtc.sfu.v1;
+
+// اصلاح مسدودکننده ۱: استفاده از نام واقعی ماژول Go پروژه EkbatanRoom-v2
+option go_package = "ekbatan-room/signaling-coordinator/gen/proto/sfu/v1;sfuv1";
+
+service SfuMediaEngineService {
+  // ۱. مدیریت چرخه حیات Router (تک‌واحد در گام اول، قابل گسترش به چند Worker)
+  rpc CreateRouter(CreateRouterRequest) returns (CreateRouterResponse);
+  
+  // ۲. مدیریت WebRtcTransport (شامل پشتیبانی از SCTP و تنظیمات شبکه/NAT)
+  rpc CreateTransport(CreateTransportRequest) returns (CreateTransportResponse);
+  rpc ConnectTransport(ConnectTransportRequest) returns (ConnectTransportResponse);
+  rpc RestartIce(RestartIceRequest) returns (RestartIceResponse);
+
+  // ۳. مدیریت Producer و Consumer (با اعتبارسنجی JSON در مرز RPC و بررسی canConsume)
+  rpc Produce(ProduceRequest) returns (ProduceResponse);
+  rpc Consume(ConsumeRequest) returns (ConsumeResponse);
+  rpc SetMediaPaused(SetMediaPausedRequest) returns (SetMediaPausedResponse);
+  rpc SetConsumerPreferredLayers(SetConsumerPreferredLayersRequest) returns (SetConsumerPreferredLayersResponse);
+
+  // ۴. حذف آبشاری منابع، دریافت آمار واقعی RTP و استریم رویدادهای نود
+  rpc CloseResource(CloseResourceRequest) returns (CloseResourceResponse);
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  rpc WatchNodeEvents(WatchNodeEventsRequest) returns (stream NodeEvent);
+}
+
+enum ResourceType {
+  RESOURCE_TYPE_UNSPECIFIED = 0;
+  RESOURCE_TYPE_ROUTER = 1;
+  RESOURCE_TYPE_TRANSPORT = 2;
+  RESOURCE_TYPE_PRODUCER = 3;
+  RESOURCE_TYPE_CONSUMER = 4;
+}
+
+message CreateRouterRequest {
+  string request_id = 1; // کلید Idempotency (الزامی)
+  string room_id = 2;
+}
+
+message CreateRouterResponse {
+  string router_id = 1;
+  uint32 worker_index = 2;
+  string router_rtp_capabilities_json = 3;
+}
+
+message CreateTransportRequest {
+  string request_id = 1; // کلید Idempotency (الزامی)
+  string router_id = 2;
+  string peer_id = 3;
+  bool is_publisher = 4;
+  bool enable_sctp = 5;  // اضافه شده طبق نقد ۲ برای پشتیبانی از DataChannel در صورت نیاز
+}
+
+message IceCandidateInfo {
+  string foundation = 1;
+  uint32 priority = 2;
+  string ip = 3;
+  string protocol = 4;
+  uint32 port = 5;
+  string type = 6;
+  string tcp_type = 7;
+  string sdp_candidate_line = 8;
+}
+
+message DtlsFingerprintInfo {
+  string algorithm = 1;
+  string value = 2;
+}
+
+message CreateTransportResponse {
+  string transport_id = 1;
+  string ice_ufrag = 2;
+  string ice_pwd = 3;
+  repeated IceCandidateInfo ice_candidates = 4;
+  repeated DtlsFingerprintInfo dtls_fingerprints = 5;
+  uint32 sctp_port = 6;
+  string raw_ice_parameters_json = 7;
+  string raw_dtls_parameters_json = 8;
+}
+
+message ConnectTransportRequest {
+  string router_id = 1;
+  string transport_id = 2;
+  string dtls_role = 3; // "auto" | "client" | "server" (استخراج شده از a=setup در SDP کلاینت)
+  repeated DtlsFingerprintInfo remote_fingerprints = 4;
+}
+message ConnectTransportResponse {}
+
+message RestartIceRequest {
+  string router_id = 1;
+  string transport_id = 2;
+}
+message RestartIceResponse {
+  string ice_ufrag = 1;
+  string ice_pwd = 2;
+  string raw_ice_parameters_json = 3;
+}
+
+message ProduceRequest {
+  string request_id = 1; // کلید Idempotency
+  string router_id = 2;
+  string transport_id = 3;
+  string peer_id = 4;
+  string kind = 5; // "audio" | "video"
+  string rtp_parameters_json = 6; // باید در مرز RPC پارس و اعتبارسنجی شود
+  bool paused = 7;
+}
+
+message SimulcastEncodingInfo {
+  string rid = 1;
+  uint32 ssrc = 2;
+  uint32 rtx_ssrc = 3;
+  uint32 max_bitrate = 4;
+  string scalability_mode = 5;
+}
+
+message ProduceResponse {
+  string producer_id = 1;
+  string kind = 2;
+  repeated SimulcastEncodingInfo encodings = 3;
+}
+
+message ConsumeRequest {
+  string request_id = 1; // کلید Idempotency
+  string router_id = 2;
+  string subscriber_transport_id = 3;
+  string producer_id = 4;
+  string rtp_capabilities_json = 5; // بررسی با router.can_consume در مرز RPC
+  bool paused = 6;
+}
+
+message ConsumeResponse {
+  string consumer_id = 1;
+  string producer_id = 2;
+  string kind = 3;
+  string rtp_parameters_json = 4;
+  uint32 ssrc = 5;
+  uint32 rtx_ssrc = 6;
+  uint32 payload_type = 7;
+  uint32 rtx_payload_type = 8;
+  string codec_mime_type = 9;
+  uint32 clock_rate = 10;
+  repeated SimulcastEncodingInfo encodings = 11; // اطلاعات کامل لایه‌ها برای Simulcast
+  int32 initial_spatial_layer = 12;
+  int32 initial_temporal_layer = 13;
+}
+
+message SetMediaPausedRequest {
+  string router_id = 1;
+  ResourceType resource_type = 2; // PRODUCER یا CONSUMER
+  string resource_id = 3;
+  bool paused = 4;
+}
+message SetMediaPausedResponse {}
+
+message SetConsumerPreferredLayersRequest {
+  string router_id = 1;
+  string consumer_id = 2;
+  int32 spatial_layer = 3;
+  int32 temporal_layer = 4;
+}
+message SetConsumerPreferredLayersResponse {}
+
+message CloseResourceRequest {
+  string router_id = 1;
+  ResourceType resource_type = 2;
+  string resource_id = 3;
+}
+message CloseResourceResponse {}
+
+message GetStatsRequest {
+  string router_id = 1;
+  ResourceType resource_type = 2;
+  string resource_id = 3;
+}
+message GetStatsResponse {
+  string stats_json = 1;
+  uint64 bytes_sent = 2;
+  uint64 bytes_received = 3;
+  uint64 packets_sent = 4;
+  uint64 packets_received = 5;
+  int32 current_spatial_layer = 6;
+  int32 current_temporal_layer = 7;
+}
+
+message WatchNodeEventsRequest { string coordinator_id = 1; }
+message NodeEvent {
+  string router_id = 1;
+  int64 timestamp_ms = 2;
+  oneof payload {
+    ActiveSpeakerEvent active_speaker = 3;
+    MediaScoreEvent media_score = 4;
+    LayerChangedEvent layer_changed = 5;
+    ResourceClosedEvent resource_closed = 6;
+  }
+}
+
+message ActiveSpeakerEvent {
+  string producer_id = 1;
+  string peer_id = 2;
+  float volume_dbfs = 3;
+}
+
+message MediaScoreEvent {
+  string resource_id = 1;
+  string peer_id = 2;
+  bool is_producer = 3;
+  uint32 score = 4;
+  repeated uint32 producer_scores = 5;
+}
+
+message LayerChangedEvent {
+  string consumer_id = 1;
+  string producer_id = 2;
+  string peer_id = 3;
+  int32 preferred_spatial_layer = 4;
+  int32 current_spatial_layer = 5;
+  int32 preferred_temporal_layer = 6;
+  int32 current_temporal_layer = 7;
+}
+
+message ResourceClosedEvent {
+  ResourceType resource_type = 1;
+  string resource_id = 2;
+  string reason = 3;
+}

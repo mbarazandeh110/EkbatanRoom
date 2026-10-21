@@ -1,0 +1,50 @@
+# Engineering Workflow
+
+Before implementation:
+1. Read `GEMINI.md`, `.agents/rules.md`, and `.agents/skills/webrtc-gate-testing/SKILL.md`.
+2. Inspect the repository and verify the exact pinned version of `livekit-client` to be used.
+3. Identify assumptions, ambiguities, and blockers.
+4. Propose a phased implementation plan with testable acceptance criteria.
+5. Do not implement later phases before the current gate harness is verified.
+
+During implementation:
+1. Build the black-box browser harness (Vite + TypeScript + exact pinned `livekit-client`) and `docker-compose.yml` to orchestrate `sfu-media-node` and `signaling-coordinator`.
+2. Configure Playwright with sequential gate dependencies (`mode: 'serial'`) so that if an earlier gate fails (e.g., Gate 1 Join or Gate 2 Basic RTP), downstream gates (Gates 3–5) are marked as `blocked/skipped` rather than running with misleading errors.
+3. Implement the 5 risk-ordered gate specs:
+   - `01-connection.spec.ts`: Unmodified `livekit-client` connects to `/rtc` and completes Join.
+   - `02-bidirectional-rtp.spec.ts`: Two unmodified clients publish and receive audio/video with verified `getStats()` counters (`bytesSent > 0`, `bytesReceived > 0`, rendered video dimensions).
+   - `03-concurrency-glare.spec.ts`: Concurrent publish/subscribe and participant churn during active negotiation without state divergence.
+   - `04-simulcast-layers.spec.ts`: Two distinct checks: (a) SFU layer selection capability, and (b) official LiveKit quality update message mapping.
+   - `05-ice-restart.spec.ts`: Session and media recovery across ICE restart.
+4. Implement an automated evidence collector that writes `test-results/evidence-report.json` containing the pinned SDK version, browser version, signaling trace logs, RTP byte counters, and exact status (`PASSED`, `FAILED`, `BLOCKED`, `NOT_RUN`) for each gate.
+
+Before reporting completion:
+1. List changed files and important design decisions.
+2. Report exact commands executed and their actual results.
+3. Separate passed, failed, blocked, and not-run tests based on actual execution.
+4. List known limitations and unresolved assumptions.
+5. Never claim a test passed unless it actually ran against the running services and passed.
+
+
+# Engineering Workflow
+
+Before implementation:
+1. Read `GEMINI.md`, `.agents/rules.md`, and skills `.agents/skills/clean-test-architecture-solid/SKILL.md`, `.agents/skills/code-reviewer/SKILL.md`, `.agents/skills/context-driven-development/SKILL.md`, `.agents/skills/e2e-testing-patterns/SKILL.md`, `.agents/skills/microservices-patterns/SKILL.md`, `.agents/skills/playwright-skill/SKILL.md`, `.agents/skills/systematic-debugging/SKILL.md`, `.agents/skills/tdd-workflows-tdd-cycle/SKILL.md`, `.agents/skills/twelve-factor-engineering/SKILL.md`, and `.agents/skills/webrtc-gate-testing/SKILL.md`.
+2. Inspect the repository and verify the exact pinned version of `livekit-client` to be used.
+3. Identify assumptions, ambiguities, and blockers.
+4. Propose a phased implementation plan with testable acceptance criteria that strictly follows Clean Test Architecture and SOLID principles.
+5. Do not implement later phases before the current gate harness is verified.
+
+During implementation:
+1. Strictly enforce the 5-layer Clean Test Architecture (`harness-app/`, `src/domain/`, `src/controllers/`, `src/reporters/`, `tests/`) and SOLID principles (`SRP`, `OCP`, `DIP`):
+   - **Slice 1 (Harness App, Controllers & Evidence Reporter):** Build the black-box Vite harness (`harness-app/`) with an exact pinned `livekit-client`, implement `TokenFactory`, `ParticipantClientController` (encapsulating Playwright interactions and `RTCPeerConnection.getStats()` extraction), `EvidenceRecorder` (writing `test-results/evidence-report.json`), and `docker-compose.yml`.
+   - **Slice 2 (Gates 1 & 2 - Connection & Real Bidirectional RTP):** Implement `01-connection.spec.ts` and `02-bidirectional-rtp.spec.ts` with sequential gating so downstream tests are marked `BLOCKED` if Gate 1 or Gate 2 fails.
+   - **Slice 3 (Gates 3, 4 & 5 - Concurrency/Glare, Dual Simulcast & ICE Restart):** Implement `03-concurrency-glare.spec.ts`, `04-simulcast-layers.spec.ts` (testing both SFU layer switching and LiveKit quality setting mapping), and `05-ice-restart.spec.ts`.
+2. Run TypeScript type-checking (`tsc --noEmit`) and execute the Playwright suite against the running services.
+
+Before reporting completion:
+1. List changed files, explain how Clean Test Architecture and SOLID principles were applied, and document important design decisions.
+2. Report exact commands executed and their actual results.
+3. Separate passed, failed, blocked, and not-run tests based on actual execution.
+4. List known limitations and unresolved assumptions.
+5. Never claim a test passed unless it actually ran against the running services and passed.

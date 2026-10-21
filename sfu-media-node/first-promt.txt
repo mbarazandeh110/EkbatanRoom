@@ -1,0 +1,23 @@
+# Engineering Workflow
+
+Before implementation:
+1. Read `GEMINI.md`, `.agents/rules.md`,  `.agents/skills/architecture-patterns/SKILL.md`, `.agents/skills/cloud-architect/SKILL.md`, `.agents/skills/code-review-and-quality/SKILL.md`, `.agents/skills/code-showcase-systematic-debugging/SKILL.md`, `.agents/skills/context-driven-development/SKILL.md`, `.agents/skills/cqrs-implementation/SKILL.md`, `.agents/skills/microservices-patterns/SKILL.md`, `.agents/skills/rust-hexagonal-solid/SKILL.md`, `.agents/skills/rust-mediasoup-sfu/SKILL.md`, `.agents/skills/rust-pro/SKILL.md`, `.agents/skills/systematic-debugging/SKILL.md`, `.agents/skills/tdd-workflows-tdd-cycle/SKILL.md`, `.agents/skills/twelve-factor-engineering/SKILL.md`, and `proto/sfu/v1/media_engine.proto`.
+2. Inspect the repository and verify the actual APIs against the version-pinned `mediasoup` crate documentation.
+3. Identify assumptions, ambiguities, and blockers.
+4. Propose a small, step-by-step implementation plan with testable acceptance criteria that strictly preserves the Hexagonal directory layout and SOLID principles.
+5. Do not implement later phases before the current vertical slice compiles, passes its tests, and satisfies architectural boundaries.
+
+During implementation:
+1. Strictly enforce Hexagonal Architecture (`domain`, `ports`, `application`, `adapters`), Constructor Dependency Injection, and SOLID principles (`SRP`, `OCP`, `LSP`, `ISP`, `DIP`) from the very first file:
+   - **Slice 1 (Hexagonal Foundation, Proto & Idempotency):** Setup `Cargo.toml` (with pinned versions), `build.rs`, the complete `domain/` layer (entities, `thiserror` domain errors, and strict `request_id` + payload-hash Idempotency state machine), `ports/`, and `adapters/inbound_grpc/mapper.rs` (boundary JSON validation). Run `cargo check` and `cargo test` for domain/mapper unit tests and show the output.
+   - **Slice 2 (Worker, Router & Transport Lifecycle):** Implement `outbound_mediasoup/worker_pool.rs`, `application/router_service.rs`, and `application/transport_service.rs` (`CreateRouter`, `CreateTransport` with configurable `MEDIASOUP_LISTEN_IP` and `MEDIASOUP_ANNOUNCED_IP`, `ConnectTransport`, `RestartIce`, and cascading `CloseResource`). Run `cargo test` for unit and lifecycle integration tests.
+   - **Slice 3 (Media Produce/Consume, Stats & Events):** Implement `application/media_service.rs` (`Produce`, `Consume` with mandatory `router.can_consume()`, `SetMediaPaused`, `SetConsumerPreferredLayers`, `GetStats`) and `WatchNodeEvents`.
+2. Ensure zero `.unwrap()`/`.expect()` in production code and never hold locks across `.await` points.
+3. Run `cargo fmt --check`, `cargo clippy`, `cargo check`, and `cargo test`, and inspect actual logs and test outputs.
+
+Before reporting completion:
+1. List changed files, explain how Hexagonal boundaries and SOLID principles were enforced, and document important design decisions.
+2. Report exact commands executed (`cargo check`, `cargo test`) and their actual terminal outputs.
+3. Separate passed, failed, blocked, and not-run tests.
+4. List known limitations and unresolved assumptions.
+5. Never claim a test passed unless it actually ran and passed.
