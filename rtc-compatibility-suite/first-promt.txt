@@ -7,140 +7,238 @@ Before implementation:
 4. Propose a phased implementation plan with testable acceptance criteria that strictly follows Clean Test Architecture and SOLID principles.
 5. Do not implement later phases before the current gate harness is verified.
 
-## During Implementation — Phased, Gate-Driven Engineering Workflow
+# During Implementation — Mandatory Phased Execution
 
-Follow the approved implementation plan incrementally. Treat implementation slices and WebRTC acceptance gates as separate concepts: slices define development boundaries, while gates provide objective evidence that the system works.
+Follow the approved implementation plan strictly. Implement one slice at a time, verify its acceptance criteria, and do not proceed to the next slice until the current slice's gate is satisfied. Do not implement future phases prematurely.
 
-**Non-negotiable rules**
-- Do not start a later slice until the current slice's acceptance criteria have been verified and its results documented.
-- Do not treat compilation, mocks, unit tests, or successful signaling as proof of end-to-end WebRTC media functionality.
-- Do not claim that any gate passed without executing it against the actual running services.
-- Keep the five-layer Clean Test Architecture, SOLID principles, TDD, and all applicable project skills enforced throughout every slice.
-- If a blocker, missing prerequisite, architectural conflict, or unverified assumption prevents safe progress, document it and stop the affected work rather than fabricating results or weakening acceptance criteria.
+### 1. Architectural Boundaries and Engineering Principles
 
-### Slice 1 — Harness Foundation, Architecture, and Evidence Collection
+Enforce the following five-layer Clean Test Architecture:
 
-Establish the black-box test infrastructure before implementing the five WebRTC acceptance gates.
+- `harness-app/`: Black-box browser application built with Vite and TypeScript, using the exact pinned version of the official `livekit-client`.
+- `src/domain/`: Framework-independent domain models, gate states, evidence schemas, and test-result semantics.
+- `src/controllers/`: Controllers and orchestration abstractions for token creation, participant lifecycle, browser interactions, and WebRTC statistics collection.
+- `src/reporters/`: Evidence collection, report generation, status aggregation, and diagnostic output.
+- `tests/`: Playwright gate specifications and reusable test fixtures.
 
-1. Implement the harness using the following five-layer architecture, adapting internal module boundaries only when justified and documented:
-   - `harness-app/`: Vite + TypeScript browser application using the exact pinned version of the official `livekit-client`.
-   - `src/domain/`: Framework-independent domain models, gate statuses, evidence contracts, and reporting rules.
-   - `src/controllers/`: `TokenFactory`, `ParticipantClientController`, and other necessary orchestration components.
-   - `src/reporters/`: `EvidenceRecorder` and deterministic evidence-report generation.
-   - `tests/`: Playwright specifications, fixtures, and shared test utilities.
+Keep these layers logically separated and enforce dependency direction: domain logic must not depend on Playwright, browser APIs, infrastructure, or reporting implementations. Use dependency inversion where appropriate and inject external dependencies through explicit interfaces.
 
-2. Implement the following components:
-   - `TokenFactory`: Obtain or generate valid test credentials using the actual authentication mechanism supported by the existing services. Never hardcode production secrets or assume an undocumented token-generation API.
-   - `ParticipantClientController`: Encapsulate browser participant lifecycle, interactions with the unmodified official SDK, media publication/subscription, and `RTCPeerConnection.getStats()` extraction. Use public SDK APIs where possible; if lower-level instrumentation is necessary, document its mechanism and limitations.
-   - `EvidenceRecorder`: Produce `test-results/evidence-report.json` with the pinned SDK version, browser version, per-gate status, execution timestamps, relevant signaling traces, RTP statistics, failure diagnostics, and artifact references where available.
-   - `docker-compose.yml`: Orchestrate `sfu-media-node`, `signaling-coordinator`, and any additional test-only dependencies genuinely required by the existing architecture. Reuse existing service configuration and avoid duplicating production business logic in the harness.
+Apply SOLID principles, especially SRP, OCP, and DIP. Avoid unnecessary abstractions, speculative extensibility, duplicated logic, global mutable state, and business logic embedded in Playwright specifications.
 
-3. Define a stable evidence schema and enforce the exact statuses:
-   - `PASSED`: The gate's complete acceptance criteria were executed and satisfied.
-   - `FAILED`: The gate ran and one or more acceptance criteria failed.
-   - `BLOCKED`: The gate could not execute because a prerequisite gate or required dependency failed.
-   - `NOT_RUN`: The gate was not executed and was not established to be blocked by a failed prerequisite.
+Use the existing repository conventions where compatible with these requirements. If the repository's structure conflicts with the proposed architecture, document the conflict and propose the smallest justified change before proceeding.
 
-   Missing evidence, skipped execution, or unavailable services must never be represented as `PASSED`.
+### 2. Slice 1 — Harness Foundation, Controllers, and Evidence Infrastructure
 
-4. Configure Playwright for deterministic, sequential gate execution. Use serial execution or an explicitly implemented dependency-aware orchestration mechanism, with no concurrent execution of dependent gates. Ensure that a failure in an earlier gate marks downstream dependent gates `BLOCKED` in the evidence report rather than misrepresenting them as independently failed. Preserve the original failure and diagnostics.
+Implement only the foundational harness and its supporting infrastructure.
 
-5. Establish baseline validation:
-   - Verify the exact installed and locked `livekit-client` version against the intended compatibility target.
-   - Validate TypeScript using `tsc --noEmit`.
-   - Verify harness startup, service health checks, evidence schema validation, and deterministic report generation.
-   - Test the status-classification and dependency-propagation logic with unit tests, including failure and interrupted-run scenarios.
+Required deliverables:
 
-**Slice 1 acceptance criteria:** The harness starts, the actual service dependencies can be orchestrated and health-checked, the evidence report is generated and schema-valid, gate statuses are classified correctly, and type-checking succeeds.
+1. `harness-app/`: A Vite + TypeScript browser application that imports the official, unmodified `livekit-client` package at the exact version pinned in the repository or explicitly approved during planning.
+2. `src/domain/`: Typed gate status definitions, evidence-report models, and validation rules.
+3. `src/controllers/`:
+   - `TokenFactory`: Creates or obtains valid test credentials through an explicitly defined, configurable test-token mechanism. Never embed production credentials or secrets in browser code.
+   - `ParticipantClientController`: Encapsulates browser participant interactions, publication/subscription operations, lifecycle management, and WebRTC `getStats()` extraction.
+4. `src/reporters/`:
+   - `EvidenceRecorder`: Collects execution evidence and generates `test-results/evidence-report.json`.
+   - Report aggregation must preserve the exact status of every gate and distinguish test execution failures from infrastructure failures.
+5. `docker-compose.yml`: Orchestrates `sfu-media-node`, `signaling-coordinator`, and any additional dependencies that are genuinely required for the integration tests. Reuse existing service definitions where possible instead of creating competing configurations.
+6. Playwright configuration, reusable fixtures, deterministic test setup, and cleanup procedures.
 
-Do not begin Slice 2 until these criteria are verified. If the actual services are not yet capable of satisfying the initial connection test, report that limitation and identify the minimum prerequisite work required.
+The evidence report must record, at minimum:
 
-### Slice 2 — Gates 1 and 2: Connection and Real Bidirectional RTP
+- Exact pinned `livekit-client` version.
+- Actual browser name and version used by the run.
+- Execution timestamps and overall run status.
+- Individual status and diagnostic information for every gate.
+- Relevant signaling trace logs, with secrets and sensitive payloads redacted.
+- Relevant RTP `getStats()` counters and observations.
+- Explicit reasons for blocked, skipped, or not-run gates.
 
-Implement and execute the first two acceptance gates against the running `sfu-media-node` and `signaling-coordinator`, using the unmodified official `livekit-client`.
+Use the following exact gate statuses:
 
-**Gate 1 — `01-connection.spec.ts`**
-- Connect using the actual `/rtc` signaling endpoint and the verified authentication mechanism.
-- Complete the real Join flow and verify the expected participant/session state.
-- Capture signaling traces and relevant diagnostics without logging secrets.
-- Assert the actual protocol behavior instead of mocking the signaling or media path.
+- `PASSED`: The gate executed against the running services and all its acceptance criteria passed.
+- `FAILED`: The gate executed and one or more acceptance criteria failed.
+- `BLOCKED`: The gate could not execute because a required prerequisite or upstream gate failed.
+- `NOT_RUN`: The gate was not attempted in the current execution, including gates not yet reached in a partial run.
 
-**Gate 2 — `02-bidirectional-rtp.spec.ts`**
-- Connect two independent browser participants using the official SDK.
-- Verify that both participants can publish and receive real audio/video media.
-- Collect relevant `getStats()` samples and establish that the expected send/receive byte counters increase above zero during the test.
-- Verify remote video rendering through nonzero video dimensions and appropriate media-flow evidence.
-- Distinguish successful signaling and SDP negotiation from actual media delivery. Do not accept a successful Join as proof of RTP functionality.
+Do not infer `PASSED` from successful compilation, mocked responses, static inspection, or service startup alone.
 
-Use appropriate browser permissions, deterministic test media where necessary, bounded waits, and explicit cleanup. Ensure the evidence includes the relevant before/after counters, participant roles, and failure diagnostics without introducing high-cardinality metric labels.
+**Slice 1 acceptance criteria:**
 
-After implementation:
-1. Run the tests against the running services.
-2. Run `tsc --noEmit` and the applicable unit tests.
-3. Validate the evidence report and inspect actual test artifacts.
-4. Report exact commands, exit codes, and gate outcomes.
+- The application builds and TypeScript type-checking succeeds.
+- The exact SDK version is verifiably pinned in the package manifest and lockfile.
+- The services can be started using the documented Compose workflow, subject to required external configuration.
+- The evidence-report schema and reporter are unit-tested.
+- A controlled test run can generate a valid evidence report, including accurate statuses for gates that have not yet run.
+- No real media connectivity or downstream gate is claimed to have passed at this stage.
 
-**Slice 2 acceptance criteria:** Gate 1 proves the real Join flow; Gate 2 proves bidirectional media delivery with verified statistics and rendered video. Both gates must pass before Slice 3 begins. If either gate fails, stop progression, diagnose the failure, and report downstream gates as `BLOCKED` when their prerequisites have not been met.
+Stop after Slice 1 and report the actual results. Proceed only when its acceptance criteria are satisfied.
 
-### Slice 3 — Gates 3, 4, and 5: Negotiation, Simulcast, and ICE Recovery
+### 3. Slice 2 — Gate 1: Connection and Gate 2: Bidirectional RTP
 
-Implement these gates only after Slice 2 has passed.
+Implement and execute only Gates 1 and 2 after Slice 1 has been verified.
 
-**Gate 3 — `03-concurrency-glare.spec.ts`**
-- Exercise concurrent publish/subscribe operations and participant churn during active negotiation.
-- Verify that the system remains consistent under overlapping operations.
-- Assert observable session, transport, and media state invariants; detect stuck negotiation, duplicate or divergent state, unexpected disconnections, and unrecovered media.
-- Use bounded, repeatable concurrency scenarios and capture diagnostics when an invariant fails.
+#### Gate 1 — `01-connection.spec.ts`
 
-**Gate 4 — `04-simulcast-layers.spec.ts`**
+Acceptance criteria:
 
-Implement and report two distinct subchecks:
+- An unmodified official `livekit-client` connects to the signaling coordinator through the intended `/rtc` endpoint.
+- The client completes the expected connection and Join protocol exchange.
+- The participant reaches the expected joined state.
+- The evidence report contains the actual SDK version, relevant signaling events, execution outcome, and failure diagnostics.
 
-A. **SFU layer-selection capability**
-- Verify that the media node can expose and select an appropriate simulcast layer when the publisher and negotiated media configuration support it.
-- Validate the selected-layer behavior using observable server/client evidence rather than assuming that a successful subscription proves layer switching.
+Do not substitute a custom client, mocked protocol exchange, or modified SDK for the official client.
 
-B. **Official LiveKit quality-update mapping**
-- Verify that the exact pinned official SDK's quality-update behavior is correctly mapped by the signaling implementation.
-- Confirm the actual message format, direction, and semantics against the SDK version and existing protocol implementation.
-- Do not assume that native LiveKit signaling messages are interchangeable with the custom signaling protocol. If the required mapping is unsupported or the protocol contract is unknown, document the gap and stop short of claiming compatibility.
+#### Gate 2 — `02-bidirectional-rtp.spec.ts`
 
-Record the outcome of each subcheck independently. The overall gate passes only when both subchecks pass.
+Acceptance criteria:
 
-**Gate 5 — `05-ice-restart.spec.ts`**
-- Trigger or simulate an actual supported ICE restart scenario.
-- Verify that signaling and transport state recover as expected.
-- Confirm that media flow resumes using observable RTP statistics and remote media evidence.
-- Distinguish a completed ICE restart from an ordinary reconnect or a new session.
+- Two independent browser clients connect to the test room using the official, unmodified `livekit-client`.
+- One client publishes audio and video, and the other successfully receives and renders them.
+- Reverse-direction publication and reception are verified as well.
+- WebRTC `getStats()` provides relevant evidence of actual media transfer, including positive `bytesSent` and `bytesReceived` deltas where applicable.
+- Received video has non-zero rendered dimensions and demonstrable frame progression.
+- Evidence distinguishes successful signaling from actual media-plane connectivity.
 
-After implementation, execute the complete gate suite against the running services, rerun type-checking and relevant unit tests, validate all evidence, and inspect the actual logs and browser artifacts.
+Use deterministic browser media fixtures or explicitly configured test media sources where practical. Do not interpret a non-zero cumulative counter from an unrelated connection or a previous run as proof of successful bidirectional RTP.
 
-**Slice 3 acceptance criteria:** Gates 3, 4A, 4B, and 5 satisfy their explicit behavioral assertions. The final evidence report preserves each result and any dependency-based blocking status.
+#### Sequential Gate Dependencies
 
-### Mandatory Cross-Cutting Requirements — Every Slice
+Configure Playwright using an explicit sequential dependency strategy, such as a supported serial suite or a project dependency graph, with reliable failure propagation.
 
-Apply the appropriate installed skills for Rust, Go, frontend, testing, and QoE observability, including the project's applicable observability skills (`rust-observability-otel`, `go-observability-otel`, `test-observability-qoe-correlation`, and `frontend-observability-qoe-rum`).
-1. **Configuration:** Make supported logging, tracing, sampling, and metrics behavior configurable through documented `OBS_*` environment variables. Validate configuration and define safe defaults. Do not claim a setting is configurable unless it actually controls the corresponding behavior.
-2. **Observability:** Support OpenTelemetry/W3C `traceparent` propagation where appropriate, structured JSON logs, and the applicable `/metrics` or QoE evidence interfaces. Correlate browser, signaling, and media-node diagnostics without assuming trace context automatically propagates across WebRTC.
-3. **Hot-path protection:** Never emit a span or log entry per RTP packet or for every unthrottled audio-level tick. Use bounded sampling, aggregation, and appropriate instrumentation.
-4. **Metric cardinality:** Never use `room_id`, `peer_id`, `transport_id`, or `request_id` as Prometheus/VictoriaMetrics labels. Keep necessary identifiers in appropriately redacted structured logs, trace attributes, or test evidence.
-5. **Security:** Never log raw JWT `access_token`, `ice_pwd`, or other secrets. Log raw SDP only when `OBS_LOG_RAW_SDP=true` and the effective logging level is `debug`, subject to appropriate access controls and retention safeguards. Redact sensitive fields from errors, traces, test artifacts, and evidence reports as well.
-6. **Engineering quality:** Apply SRP, OCP, DIP, Clean Test Architecture, and TDD. Prefer focused unit tests for domain logic, integration tests for component boundaries, and black-box Playwright tests for externally observable behavior. Avoid unnecessary abstractions, duplicate implementations, test-only bypasses, and weakening assertions to make the suite pass.
+- Gate 2 must not run if Gate 1 has failed or has not been satisfied.
+- Gates 3–5 must be recorded as `BLOCKED` when an unmet prerequisite prevents their execution.
+- A gate must never be marked `PASSED` merely because it was skipped.
+- Preserve independent diagnostic information about the root failure.
+- Ensure that retries, worker restarts, test filtering, and partial runs cannot accidentally bypass prerequisites or produce misleading statuses.
 
-### Completion and Reporting Requirements
+Verify the behavior with a deliberate upstream failure and confirm that the resulting evidence report records the correct statuses.
 
-At the end of every slice, provide:
-- Changed files and their responsibilities.
-- Architectural decisions and how Clean Test Architecture/SOLID principles were applied.
-- Skills and relevant project rules followed.
-- Exact commands executed, exit codes, and actual results.
-- A clear distinction between passed, failed, blocked, and not-run checks.
-- Evidence-report location and validation results.
-- Known limitations, unresolved assumptions, and outstanding blockers.
+**Slice 2 acceptance criteria:**
 
-At final completion, provide a consolidated report covering all five gates and both Gate 4 subchecks, with results derived from actual execution. Do not mark a gate as passed merely because its implementation exists, its TypeScript compiles, a mock succeeds, or its prerequisite is assumed to work.
+- TypeScript type-checking succeeds.
+- Gates 1 and 2 execute against the running services.
+- Their acceptance criteria are verified using actual browser and media evidence.
+- The failure-propagation behavior is tested.
+- Evidence is written to `test-results/evidence-report.json`.
 
-Stop at each slice boundary and present the evidence before proceeding to the next slice. Do not silently skip a failed acceptance criterion or continue into dependent work without explicitly reporting the blocker.
+Stop after Slice 2 and report the actual results. Do not implement Slice 3 until Slice 2 is verified.
+
+### 4. Slice 3 — Gates 3, 4, and 5
+
+Implement these gates only after the earlier slices have passed their required acceptance criteria.
+
+#### Gate 3 — `03-concurrency-glare.spec.ts`
+
+Verify concurrent publish/subscribe operations, overlapping negotiation attempts, and participant churn during active negotiation.
+
+Acceptance criteria:
+
+- Concurrent operations produce no unhandled protocol errors or unrecoverable state divergence.
+- Participant, publication, and subscription states converge to the expected values.
+- Any rejected or retried operation follows the protocol's defined behavior.
+- The test uses deterministic coordination and bounded timeouts rather than arbitrary sleeps wherever practical.
+- The report contains sufficient evidence to diagnose failures and distinguish expected contention from genuine state corruption.
+
+#### Gate 4 — `04-simulcast-layers.spec.ts`
+
+Implement and report two independent checks:
+
+**A. SFU layer-selection capability**
+
+- Publish a simulcast video track with verifiable spatial layers.
+- Verify that the SFU supports the intended layer-selection operation.
+- Verify the requested layer and the effective forwarding behavior using appropriate server-side evidence and receiver-side media statistics or frame observations.
+- Distinguish an unsupported capability from a failed implementation or an inconclusive observation.
+
+**B. Official LiveKit quality-update message mapping**
+
+- Verify how the exact pinned official `livekit-client` represents and sends the relevant quality or subscription-setting update.
+- Verify that the signaling coordinator correctly interprets and maps that message to the SFU's corresponding layer-selection operation.
+- Confirm the resulting behavior, rather than merely asserting that a message was emitted.
+
+Do not assume that LiveKit's protocol messages, quality settings, and mediasoup layer-selection APIs are semantically identical. Inspect the pinned SDK and actual protocol behavior before implementing the mapping.
+
+Report the two checks separately so that partial success cannot be misrepresented as a fully passed Gate 4.
+
+#### Gate 5 — `05-ice-restart.spec.ts`
+
+Verify session and media recovery across an ICE restart.
+
+Acceptance criteria:
+
+- Trigger a real ICE restart through the supported client and signaling flow.
+- Verify the expected signaling and ICE state transitions.
+- Verify that media resumes or continues according to the intended recovery semantics.
+- Use `getStats()`, connection state, and receiver-side observations to establish recovery.
+- Distinguish successful signaling from successful media recovery.
+- Include bounded timeouts, cleanup, and failure diagnostics.
+
+Do not treat a successful `restartIce()` invocation or a return to `connected` as sufficient proof of media recovery.
+
+**Slice 3 acceptance criteria:**
+
+- TypeScript type-checking succeeds.
+- Each gate executes against the running services and is evaluated against its own explicit acceptance criteria.
+- Gate 4's two checks are separately represented in the evidence.
+- All gate statuses accurately reflect actual execution.
+- Failure propagation and the final evidence report are verified.
+- All resources created by the tests are cleaned up reliably.
+
+### 5. Mandatory Observability, Security, and Media Hot-Path Requirements
+
+Apply observability requirements from the relevant repository skills across every slice. Observability must be designed into the harness and test infrastructure from Slice 1, not postponed until the final phase.
+
+#### Configuration
+
+Make applicable logging, tracing, sampling, and metrics behavior configurable through documented `OBS_*` environment variables.
+
+Provide explicit configuration for:
+
+- Log level and structured logging.
+- Trace enablement, sampling, and propagation.
+- W3C Trace Context (`traceparent`) propagation where applicable.
+- Metrics enablement and endpoint configuration, including `/metrics` where supported by the service.
+- QoE snapshot collection and its sampling or collection interval.
+- Raw SDP logging, disabled by default.
+
+Validate configuration at startup and document defaults. Do not claim that all observability is configurable unless the implemented behavior is actually controlled by these settings.
+
+#### Cardinality and Media Hot Path
+
+- Never use `room_id`, `peer_id`, `transport_id`, or `request_id` as Prometheus or VictoriaMetrics metric labels.
+- Keep high-cardinality identifiers in structured logs and trace attributes only when justified and appropriately controlled.
+- Never emit a log entry or create a trace span for every RTP packet or every unthrottled audio-level event.
+- Use bounded-cardinality metrics, aggregation, sampling, and throttled snapshots.
+- Avoid synchronous logging, expensive serialization, and blocking I/O on media-critical paths.
+
+#### Security and Redaction
+
+- Never log raw JWT `access_token`, ICE passwords (`ice_pwd`), credentials, private keys, or other secrets.
+- Redact sensitive values from signaling traces, exception messages, test artifacts, and evidence reports.
+- Raw SDP may be recorded only when `OBS_LOG_RAW_SDP=true` and the effective log level is `debug`, subject to the project's security policy.
+- Keep credentials out of frontend bundles and client-visible configuration.
+- Ensure test evidence is safe to retain and share.
+
+Where the harness cannot directly observe a service's internal media-path behavior, document the boundary and use the service's supported telemetry rather than claiming unverified guarantees.
+
+### 6. Verification and Reporting After Every Slice
+
+At the end of each slice:
+
+1. Run the applicable formatting, linting, and TypeScript type-checking commands, including `tsc --noEmit` where supported by the repository.
+2. Run relevant unit and integration tests.
+3. Execute applicable Playwright gates against the actual running services.
+4. Verify evidence-report generation, gate statuses, and failure propagation.
+5. Inspect logs and artifacts for leaked credentials, misleading statuses, and high-cardinality metric labels.
+6. Record the exact commands executed, exit codes, and observed results.
+7. List changed files, key design decisions, unresolved assumptions, known limitations, and the acceptance criteria that remain unmet.
+
+If a prerequisite cannot be satisfied because of missing infrastructure, credentials, unsupported protocol behavior, or an environmental limitation, stop the dependent work, record the blocker, and request only the information necessary to proceed.
+
+Never fabricate test results, service behavior, SDK compatibility, metrics, or completion status.
+
+**Execution rule:** Complete and verify Slice 1 before Slice 2; complete and verify Slice 2 before Slice 3. Do not silently skip a failed acceptance criterion. Any deviation from this sequence requires an explicit explanation and approval.
 
 Before reporting completion:
 1. List changed files, explain how Clean Test Architecture and SOLID principles were applied, and document important design decisions.
@@ -150,7 +248,7 @@ Before reporting completion:
 5. Never claim a test passed unless it actually ran against the running services and passed.
 
 - **Observability, Logging, APM & Metrics Requirement (Mandatory across all slices):**
-  Read and strictly apply the project's observability skill (`rust-observability-otel`, `go-observability-otel`, `test-observability-qoe-correlation`, or `frontend-observability-qoe-rum`).
+  Read and strictly apply the project's observability skills (.agents/skills/*/SKILL.md).
   1. Make all logging, tracing (OpenTelemetry/W3C `traceparent`), and metrics (`/metrics` for VictoriaMetrics or QoE snapshots) 100% configurable via `OBS_*` environment variables so only configured levels and sampled events are recorded.
   2. Protect the media hot-path (never log or create spans per RTP packet or unthrottled audio level tick).
   3. Enforce strict metric cardinality guards (never put `room_id`, `peer_id`, `transport_id`, or `request_id` in Prometheus/VictoriaMetrics labels; keep them only in structured JSON logs and trace span attributes).
