@@ -23,7 +23,7 @@ Before reporting completion:
 5. Never claim a test passed unless it actually ran and passed.
 
 - **Observability, Logging, APM & Metrics Requirement (Mandatory across all slices):**
-  Read and strictly apply the project's observability skill (`rust-observability-otel`, `go-observability-otel`, `test-observability-qoe-correlation`, or `frontend-observability-qoe-rum`).
+  Read and strictly apply the project's observability skills (.agents/skills/*/SKILL.md).
   1. Make all logging, tracing (OpenTelemetry/W3C `traceparent`), and metrics (`/metrics` for VictoriaMetrics or QoE snapshots) 100% configurable via `OBS_*` environment variables so only configured levels and sampled events are recorded.
   2. Protect the media hot-path (never log or create spans per RTP packet or unthrottled audio level tick).
   3. Enforce strict metric cardinality guards (never put `room_id`, `peer_id`, `transport_id`, or `request_id` in Prometheus/VictoriaMetrics labels; keep them only in structured JSON logs and trace span attributes).
