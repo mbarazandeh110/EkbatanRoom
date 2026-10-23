@@ -191,3 +191,56 @@ STATUS: IMPLEMENTED
      - `TestLiveKitWSHandler_RtcV1Path` in `internal/adapters/inbound/livekit/ws_handler_test.go`
    - Verification: All 22 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-007
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Heartbeat Protocol] Correct PingTimeout and PingInterval in SendJoinResponse
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In `internal/adapters/inbound/livekit/responder.go` lines 99-100:
+     ```go
+     PingTimeout:  10,
+     PingInterval: 20,
+     ```
+   - In official `livekit-client`, upon receiving `JoinResponse`:
+     - `this.pingTimeoutDuration = joinResponse.pingTimeout;` (10 seconds)
+     - `this.pingIntervalDuration = joinResponse.pingInterval;` (20 seconds)
+     - `this.resetPingTimeout()` starts a timer to abort the connection after 10 seconds if no pong is received.
+     - `this.startPingInterval()` schedules the client to send a ping every 20 seconds.
+   - Because `PingTimeout` (10s) is smaller than `PingInterval` (20s), the timeout timer fires at exactly 10 seconds, before the first scheduled ping (at 20s) is ever sent.
+   - The client aborts the connection with error:
+     `[GATE1 LOG] warning ping timeout triggered. last pong received at: ...`
+     `[GATE1 LOG] info websocket connection closed: ping timeout`
+     `[GATE1 LOG] warning signal disconnected`
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - `PingTimeout` MUST be greater than `PingInterval` (e.g., `PingInterval: 10`, `PingTimeout: 20` or `PingInterval: 10`, `PingTimeout: 30`).
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-008
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Protocol Compliance | Correction of REQ-006] Revert /rtc/ wildcard routing so /rtc/v1 returns 404
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In the LiveKit client-server protocol specification:
+     - `/rtc/v1` is the "Fast Connect" protocol where the initial SDP offer is bundled in the HTTP URL query parameter `join_request=...` (protobuf `WrappedJoinRequest`).
+     - If a server accepts `/rtc/v1` WebSocket connections, `livekit-client` expects the server to decode `join_request` from URL parameters and return the answer in `JoinResponse.Answer`. Because the client already sent its offer in the URL, it does NOT send a `SignalRequest_Offer` over the WebSocket.
+     - `signaling-coordinator` does not implement `WrappedJoinRequest` URL parameter decoding; it implements standard v0 LiveKit signaling where the offer is exchanged as `SignalRequest_Offer` / `SignalResponse_Answer` over the WebSocket.
+     - When `livekit-client` encounters a 404 on `/rtc/v1`, it automatically and cleanly falls back to `/rtc` (standard v0 WebSocket signaling) and sends `SignalRequest_Offer` over the WebSocket as expected.
+     - By adding `mux.Handle("/rtc/", liveKitHandler)` in REQ-006, `/rtc/v1` returned 200, which tricked `livekit-client` into assuming `/rtc/v1` Fast Connect was supported, preventing it from sending its SDP offer over the WebSocket.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - Remove `mux.Handle("/rtc/", liveKitHandler)` from `cmd/coordinator/main.go` (and remove the associated `/rtc/v1` test), leaving only `mux.Handle("/rtc", liveKitHandler)`.
+   - Returning 404 on `/rtc/v1` will cause `livekit-client` to immediately fall back to `/rtc` and execute the full WebSocket signaling exchange.
+
+===================================================================
