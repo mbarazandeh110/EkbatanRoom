@@ -470,3 +470,86 @@ STATUS: IMPLEMENTED
      - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Updated `TestSDPMapper_ParsePublisherOffer` with audio channels and mid assertions, and added `TestSDPMapper_AudioChannelsDefaultFallback`.
    - Verification: All 30 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-013
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: PROPOSED
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Inter-Service Contract] Include headerExtensions and rtcp fields in rtp_parameters_json
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When Alice publishes an audio or video track, `sdp_mapper.go` constructs `RtpParametersJSON`:
+     ```go
+     rtpParams := map[string]interface{}{
+         "codecs": []map[string]interface{}{
+             codecEntry,
+         },
+         "encodings": []map[string]interface{}{
+             {
+                 "ssrc": ssrc,
+             },
+         },
+     }
+     ```
+   - In `sfu-media-node` (Rust / mediasoup), `parse_rtp_parameters` deserializes the JSON string into `mediasoup::types::RtpParameters`.
+   - The Rust definition of `mediasoup_types::rtp_parameters::RtpParameters` is:
+     ```rust
+     #[derive(Debug, Default, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
+     #[serde(rename_all = "camelCase")]
+     pub struct RtpParameters {
+         #[serde(skip_serializing_if = "Option::is_none")]
+         pub mid: Option<String>,
+         pub codecs: Vec<RtpCodecParameters>,
+         pub header_extensions: Vec<RtpHeaderExtensionParameters>, // REQUIRED: No #[serde(default)]!
+         pub encodings: Vec<RtpEncodingParameters>,
+         pub rtcp: RtcpParameters,                                // REQUIRED: No #[serde(default)]!
+         #[serde(skip_serializing_if = "Option::is_none")]
+         pub msid: Option<String>,
+     }
+     ```
+   - Furthermore, `RtcpParameters` is defined as:
+     ```rust
+     #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Deserialize, Serialize)]
+     #[serde(rename_all = "camelCase")]
+     pub struct RtcpParameters {
+         #[serde(skip_serializing_if = "Option::is_none")]
+         pub cname: Option<String>,
+         pub reduced_size: bool, // REQUIRED: No #[serde(default)]!
+     }
+     ```
+   - Because `headerExtensions` and `rtcp` are omitted from `rtpParams` in `sdp_mapper.go`, `serde_json` fails to deserialize `RtpParameters` with:
+     `livekit publish tracks error: failed to produce track audio: grpc produce failed (request_id=...): rpc error: code = InvalidArgument desc = Invalid rtp_parameters_json: missing field `headerExtensions` at line 1 column 131`
+   - Because `Produce` fails, `PublishTracks` fails, dropping the offer. Alice never receives the SDP answer for `offer_id: 2`, causing `02-bidirectional-rtp.spec.ts` to time out.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (around line 204), include `headerExtensions` and `rtcp` in `rtpParams`:
+     ```go
+     rtcpParams := map[string]interface{}{
+         "reducedSize": true,
+     }
+     if cname != "" {
+         rtcpParams["cname"] = cname
+     }
+
+     rtpParams := map[string]interface{}{
+         "codecs": []map[string]interface{}{
+             codecEntry,
+         },
+         "headerExtensions": []map[string]interface{}{},
+         "encodings": []map[string]interface{}{
+             {
+                 "ssrc": ssrc,
+             },
+         },
+         "rtcp": rtcpParams,
+     }
+     if mid != "" {
+         rtpParams["mid"] = mid
+     }
+     ```
+   - This satisfies the mediasoup `RtpParameters` deserialization contract on `sfu-media-node`.
+
+===================================================================
