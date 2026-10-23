@@ -389,13 +389,12 @@ func TestLiveKitResponder_SubscriberOfferSequenceAndMid(t *testing.T) {
 	}
 }
 
-func TestLiveKitWSHandler_RtcV1Path(t *testing.T) {
+func TestLiveKitWSHandler_RtcV1Returns404PerREQ008(t *testing.T) {
 	coord := &mockCoordinator{}
 	handler := livekit.NewLiveKitWSHandler(coord)
 
 	mux := http.NewServeMux()
 	mux.Handle("/rtc", handler)
-	mux.Handle("/rtc/", handler)
 
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -403,32 +402,75 @@ func TestLiveKitWSHandler_RtcV1Path(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc/v1?room=conference-v1&identity=bob&name=Bob"
 
 	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
-	conn, resp, err := dialer.Dial(wsURL, nil)
+	_, resp, err := dialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatalf("expected dial to /rtc/v1 to fail with HTTP 404, but dial succeeded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusNotFound {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("expected HTTP 404 Not Found on /rtc/v1 to trigger livekit-client fallback, got: %d (err: %v)", status, err)
+	}
+}
+
+func TestLiveKitResponder_PingIntervalAndTimeoutPerREQ007(t *testing.T) {
+	// Custom config test
+	customCfg := livekit.ResponderConfig{
+		PingInterval:  12,
+		PingTimeout:   35,
+		ServerVersion: "1.54.0-test",
+	}
+
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord, customCfg)
+
+	mux := http.NewServeMux()
+	mux.Handle("/rtc", handler)
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc?room=conf-ping&identity=alice&name=Alice"
+
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
-		t.Fatalf("WebSocket dial to /rtc/v1 failed: %v", err)
+		t.Fatalf("failed to dial /rtc: %v", err)
 	}
 	defer conn.Close()
-
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("expected 101 Switching Protocols on /rtc/v1, got %d", resp.StatusCode)
-	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	msgType, data, err := conn.ReadMessage()
 	if err != nil {
-		t.Fatalf("failed to read join message: %v", err)
+		t.Fatalf("failed to read message: %v", err)
 	}
 	if msgType != websocket.BinaryMessage {
-		t.Fatalf("expected binary message, got %d", msgType)
+		t.Fatalf("expected binary message")
 	}
 
 	var signalResp livekitproto.SignalResponse
 	if err := proto.Unmarshal(data, &signalResp); err != nil {
-		t.Fatalf("failed to unmarshal signal response: %v", err)
+		t.Fatalf("failed to unmarshal join response: %v", err)
 	}
 
 	join := signalResp.GetJoin()
-	if join == nil || join.Room.Name != "conference-v1" {
-		t.Fatalf("expected Join response with room conference-v1, got %+v", join)
+	if join == nil {
+		t.Fatalf("expected join response, got nil")
+	}
+
+	if join.PingInterval != 12 {
+		t.Fatalf("expected PingInterval 12, got %d", join.PingInterval)
+	}
+	if join.PingTimeout != 35 {
+		t.Fatalf("expected PingTimeout 35, got %d", join.PingTimeout)
+	}
+	if join.PingTimeout <= join.PingInterval {
+		t.Fatalf("PingTimeout (%d) must be greater than PingInterval (%d) per REQ-007", join.PingTimeout, join.PingInterval)
+	}
+	if join.ServerVersion != "1.54.0-test" {
+		t.Fatalf("expected server version 1.54.0-test, got %s", join.ServerVersion)
 	}
 }
+

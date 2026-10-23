@@ -8,13 +8,13 @@ import (
 
 // Config encapsulates all observability settings configured via OBS_* environment variables.
 type Config struct {
-	LogLevel         string  // OBS_LOG_LEVEL: debug, info, warn, error (default: info)
-	LogFormat        string  // OBS_LOG_FORMAT: json, text (default: json)
-	LogRawSDP        bool    // OBS_LOG_RAW_SDP: bool (default: false)
-	TracingEnabled   bool    // OBS_TRACING_ENABLED: bool (default: false)
-	TraceSampleRate  float64 // OBS_TRACE_SAMPLE_RATE: float (default: 1.0)
-	OtlpEndpoint     string  // OBS_OTLP_ENDPOINT: string (e.g. localhost:4317)
-	MetricsEnabled   bool    // OBS_METRICS_ENABLED: bool (default: true)
+	LogLevel        string  `json:"log_level" yaml:"log_level"`
+	LogFormat       string  `json:"log_format" yaml:"log_format"`
+	LogRawSDP       bool    `json:"log_raw_sdp" yaml:"log_raw_sdp"`
+	TracingEnabled  bool    `json:"tracing_enabled" yaml:"tracing_enabled"`
+	TraceSampleRate float64 `json:"trace_sample_rate" yaml:"trace_sample_rate"`
+	OtlpEndpoint    string  `json:"otlp_endpoint" yaml:"otlp_endpoint"`
+	MetricsEnabled  bool    `json:"metrics_enabled" yaml:"metrics_enabled"`
 }
 
 func LoadConfigFromEnv() Config {

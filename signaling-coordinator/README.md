@@ -146,19 +146,33 @@ signaling-coordinator/
 
 ## Configuration
 
-All configuration is provided via environment variables (Twelve-Factor App):
+The coordinator follows **Twelve-Factor App (Factor III: Config)** principles. Settings are loaded hierarchically:
+`Defaults -> YAML Config File -> Environment Variables -> CLI Flags`.
 
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `7880` | HTTP/WebSocket signaling server port |
-| `SFU_GRPC_ADDR` | `127.0.0.1:50051` | Target address of `sfu-media-node` gRPC server |
-| `OBS_LOG_LEVEL` | `info` | Minimum log level (`debug`, `info`, `warn`, `error`) |
-| `OBS_LOG_FORMAT` | `json` | Log output format (`json`, `text`) |
-| `OBS_LOG_RAW_SDP` | `false` | When `true` AND log level is `debug`, logs raw SDP offers/answers |
-| `OBS_TRACING_ENABLED` | `false` | Enable OpenTelemetry distributed tracing |
-| `OBS_TRACE_SAMPLE_RATE` | `1.0` | Head-based trace sampling ratio (`0.0` to `1.0`) |
-| `OBS_OTLP_ENDPOINT` | `""` | OTLP gRPC collector endpoint (e.g. `otel-collector:4317`) |
-| `OBS_METRICS_ENABLED` | `true` | Expose VictoriaMetrics / Prometheus metrics on `/metrics` |
+A template configuration is provided in [`config.example.yaml`](config.example.yaml).
+
+### Configuration Options & Environment Variables
+
+| Setting | YAML Path | Environment Variable | Default | Description |
+|---|---|---|---|---|
+| Config File | — | `CONFIG_FILE` | `config.yaml` (auto-detected) | Path to YAML configuration file |
+| Server Port | `server.port` | `PORT` / `CONFIG_SERVER_PORT` | `7880` | HTTP/WebSocket signaling server port |
+| Read Timeout | `server.read_timeout` | `SERVER_READ_TIMEOUT` | `15s` | HTTP server read timeout |
+| Write Timeout | `server.write_timeout` | `SERVER_WRITE_TIMEOUT` | `15s` | HTTP server write timeout |
+| Shutdown Timeout | `server.shutdown_timeout` | `SERVER_SHUTDOWN_TIMEOUT` | `5s` | Graceful shutdown timeout |
+| SFU gRPC Address | `sfu.grpc_addr` | `SFU_GRPC_ADDR` | `127.0.0.1:50051` | Target address of `sfu-media-node` |
+| SFU Request Timeout | `sfu.request_timeout` | `SFU_REQUEST_TIMEOUT` | `5s` | gRPC call deadline timeout |
+| LiveKit Ping Interval | `livekit.ping_interval` | `LIVEKIT_PING_INTERVAL` | `10` | Heartbeat ping interval in seconds |
+| LiveKit Ping Timeout | `livekit.ping_timeout` | `LIVEKIT_PING_TIMEOUT` | `20` | Heartbeat timeout in seconds (must be > interval) |
+| LiveKit Server Version | `livekit.server_version` | `LIVEKIT_SERVER_VERSION` | `1.53.0` | Reported LiveKit server version |
+| ICE Servers | `rtc.ice_servers` | `RTC_ICE_SERVERS` | `stun:stun.l.google.com:19302` | ICE STUN/TURN servers (comma-separated or JSON) |
+| Log Level | `telemetry.log_level` | `OBS_LOG_LEVEL` | `info` | Minimum log level (`debug`, `info`, `warn`, `error`) |
+| Log Format | `telemetry.log_format` | `OBS_LOG_FORMAT` | `json` | Log output format (`json`, `text`) |
+| Log Raw SDP | `telemetry.log_raw_sdp` | `OBS_LOG_RAW_SDP` | `false` | When `true` AND level is `debug`, logs raw SDP |
+| Tracing Enabled | `telemetry.tracing_enabled` | `OBS_TRACING_ENABLED` | `false` | Enable OpenTelemetry distributed tracing |
+| Trace Sample Rate | `telemetry.trace_sample_rate` | `OBS_TRACE_SAMPLE_RATE` | `1.0` | Head-based trace sampling ratio (`0.0` to `1.0`) |
+| OTLP Endpoint | `telemetry.otlp_endpoint` | `OBS_OTLP_ENDPOINT` | `""` | OTLP gRPC collector endpoint (e.g. `127.0.0.1:4317`) |
+| Metrics Enabled | `telemetry.metrics_enabled` | `OBS_METRICS_ENABLED` | `true` | Expose Prometheus/VictoriaMetrics metrics on `/metrics` |
 
 ---
 

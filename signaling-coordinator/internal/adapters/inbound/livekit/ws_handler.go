@@ -31,12 +31,18 @@ var upgrader = websocket.Upgrader{
 // LiveKitWSHandler handles incoming WebSocket connections on /rtc.
 type LiveKitWSHandler struct {
 	coordinator ports.RoomCoordinatorPort
+	cfg         ResponderConfig
 }
 
 // NewLiveKitWSHandler creates a new LiveKit signaling WebSocket handler.
-func NewLiveKitWSHandler(coordinator ports.RoomCoordinatorPort) *LiveKitWSHandler {
+func NewLiveKitWSHandler(coordinator ports.RoomCoordinatorPort, cfgs ...ResponderConfig) *LiveKitWSHandler {
+	cfg := DefaultResponderConfig()
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+	}
 	return &LiveKitWSHandler{
 		coordinator: coordinator,
+		cfg:         cfg,
 	}
 }
 
@@ -81,7 +87,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	telemetry.DefaultMetrics().IncActiveParticipants("livekit")
 	defer telemetry.DefaultMetrics().DecActiveParticipants("livekit")
 
-	responder := NewLiveKitResponder(conn)
+	responder := NewLiveKitResponder(conn, h.cfg)
 	defer responder.Close()
 
 	ctx, cancel := context.WithCancel(ctx)

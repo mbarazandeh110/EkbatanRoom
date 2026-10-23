@@ -195,7 +195,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-007
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -225,7 +225,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-008
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -243,4 +243,29 @@ STATUS: OPEN
    - Remove `mux.Handle("/rtc/", liveKitHandler)` from `cmd/coordinator/main.go` (and remove the associated `/rtc/v1` test), leaving only `mux.Handle("/rtc", liveKitHandler)`.
    - Returning 404 on `/rtc/v1` will cause `livekit-client` to immediately fall back to `/rtc` and execute the full WebSocket signaling exchange.
 
+===================================================================
+6. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-007, REQ-008 & 12-FACTOR CONFIG):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-007]: Introduced `ResponderConfig` (with default `PingInterval: 10`, `PingTimeout: 20`, `ServerVersion: "1.53.0"`) adhering to Constructor Dependency Injection. In `SendJoinResponse`, `PingTimeout` (20s) now safely exceeds `PingInterval` (10s), allowing clients to send periodic heartbeats without triggering false-positive connection aborts.
+     2. [REQ-008]: Removed `/rtc/` subpath pattern registration from `cmd/coordinator/main.go`. Consequently, `/rtc/v1` accurately returns HTTP 404, prompting official `livekit-client` v12 protocol to execute its standard graceful fallback to `/rtc` where WebSocket signaling (`SignalRequest_Offer` / `SignalResponse_Answer`) is performed deterministically.
+     3. [12-Factor Configuration]: Created `internal/config` package supporting complete hierarchical configuration via `config.yaml`, command-line flags, and environment variables (`PORT`, `SFU_GRPC_ADDR`, `SFU_REQUEST_TIMEOUT`, `LIVEKIT_PING_INTERVAL`, `LIVEKIT_PING_TIMEOUT`, `RTC_ICE_SERVERS`, `OBS_*`). Eliminated all hardcoded parameters and added automated validation enforcing `PingTimeout > PingInterval`.
+   - Modified & Created Files:
+     - `internal/config/config.go`: Hierarchical configuration parser (defaults -> YAML -> ENV).
+     - `internal/config/config_test.go`: Unit tests for config loading, validation, and overrides.
+     - `config.yaml` & `config.example.yaml`: Default and documented example configurations.
+     - `internal/adapters/inbound/livekit/responder.go`: Added `ResponderConfig` and corrected heartbeat timers.
+     - `internal/adapters/inbound/livekit/ws_handler.go`: Constructor injection of `ResponderConfig`.
+     - `internal/adapters/inbound/livekit/ws_handler_test.go`: Updated tests to verify 404 on `/rtc/v1` and heartbeat timing.
+     - `internal/domain/models.go`: Added JSON and YAML struct tags to `IceServer`.
+     - `internal/adapters/outbound/telemetry/config.go`: Added JSON and YAML struct tags to `telemetry.Config`.
+     - `cmd/coordinator/main.go`: Integrated `internal/config` and removed `/rtc/` wildcard router registration.
+   - Added Tests:
+     - `TestLiveKitWSHandler_RtcV1Returns404PerREQ008` in `internal/adapters/inbound/livekit/ws_handler_test.go`
+     - `TestLiveKitResponder_PingIntervalAndTimeoutPerREQ007` in `internal/adapters/inbound/livekit/ws_handler_test.go`
+     - `TestConfig_DefaultConfigValid` in `internal/config/config_test.go`
+     - `TestConfig_ValidatePingTimeoutRequirement` in `internal/config/config_test.go`
+     - `TestConfig_LoadFromYAMLFile` in `internal/config/config_test.go`
+     - `TestConfig_EnvOverrides` in `internal/config/config_test.go`
+   - Verification: All 27 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================

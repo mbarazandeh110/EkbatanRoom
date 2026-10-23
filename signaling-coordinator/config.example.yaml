@@ -1,0 +1,37 @@
+# EkbatanRoom Signaling Coordinator Configuration
+# Default configuration adhering to 12-factor principles.
+# All values can be overridden via environment variables or CLI flags.
+
+server:
+  port: "7880"
+  read_timeout: 15s
+  write_timeout: 15s
+  shutdown_timeout: 5s
+
+sfu:
+  grpc_addr: "127.0.0.1:50051"
+  request_timeout: 5s
+
+livekit:
+  # PingInterval in seconds (default: 10)
+  ping_interval: 10
+  # PingTimeout in seconds (must be > ping_interval, default: 20)
+  ping_timeout: 20
+  # Reported LiveKit server version (default: 1.53.0)
+  server_version: "1.53.0"
+
+rtc:
+  ice_servers:
+    - urls:
+        - "stun:stun.l.google.com:19302"
+      username: ""
+      credential: ""
+
+telemetry:
+  log_level: "info"         # debug, info, warn, error
+  log_format: "json"        # json, text
+  log_raw_sdp: false        # only logs raw SDP if log_level is debug
+  tracing_enabled: false
+  trace_sample_rate: 1.0
+  otlp_endpoint: ""         # e.g., "127.0.0.1:4317"
+  metrics_enabled: true     # /metrics endpoint for Prometheus/VictoriaMetrics

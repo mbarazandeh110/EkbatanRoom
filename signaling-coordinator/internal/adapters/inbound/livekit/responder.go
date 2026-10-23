@@ -15,6 +15,22 @@ import (
 
 var _ ports.PeerResponderPort = (*LiveKitResponder)(nil)
 
+// ResponderConfig configures LiveKit protocol parameters sent in JoinResponse.
+type ResponderConfig struct {
+	PingInterval  uint32
+	PingTimeout   uint32
+	ServerVersion string
+}
+
+// DefaultResponderConfig returns recommended default settings matching the LiveKit protocol.
+func DefaultResponderConfig() ResponderConfig {
+	return ResponderConfig{
+		PingInterval:  10,
+		PingTimeout:   20,
+		ServerVersion: "1.53.0",
+	}
+}
+
 // LiveKitResponder handles sending LiveKit protobuf signal responses over a WebSocket connection.
 type LiveKitResponder struct {
 	mu           sync.Mutex
@@ -22,11 +38,17 @@ type LiveKitResponder struct {
 	subTransport *domain.TransportInfo
 	offerSeq     uint32
 	closed       bool
+	cfg          ResponderConfig
 }
 
-func NewLiveKitResponder(conn *websocket.Conn) *LiveKitResponder {
+func NewLiveKitResponder(conn *websocket.Conn, cfgs ...ResponderConfig) *LiveKitResponder {
+	cfg := DefaultResponderConfig()
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+	}
 	return &LiveKitResponder{
 		conn: conn,
+		cfg:  cfg,
 	}
 }
 
@@ -88,16 +110,16 @@ func (r *LiveKitResponder) SendJoinResponse(res *domain.JoinResult) error {
 					State:    livekitproto.ParticipantInfo_JOINED,
 				},
 				OtherParticipants: otherParticipants,
-				ServerVersion:     "1.53.0",
+				ServerVersion:     r.cfg.ServerVersion,
 				IceServers:        iceServers,
 				SubscriberPrimary: false,
 				ServerInfo: &livekitproto.ServerInfo{
 					Edition:  livekitproto.ServerInfo_Standard,
-					Version:  "1.53.0",
+					Version:  r.cfg.ServerVersion,
 					Protocol: 12,
 				},
-				PingTimeout:  10,
-				PingInterval: 20,
+				PingTimeout:  int32(r.cfg.PingTimeout),
+				PingInterval: int32(r.cfg.PingInterval),
 			},
 		},
 	}

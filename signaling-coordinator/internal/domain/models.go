@@ -120,9 +120,9 @@ type SetPreferredLayersCommand struct {
 }
 
 type IceServer struct {
-	URLs       []string
-	Username   string
-	Credential string
+	URLs       []string `json:"urls" yaml:"urls"`
+	Username   string   `json:"username,omitempty" yaml:"username,omitempty"`
+	Credential string   `json:"credential,omitempty" yaml:"credential,omitempty"`
 }
 
 type TrackPublishCommand struct {
