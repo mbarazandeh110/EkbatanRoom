@@ -20,6 +20,7 @@ type ParsedTrack struct {
 	RTXPayloadType    uint32
 	Codec             string
 	ClockRate         uint32
+	Channels          uint32
 	CName             string
 	RtpParametersJSON string
 }
@@ -131,6 +132,10 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 		var rtxPT uint32
 		var codecName string
 		var clockRate uint32 = 48000
+		var channels uint32
+		if kind == domain.TrackKindAudio {
+			channels = 2 // default to stereo (2 channels) for WebRTC Opus
+		}
 		if kind == domain.TrackKindVideo {
 			clockRate = 90000
 		}
@@ -154,6 +159,11 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 								if rate > 0 {
 									clockRate = uint32(rate)
 								}
+								if len(subParts) >= 3 {
+									if parsedChannels, err := strconv.ParseUint(subParts[2], 10, 32); err == nil && parsedChannels > 0 {
+										channels = uint32(parsedChannels)
+									}
+								}
 							}
 						}
 					}
@@ -171,6 +181,7 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			if kind == domain.TrackKindAudio {
 				codecName = "opus"
 				pt = 111
+				channels = 2
 			} else {
 				codecName = "VP8"
 				pt = 96
@@ -178,19 +189,30 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 		}
 
 		// Build RTP parameters JSON for SFU node
+		codecEntry := map[string]interface{}{
+			"mimeType":    fmt.Sprintf("%s/%s", kind, codecName),
+			"payloadType": pt,
+			"clockRate":   clockRate,
+		}
+		if kind == domain.TrackKindAudio {
+			if channels == 0 {
+				channels = 2
+			}
+			codecEntry["channels"] = channels
+		}
+
 		rtpParams := map[string]interface{}{
 			"codecs": []map[string]interface{}{
-				{
-					"mimeType":    fmt.Sprintf("%s/%s", kind, codecName),
-					"payloadType": pt,
-					"clockRate":   clockRate,
-				},
+				codecEntry,
 			},
 			"encodings": []map[string]interface{}{
 				{
 					"ssrc": ssrc,
 				},
 			},
+		}
+		if mid != "" {
+			rtpParams["mid"] = mid
 		}
 		if rtxSSRC > 0 {
 			rtpParams["encodings"].([]map[string]interface{})[0]["rtx"] = map[string]interface{}{
@@ -208,6 +230,7 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			RTXPayloadType:    rtxPT,
 			Codec:             codecName,
 			ClockRate:         clockRate,
+			Channels:          channels,
 			CName:             cname,
 			RtpParametersJSON: string(rtpJSON),
 		})

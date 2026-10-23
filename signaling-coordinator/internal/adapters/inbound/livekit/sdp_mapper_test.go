@@ -52,13 +52,25 @@ func TestSDPMapper_ParsePublisherOffer(t *testing.T) {
 	}
 
 	audio := parsed.Tracks[0]
-	if audio.Kind != domain.TrackKindAudio || audio.SSRC != 1001 || audio.PayloadType != 111 || audio.Codec != "opus" {
+	if audio.Kind != domain.TrackKindAudio || audio.SSRC != 1001 || audio.PayloadType != 111 || audio.Codec != "opus" || audio.Channels != 2 {
 		t.Fatalf("unexpected audio track: %+v", audio)
+	}
+	if !strings.Contains(audio.RtpParametersJSON, `"channels":2`) {
+		t.Fatalf("expected audio RtpParametersJSON to contain \"channels\":2, got: %s", audio.RtpParametersJSON)
+	}
+	if !strings.Contains(audio.RtpParametersJSON, `"mid":"0"`) {
+		t.Fatalf("expected audio RtpParametersJSON to contain \"mid\":\"0\", got: %s", audio.RtpParametersJSON)
 	}
 
 	video := parsed.Tracks[1]
 	if video.Kind != domain.TrackKindVideo || video.SSRC != 2001 || video.RTXSSRC != 2002 || video.PayloadType != 96 {
 		t.Fatalf("unexpected video track: %+v", video)
+	}
+	if strings.Contains(video.RtpParametersJSON, "channels") {
+		t.Fatalf("video RtpParametersJSON must NOT contain channels, got: %s", video.RtpParametersJSON)
+	}
+	if !strings.Contains(video.RtpParametersJSON, `"mid":"1"`) {
+		t.Fatalf("expected video RtpParametersJSON to contain \"mid\":\"1\", got: %s", video.RtpParametersJSON)
 	}
 }
 
@@ -258,4 +270,40 @@ func TestSDPMapper_SingleFingerprintPerLevelRFC8122(t *testing.T) {
 		t.Fatalf("expected sha-256 fingerprint prioritized in offer, got:\n%s", offer)
 	}
 }
+
+func TestSDPMapper_AudioChannelsDefaultFallback(t *testing.T) {
+	offerWithoutChannels := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=mid:audio-mid
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:111 opus/48000
+a=ssrc:5555 cname:test-cname
+`
+	parsed, err := livekit.ParsePublisherOffer(offerWithoutChannels)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+
+	if len(parsed.Tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(parsed.Tracks))
+	}
+
+	audio := parsed.Tracks[0]
+	if audio.Channels != 2 {
+		t.Fatalf("expected default 2 channels for audio when not specified, got %d", audio.Channels)
+	}
+	if !strings.Contains(audio.RtpParametersJSON, `"channels":2`) {
+		t.Fatalf("expected RtpParametersJSON to contain \"channels\":2, got: %s", audio.RtpParametersJSON)
+	}
+	if !strings.Contains(audio.RtpParametersJSON, `"mid":"audio-mid"`) {
+		t.Fatalf("expected RtpParametersJSON to contain \"mid\":\"audio-mid\", got: %s", audio.RtpParametersJSON)
+	}
+}
+
 

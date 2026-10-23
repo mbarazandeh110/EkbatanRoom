@@ -413,7 +413,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-012
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -460,4 +460,13 @@ STATUS: OPEN
      - If `kind == domain.TrackKindAudio`: parse `channels` from `rtpmap` (e.g. `111 opus/48000/2` -> `channels = 2`, default to `2` for audio if omitted) and add `"channels": channels` to the codec JSON object.
      - Also include `"mid": mid` at top level if `mid != ""` to provide standard mediasoup RTP parameters.
 
+8. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-012):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-012]: In `internal/adapters/inbound/livekit/sdp_mapper.go`, enhanced audio track parsing to extract `channels` from `a=rtpmap` (e.g. `111 opus/48000/2` -> `channels = 2`, defaulting to `2` for WebRTC audio). Added `"channels": channels` to the audio codec entry in `RtpParametersJSON` and populated `"mid": mid` at the top level of the parameters object.
+     2. This satisfies the strict Mediasoup Rust `RtpCodecParameters::Audio` deserialization contract (`channels: NonZeroU8`), resolving gRPC `InvalidArgument` rejections during `Produce` calls and enabling complete audio track publication.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added `Channels uint32` to `ParsedTrack`, extracted channels from rtpmap, injected `"channels": channels` for audio codecs, and added `"mid": mid` to `rtpParams`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Updated `TestSDPMapper_ParsePublisherOffer` with audio channels and mid assertions, and added `TestSDPMapper_AudioChannelsDefaultFallback`.
+   - Verification: All 30 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
