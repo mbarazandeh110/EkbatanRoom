@@ -562,3 +562,65 @@ STATUS: IMPLEMENTED
      - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added assertions verifying `headerExtensions` and `rtcp` in `TestSDPMapper_ParsePublisherOffer` and `TestSDPMapper_AudioChannelsDefaultFallback`.
    - Verification: All 30 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-014
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: PROPOSED
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Unified Plan Renegotiation] Filter out already-produced tracks in RoomActor.PublishTracks
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When a client publishes tracks (e.g. Alice publishes audio, then video):
+     - Offer 2 contains 1 audio track (SSRC X).
+     - In `RoomActor.PublishTracks`, `mediaStreamPort.Produce` produces the audio track on `sfu-media-node`. `p.AddTrack(domainTrack)` registers the track with SSRC X on the participant.
+     - When the video track is added, `livekit-client` issues Offer 3. Per WebRTC Unified Plan, the SDP contains ALL m-lines (both m=audio with SSRC X and m=video with SSRC Y).
+     - `ParsePublisherOffer` parses all media sections and returns both tracks.
+     - In `internal/application/room_actor.go` (`PublishTracks`, lines 254-285):
+       ```go
+       // 2. Produce each track on SFU node
+       for _, tc := range tracks {
+           trackSID := fmt.Sprintf("TR_%s", uuid.NewString()[:8])
+           reqID := uuid.NewString()
+
+           prodRes, err := a.mediaStreamPort.Produce(ctx, &domain.ProduceCommand{
+               ...
+           })
+           ...
+       }
+       ```
+       The loop iterates over all tracks without checking if any track was already produced.
+       It calls `mediaStreamPort.Produce` again for the audio track with SSRC X.
+     - `sfu-media-node` (Mediasoup) rejects the duplicate SSRC with error:
+       `livekit publish tracks error: failed to produce track audio: grpc produce failed (request_id=...): rpc error: code = Internal desc = Mediasoup error: Failed to produce: Request to worker failed: Received response error: ssrc already exists in RTP listener [ssrc:1037286585]`
+     - Because `PublishTracks` fails, Offer 3 is aborted, no SDP answer is returned to Alice, and `publishTracks` times out in `02-bidirectional-rtp.spec.ts`.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/application/room_actor.go` (`PublishTracks`), check whether a track in `tracks` has already been published for this participant:
+     ```go
+     // 2. Produce each NEW track on SFU node
+     for _, tc := range tracks {
+         var alreadyPublished *domain.Track
+         if tc.SSRC > 0 {
+             for _, existing := range p.ListTracks() {
+                 if existing.SSRC == tc.SSRC {
+                     alreadyPublished = existing
+                     break
+                 }
+             }
+         }
+         if alreadyPublished != nil {
+             continue
+         }
+
+         trackSID := fmt.Sprintf("TR_%s", uuid.NewString()[:8])
+         ...
+     ```
+   - This ensures:
+     1. Only new tracks are produced on `sfu-media-node`.
+     2. Only new tracks trigger `mediaStreamPort.Consume` on other participants.
+     3. Mediasoup avoids duplicate SSRC collisions in its RTP listener during Unified Plan renegotiations.
+
+===================================================================
