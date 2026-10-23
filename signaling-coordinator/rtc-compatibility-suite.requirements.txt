@@ -273,7 +273,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-009
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -309,7 +309,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-010
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -346,4 +346,16 @@ STATUS: OPEN
 3. EXPECTED BOUNDARY BEHAVIOR:
    - In both `GeneratePublisherAnswer` and `GenerateSubscriberOffer`, select a single fingerprint from `transport.DtlsFingerprints` (prioritizing `sha-256`, or the first entry if `sha-256` is absent), and emit exactly ONE `a=fingerprint` line at session level.
 
+===================================================================
+7. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-009 & REQ-010):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-009]: In inbound adapter `internal/adapters/inbound/livekit/responder.go`, populated `ParticipantPermission` (`CanPublish: true, CanSubscribe: true, CanPublishData: true, CanUpdateMetadata: true`) and mapped published domain tracks to protobuf `TrackInfo` across `SendJoinResponse` (for local participant and other participants) and `SendParticipantUpdate`. This keeps permission mapping strictly on the LiveKit adapter boundary without polluting the pure domain model.
+     2. [REQ-010]: Enforced strict RFC 8122 Section 5 compliance in `internal/adapters/inbound/livekit/sdp_mapper.go`. Implemented `selectPrimaryFingerprint` which selects a single DTLS fingerprint (prioritizing standard `sha-256`, then `sha-512`/`sha-384`/first available) and emits exactly ONE `a=fingerprint:` attribute at the session level in both publisher answers and subscriber offers. This resolves the Chromium WebRTC SDP parse rejection error ("Can't have multiple fingerprint attributes at the same level").
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/responder.go`: Added `defaultParticipantPermission` and `mapDomainTracksToProto`, populating `Permission` and `Tracks` on `ParticipantInfo`.
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added `selectPrimaryFingerprint` and eliminated multi-fingerprint session-level loops in `GeneratePublisherAnswer` and `GenerateSubscriberOffer`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added `TestSDPMapper_SingleFingerprintPerLevelRFC8122`.
+     - `internal/adapters/inbound/livekit/ws_handler_test.go`: Added permission assertions in `TestLiveKitResponder_PingIntervalAndTimeoutPerREQ007`.
+   - Verification: All 28 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================

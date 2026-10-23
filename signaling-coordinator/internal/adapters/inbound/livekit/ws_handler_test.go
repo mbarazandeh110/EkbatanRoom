@@ -472,5 +472,15 @@ func TestLiveKitResponder_PingIntervalAndTimeoutPerREQ007(t *testing.T) {
 	if join.ServerVersion != "1.54.0-test" {
 		t.Fatalf("expected server version 1.54.0-test, got %s", join.ServerVersion)
 	}
+
+	// Verify REQ-009: ParticipantInfo must have Permission populated
+	if join.Participant == nil || join.Participant.Permission == nil {
+		t.Fatalf("expected join.Participant.Permission to be populated per REQ-009, got nil")
+	}
+	perm := join.Participant.Permission
+	if !perm.CanPublish || !perm.CanSubscribe || !perm.CanPublishData {
+		t.Fatalf("expected CanPublish, CanSubscribe, and CanPublishData to be true, got %+v", perm)
+	}
 }
+
 

@@ -201,3 +201,61 @@ a=max-message-size:262144
 		t.Fatalf("expected sctp-port retained in answer, got:\n%s", answer)
 	}
 }
+
+func TestSDPMapper_SingleFingerprintPerLevelRFC8122(t *testing.T) {
+	// Simulate sfu-media-node providing multiple DTLS fingerprints
+	transport := &domain.TransportInfo{
+		TransportID: "multi-fp-transport",
+		IceUfrag:    "ufrag-test",
+		IcePwd:      "pwd-test",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-224", Value: "11:22:33"},
+			{Algorithm: "sha-256", Value: "AA:BB:CC:DD"},
+			{Algorithm: "sha-384", Value: "44:55:66"},
+			{Algorithm: "sha-512", Value: "77:88:99"},
+		},
+	}
+
+	// 1. Publisher Answer check
+	answer, err := livekit.GeneratePublisherAnswer(sampleClientOffer, transport)
+	if err != nil {
+		t.Fatalf("GeneratePublisherAnswer failed: %v", err)
+	}
+
+	// RFC 8122: Must have at most ONE fingerprint at session level
+	fpCount := strings.Count(answer, "a=fingerprint:")
+	if fpCount != 1 {
+		t.Fatalf("expected exactly 1 a=fingerprint line per RFC 8122, got %d in answer:\n%s", fpCount, answer)
+	}
+	if !strings.Contains(answer, "a=fingerprint:sha-256 AA:BB:CC:DD") {
+		t.Fatalf("expected sha-256 fingerprint prioritized, got:\n%s", answer)
+	}
+
+	// 2. Subscriber Offer check
+	slots := []*domain.SDPSlot{
+		{
+			Index:       0,
+			MID:         "0",
+			Kind:        domain.TrackKindAudio,
+			Active:      true,
+			PayloadType: 111,
+			MimeType:    "opus",
+			ClockRate:   48000,
+			SSRC:        12345,
+			TrackSID:    "TR_123",
+		},
+	}
+	offer, err := livekit.GenerateSubscriberOffer(transport, slots, "PA_alice")
+	if err != nil {
+		t.Fatalf("GenerateSubscriberOffer failed: %v", err)
+	}
+
+	offerFpCount := strings.Count(offer, "a=fingerprint:")
+	if offerFpCount != 1 {
+		t.Fatalf("expected exactly 1 a=fingerprint line per RFC 8122, got %d in offer:\n%s", offerFpCount, offer)
+	}
+	if !strings.Contains(offer, "a=fingerprint:sha-256 AA:BB:CC:DD") {
+		t.Fatalf("expected sha-256 fingerprint prioritized in offer, got:\n%s", offer)
+	}
+}
+

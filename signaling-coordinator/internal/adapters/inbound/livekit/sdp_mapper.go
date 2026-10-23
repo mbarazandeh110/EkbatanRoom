@@ -220,6 +220,25 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 	}, nil
 }
 
+// selectPrimaryFingerprint selects a single DTLS fingerprint from the available list per RFC 8122,
+// prioritizing sha-256 (standard WebRTC default), then sha-512, sha-384, or the first available.
+func selectPrimaryFingerprint(fps []domain.DtlsFingerprintInfo) *domain.DtlsFingerprintInfo {
+	if len(fps) == 0 {
+		return nil
+	}
+	for i := range fps {
+		if strings.EqualFold(fps[i].Algorithm, "sha-256") {
+			return &fps[i]
+		}
+	}
+	for i := range fps {
+		if strings.EqualFold(fps[i].Algorithm, "sha-512") || strings.EqualFold(fps[i].Algorithm, "sha-384") {
+			return &fps[i]
+		}
+	}
+	return &fps[0]
+}
+
 // GeneratePublisherAnswer generates an SDP answer responding to the client's publisher offer.
 // Crucial DTLS requirement: always responds with a=setup:passive.
 func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (string, error) {
@@ -263,7 +282,7 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 		})
 	}
 
-	// Session level ICE, DTLS and fingerprints
+	// Session level ICE, DTLS and fingerprints (single fingerprint per RFC 8122)
 	ans.Attributes = append(ans.Attributes,
 		sdp.Attribute{Key: "ice-ufrag", Value: transport.IceUfrag},
 		sdp.Attribute{Key: "ice-pwd", Value: transport.IcePwd},
@@ -271,7 +290,7 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 		sdp.Attribute{Key: "setup", Value: "passive"},
 	)
 
-	for _, fp := range transport.DtlsFingerprints {
+	if fp := selectPrimaryFingerprint(transport.DtlsFingerprints); fp != nil {
 		ans.Attributes = append(ans.Attributes, sdp.Attribute{
 			Key:   "fingerprint",
 			Value: fmt.Sprintf("%s %s", fp.Algorithm, fp.Value),
@@ -388,7 +407,7 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 		sdp.Attribute{Key: "setup", Value: "actpass"},
 	)
 
-	for _, fp := range transport.DtlsFingerprints {
+	if fp := selectPrimaryFingerprint(transport.DtlsFingerprints); fp != nil {
 		offer.Attributes = append(offer.Attributes, sdp.Attribute{
 			Key:   "fingerprint",
 			Value: fmt.Sprintf("%s %s", fp.Algorithm, fp.Value),

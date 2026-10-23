@@ -69,6 +69,36 @@ func (r *LiveKitResponder) send(msg *livekitproto.SignalResponse) error {
 	return r.conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
+func defaultParticipantPermission() *livekitproto.ParticipantPermission {
+	return &livekitproto.ParticipantPermission{
+		CanSubscribe:      true,
+		CanPublish:        true,
+		CanPublishData:    true,
+		CanUpdateMetadata: true,
+	}
+}
+
+func mapDomainTracksToProto(tracks []*domain.Track) []*livekitproto.TrackInfo {
+	if len(tracks) == 0 {
+		return nil
+	}
+	protoTracks := make([]*livekitproto.TrackInfo, 0, len(tracks))
+	for _, t := range tracks {
+		trackType := livekitproto.TrackType_AUDIO
+		if t.Kind == domain.TrackKindVideo {
+			trackType = livekitproto.TrackType_VIDEO
+		}
+		protoTracks = append(protoTracks, &livekitproto.TrackInfo{
+			Sid:       t.SID,
+			Type:      trackType,
+			Name:      t.ID,
+			Muted:     t.Paused,
+			Simulcast: len(t.SimulcastEncodings) > 0,
+		})
+	}
+	return protoTracks
+}
+
 func (r *LiveKitResponder) SendJoinResponse(res *domain.JoinResult) error {
 	r.mu.Lock()
 	r.subTransport = res.SubscriberTransport
@@ -80,10 +110,12 @@ func (r *LiveKitResponder) SendJoinResponse(res *domain.JoinResult) error {
 			continue
 		}
 		otherParticipants = append(otherParticipants, &livekitproto.ParticipantInfo{
-			Sid:      p.SID,
-			Identity: p.ID,
-			Name:     p.Name,
-			State:    livekitproto.ParticipantInfo_JOINED,
+			Sid:        p.SID,
+			Identity:   p.ID,
+			Name:       p.Name,
+			State:      livekitproto.ParticipantInfo_JOINED,
+			Tracks:     mapDomainTracksToProto(p.ListTracks()),
+			Permission: defaultParticipantPermission(),
 		})
 	}
 
@@ -104,10 +136,12 @@ func (r *LiveKitResponder) SendJoinResponse(res *domain.JoinResult) error {
 					Name: res.Room.ID,
 				},
 				Participant: &livekitproto.ParticipantInfo{
-					Sid:      res.Participant.SID,
-					Identity: res.Participant.ID,
-					Name:     res.Participant.Name,
-					State:    livekitproto.ParticipantInfo_JOINED,
+					Sid:        res.Participant.SID,
+					Identity:   res.Participant.ID,
+					Name:       res.Participant.Name,
+					State:      livekitproto.ParticipantInfo_JOINED,
+					Tracks:     mapDomainTracksToProto(res.Participant.ListTracks()),
+					Permission: defaultParticipantPermission(),
 				},
 				OtherParticipants: otherParticipants,
 				ServerVersion:     r.cfg.ServerVersion,
@@ -179,10 +213,12 @@ func (r *LiveKitResponder) SendParticipantUpdate(participants []*domain.Particip
 	protoParts := make([]*livekitproto.ParticipantInfo, 0, len(participants))
 	for _, p := range participants {
 		protoParts = append(protoParts, &livekitproto.ParticipantInfo{
-			Sid:      p.SID,
-			Identity: p.ID,
-			Name:     p.Name,
-			State:    livekitproto.ParticipantInfo_JOINED,
+			Sid:        p.SID,
+			Identity:   p.ID,
+			Name:       p.Name,
+			State:      livekitproto.ParticipantInfo_JOINED,
+			Tracks:     mapDomainTracksToProto(p.ListTracks()),
+			Permission: defaultParticipantPermission(),
 		})
 	}
 
