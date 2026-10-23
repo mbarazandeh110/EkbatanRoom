@@ -464,4 +464,95 @@ func TestRoomManager_LifecycleAndRouting(t *testing.T) {
 	}
 }
 
+func TestRoomActor_PublishTracks_UnifiedPlanRenegotiationDuplicateSSRCFiltered(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	iceServers := []domain.IceServer{{URLs: []string{"stun:stun.example.com"}}}
+	actor := application.NewRoomActor("room-reneg", engine, engine, engine, iceServers)
+
+	respAlice := newMockResponder()
+	fingerprints := []domain.DtlsFingerprintInfo{
+		{Algorithm: "sha-256", Value: "AA:BB:CC"},
+	}
+
+	_, err := actor.Join(ctx, "alice", "Alice", respAlice)
+	if err != nil {
+		t.Fatalf("Join failed: %v", err)
+	}
+
+	// 1. Initial Offer: Audio track only (SSRC 1001)
+	offer1 := []domain.TrackPublishCommand{
+		{
+			Kind:              domain.TrackKindAudio,
+			SSRC:              1001,
+			PayloadType:       111,
+			Codec:             "opus",
+			ClockRate:         48000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"audio/opus","payloadType":111,"clockRate":48000,"channels":2}]}`,
+		},
+	}
+	_, err = actor.PublishTracks(ctx, "alice", "client", fingerprints, offer1)
+	if err != nil {
+		t.Fatalf("Offer 1 PublishTracks failed: %v", err)
+	}
+
+	engine.mu.Lock()
+	produceCount1 := len(engine.produced)
+	engine.mu.Unlock()
+	if produceCount1 != 1 {
+		t.Fatalf("expected 1 produce call after offer 1, got %d", produceCount1)
+	}
+
+	// 2. Unified Plan Renegotiation: Browser sends BOTH Audio (SSRC 1001) and Video (SSRC 2001)
+	offer2 := []domain.TrackPublishCommand{
+		{
+			Kind:              domain.TrackKindAudio,
+			SSRC:              1001,
+			PayloadType:       111,
+			Codec:             "opus",
+			ClockRate:         48000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"audio/opus","payloadType":111,"clockRate":48000,"channels":2}]}`,
+		},
+		{
+			Kind:              domain.TrackKindVideo,
+			SSRC:              2001,
+			PayloadType:       96,
+			Codec:             "VP8",
+			ClockRate:         90000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"video/VP8","payloadType":96,"clockRate":90000}]}`,
+		},
+	}
+	_, err = actor.PublishTracks(ctx, "alice", "client", fingerprints, offer2)
+	if err != nil {
+		t.Fatalf("Offer 2 PublishTracks failed: %v", err)
+	}
+
+	engine.mu.Lock()
+	produceCount2 := len(engine.produced)
+	lastProduced := engine.produced[produceCount2-1]
+	engine.mu.Unlock()
+
+	// Crucial REQ-014 assertion: only 1 new track should be produced, not 2! Total produced should be 2.
+	if produceCount2 != 2 {
+		t.Fatalf("expected total 2 produce calls after offer 2, got %d (audio should have been filtered out!)", produceCount2)
+	}
+	if lastProduced.Kind != domain.TrackKindVideo {
+		t.Fatalf("expected 2nd produce to be video, got %s", lastProduced.Kind)
+	}
+
+	// 3. Subsequent Renegotiation with identical tracks (no new tracks)
+	_, err = actor.PublishTracks(ctx, "alice", "client", fingerprints, offer2)
+	if err != nil {
+		t.Fatalf("Offer 3 PublishTracks failed: %v", err)
+	}
+
+	engine.mu.Lock()
+	produceCount3 := len(engine.produced)
+	engine.mu.Unlock()
+	if produceCount3 != 2 {
+		t.Fatalf("expected total produce calls to remain 2 after duplicate offer, got %d", produceCount3)
+	}
+}
+
+
 

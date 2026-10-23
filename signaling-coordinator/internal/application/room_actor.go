@@ -250,8 +250,21 @@ func (a *RoomActor) PublishTracks(
 
 	publishedTracks := make([]*domain.Track, 0, len(tracks))
 
-	// 2. Produce each track on SFU node
+	// 2. Produce each NEW track on SFU node
 	for _, tc := range tracks {
+		var alreadyPublished *domain.Track
+		if tc.SSRC > 0 {
+			for _, existing := range p.ListTracks() {
+				if existing.SSRC == tc.SSRC {
+					alreadyPublished = existing
+					break
+				}
+			}
+		}
+		if alreadyPublished != nil {
+			continue
+		}
+
 		trackSID := fmt.Sprintf("TR_%s", uuid.NewString()[:8])
 		reqID := uuid.NewString()
 
@@ -284,53 +297,55 @@ func (a *RoomActor) PublishTracks(
 		publishedTracks = append(publishedTracks, domainTrack)
 	}
 
-	// 3. Coordinate subscriptions on all OTHER participants in the room
-	for _, otherSession := range a.sessions {
-		if otherSession.Participant().ID == participantID {
-			continue
-		}
-
-		if otherSession.State() == domain.NegotiationStateWaitingForAnswer {
-			// Concurrency / Glare handling: queue tracks until current negotiation completes
-			for _, t := range publishedTracks {
-				otherSession.QueuePendingTrack(t)
-			}
-			continue
-		}
-
-		// Other session is Stable -> consume immediately
-		for _, t := range publishedTracks {
-			consRes, err := a.mediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
-				RequestID:             uuid.NewString(),
-				RouterID:              a.room.RouterID,
-				SubscriberTransportID: otherSession.Participant().SubscriberTransportID,
-				ProducerID:            t.ID,
-				RtpCapabilitiesJSON:   a.getRtpCapabilitiesJSON(),
-				Paused:                false,
-			})
-			if err != nil {
+	if len(publishedTracks) > 0 {
+		// 3. Coordinate subscriptions on all OTHER participants in the room
+		for _, otherSession := range a.sessions {
+			if otherSession.Participant().ID == participantID {
 				continue
 			}
 
-			otherSession.SlotTable().AllocOrRecycleSlot(
-				t.Kind,
-				t.SID,
-				t.ID,
-				consRes.ConsumerID,
-				consRes.SSRC,
-				consRes.RTXSSRC,
-				consRes.PayloadType,
-				consRes.RTXPayloadType,
-				consRes.ClockRate,
-				consRes.CodecMimeType,
-				p.SID,
-			)
-			otherSession.Participant().AddSubscription(consRes.ConsumerID, t.ID)
-		}
+			if otherSession.State() == domain.NegotiationStateWaitingForAnswer {
+				// Concurrency / Glare handling: queue tracks until current negotiation completes
+				for _, t := range publishedTracks {
+					otherSession.QueuePendingTrack(t)
+				}
+				continue
+			}
 
-		if err := otherSession.StartOfferTransition(); err == nil {
-			if otherSession.Responder() != nil {
-				_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), p.SID)
+			// Other session is Stable -> consume immediately
+			for _, t := range publishedTracks {
+				consRes, err := a.mediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
+					RequestID:             uuid.NewString(),
+					RouterID:              a.room.RouterID,
+					SubscriberTransportID: otherSession.Participant().SubscriberTransportID,
+					ProducerID:            t.ID,
+					RtpCapabilitiesJSON:   a.getRtpCapabilitiesJSON(),
+					Paused:                false,
+				})
+				if err != nil {
+					continue
+				}
+
+				otherSession.SlotTable().AllocOrRecycleSlot(
+					t.Kind,
+					t.SID,
+					t.ID,
+					consRes.ConsumerID,
+					consRes.SSRC,
+					consRes.RTXSSRC,
+					consRes.PayloadType,
+					consRes.RTXPayloadType,
+					consRes.ClockRate,
+					consRes.CodecMimeType,
+					p.SID,
+				)
+				otherSession.Participant().AddSubscription(consRes.ConsumerID, t.ID)
+			}
+
+			if err := otherSession.StartOfferTransition(); err == nil {
+				if otherSession.Responder() != nil {
+					_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), p.SID)
+				}
 			}
 		}
 	}

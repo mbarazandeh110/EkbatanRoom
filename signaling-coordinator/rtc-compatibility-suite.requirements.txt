@@ -566,7 +566,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-014
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: PROPOSED
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -623,4 +623,13 @@ STATUS: PROPOSED
      2. Only new tracks trigger `mediaStreamPort.Consume` on other participants.
      3. Mediasoup avoids duplicate SSRC collisions in its RTP listener during Unified Plan renegotiations.
 
+8. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-014):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-014]: In `internal/application/room_actor.go` (`PublishTracks`), implemented track filtering against `p.ListTracks()` by SSRC before invoking `mediaStreamPort.Produce`. This avoids re-producing existing tracks during Unified Plan WebRTC renegotiations where previous m-lines remain in subsequent SDP offers.
+     2. Guarded the peer subscription coordination loop with `len(publishedTracks) > 0`, avoiding unnecessary offer transitions and redundant negotiation messages when no new tracks are published.
+   - Modified Files:
+     - `internal/application/room_actor.go`: Added track deduplication loop against existing participant tracks in `PublishTracks`, and wrapped subscription coordination with `len(publishedTracks) > 0`.
+     - `internal/application/room_actor_test.go`: Added `TestRoomActor_PublishTracks_UnifiedPlanRenegotiationDuplicateSSRCFiltered` verifying that subsequent Unified Plan renegotiations with overlapping tracks only produce newly added tracks.
+   - Verification: All 31 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
