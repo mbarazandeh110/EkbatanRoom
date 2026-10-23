@@ -298,6 +298,9 @@ func (a *RoomActor) PublishTracks(
 	}
 
 	if len(publishedTracks) > 0 {
+		// Broadcast updated participant metadata (with newly published tracks) to all participants in the room
+		a.broadcastParticipantUpdateLocked()
+
 		// 3. Coordinate subscriptions on all OTHER participants in the room
 		for _, otherSession := range a.sessions {
 			if otherSession.Participant().ID == participantID {

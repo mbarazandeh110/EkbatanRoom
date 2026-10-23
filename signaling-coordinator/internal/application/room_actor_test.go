@@ -296,6 +296,25 @@ func TestRoomActor_TwoPeerPublishSubscribeSession(t *testing.T) {
 		t.Fatalf("expected Bob to receive 1 subscriber offer, got %d", len(respBob.offers))
 	}
 
+	// Verify REQ-016: Bob must have received a ParticipantUpdate where Alice has 2 published tracks
+	if len(respBob.partsUpdate) == 0 {
+		t.Fatalf("expected Bob to receive participant updates, got none")
+	}
+	latestUpdate := respBob.partsUpdate[len(respBob.partsUpdate)-1]
+	var aliceInUpdate *domain.Participant
+	for _, p := range latestUpdate {
+		if p.ID == "alice" {
+			aliceInUpdate = p
+			break
+		}
+	}
+	if aliceInUpdate == nil {
+		t.Fatalf("expected Alice in Bob's participant update")
+	}
+	if len(aliceInUpdate.ListTracks()) != 2 {
+		t.Fatalf("expected Alice to have 2 published tracks in participant update, got %d", len(aliceInUpdate.ListTracks()))
+	}
+
 	// 3. Bob responds with Subscriber Answer
 	err = actor.HandleSubscriberAnswer(ctx, "bob", "client", fingerprints)
 	if err != nil {

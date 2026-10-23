@@ -724,7 +724,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-016
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: PROPOSED
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -768,4 +768,13 @@ STATUS: PROPOSED
      ```
    - This sends `ParticipantUpdate` with Alice's newly published tracks to Bob, enabling `livekit-client` on Bob to create the corresponding `RemoteTrackPublication` records and successfully complete subscription and media rendering.
 
+8. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-016):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-016]: In `internal/application/room_actor.go` (`PublishTracks`), invoked `a.broadcastParticipantUpdateLocked()` when `len(publishedTracks) > 0`. This ensures that all room participants receive a `SignalResponse_Update` containing the newly published track metadata (`ParticipantInfo.Tracks`) before (or concurrently with) the subscriber SDP offer.
+     2. This eliminates `could not find published track` subscription failures and `TrackSubscriptionFailed` events in official `livekit-client`, allowing remote tracks to be successfully bound to peer media elements.
+   - Modified Files:
+     - `internal/application/room_actor.go`: Called `a.broadcastParticipantUpdateLocked()` in `PublishTracks`.
+     - `internal/application/room_actor_test.go`: Added assertions verifying that Bob receives `ParticipantUpdate` containing Alice's published tracks in `TestRoomActor_TwoPeerPublishSubscribeSession`.
+   - Verification: All 32 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
