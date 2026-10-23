@@ -359,3 +359,41 @@ STATUS: IMPLEMENTED
      - `internal/adapters/inbound/livekit/ws_handler_test.go`: Added permission assertions in `TestLiveKitResponder_PingIntervalAndTimeoutPerREQ007`.
    - Verification: All 28 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-011
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Idempotent Transport Connection] Avoid duplicate ConnectTransport on renegotiated publisher offers
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When a participant connects to a room:
+     1. Initial offer `offer_id: 1` (DataChannel only) calls `PublishTracks`, which calls `a.transportPort.ConnectTransport(...)` to establish the WebRTC DTLS handshake on `PublisherTransportID`.
+     2. In `sfu-media-node` (Rust / mediasoup), `WebRtcTransport::connect` succeeds and marks the transport as connected.
+     3. Next, the participant calls `publishTracks({ audio: true, video: true })`, sending `SignalRequest_Offer` with `offer_id: 2` containing the new audio/video media descriptions.
+     4. In `internal/application/room_actor.go` (`PublishTracks`, lines 237-246):
+        ```go
+        // 1. Connect Publisher Transport on the SFU
+        err := a.transportPort.ConnectTransport(ctx, &domain.ConnectTransportCommand{
+            RouterID:           a.room.RouterID,
+            TransportID:        p.PublisherTransportID,
+            DtlsRole:           dtlsRole,
+            RemoteFingerprints: fingerprints,
+        })
+        if err != nil {
+            return nil, fmt.Errorf("failed to connect publisher transport: %w", err)
+        }
+        ```
+     5. Because `ConnectTransport` is called unconditionally on every offer, `sfu-media-node` rejects the second call with error:
+        `livekit publish tracks error: failed to connect publisher transport: grpc connect transport failed (transport_id=...): rpc error: code = Internal desc = Mediasoup error: Failed to connect transport: Received response error: connect() already called`
+     6. Consequently, `PublishTracks` fails, dropping the offer. The SDP answer for `offer_id: 2` is never returned to the client, causing `publishTracks` in `02-bidirectional-rtp.spec.ts` to time out.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - The publisher transport's DTLS handshake only needs to be connected once per transport lifecycle. Subsequent renegotiations on the same PeerConnection should not re-invoke `ConnectTransport`.
+   - In `room_actor.go` (or `ParticipantSession`): track `PublisherTransportConnected` and only call `ConnectTransport` if `!session.PubTransportConnected()` (setting it to `true` upon success).
+   - In `internal/adapters/outbound/media_node_grpc/client.go`: ensure idempotency by treating `connect() already called` as a non-fatal / successful operation.
+
+===================================================================
