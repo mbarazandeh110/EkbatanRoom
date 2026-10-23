@@ -633,3 +633,80 @@ STATUS: IMPLEMENTED
      - `internal/application/room_actor_test.go`: Added `TestRoomActor_PublishTracks_UnifiedPlanRenegotiationDuplicateSSRCFiltered` verifying that subsequent Unified Plan renegotiations with overlapping tracks only produce newly added tracks.
    - Verification: All 31 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-015
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: PROPOSED
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | WebRTC SDP RFC 4566 Compliance] Format rtpmap attribute with codec subtype in GenerateSubscriberOffer
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` line 487:
+     ```go
+     md.Attributes = append(md.Attributes,
+         sdp.Attribute{Key: "mid", Value: slot.MID},
+         sdp.Attribute{Key: "sendonly"},
+         sdp.Attribute{Key: "rtcp-mux"},
+         sdp.Attribute{
+             Key:   "rtpmap",
+             Value: fmt.Sprintf("%d %s/%d", slot.PayloadType, slot.MimeType, slot.ClockRate),
+         },
+     )
+     ```
+   - When `Consume` creates a subscriber track on `sfu-media-node`, Mediasoup returns `CodecMimeType: "audio/opus"` (or `"video/VP8"`).
+   - This causes `slot.MimeType` to be `"audio/opus"`.
+   - Line 487 formats:
+     `a=rtpmap:100 audio/opus/48000`
+   - Per RFC 4566 Section 6 and RFC 8866 Section 6.6:
+     `a=rtpmap:<payload type> <encoding name>/<clock rate>[/<encoding parameters>]`
+     `<encoding name>` MUST be the media subtype alone (e.g. `opus`, `VP8`), NOT the media type prefix (`audio/`, `video/`).
+     For Opus (RFC 7587), encoding parameters specify 2 channels: `opus/48000/2`.
+   - When `livekit-client` receives `SubscriberOffer` and invokes `pc.setRemoteDescription(offer)`:
+     Chromium attempts to parse the second token `opus` as the clock rate integer:
+     `[ClientB ERROR] Failed to execute 'setRemoteDescription' on 'RTCPeerConnection': Failed to parse SessionDescription. a=rtpmap:100 audio/opus/48000 Invalid value: opus.`
+     `[ClientB LOG] error unable to set offer`
+   - Consequently, Bob rejects the subscriber offer, the subscriber connection fails, and remote tracks are never rendered.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`GenerateSubscriberOffer`), strip any leading `"audio/"` or `"video/"` from `slot.MimeType` to obtain the pure codec subtype:
+     ```go
+     codecName := slot.MimeType
+     if idx := strings.Index(codecName, "/"); idx != -1 {
+         codecName = codecName[idx+1:]
+     }
+     rtpmapVal := fmt.Sprintf("%d %s/%d", slot.PayloadType, codecName, slot.ClockRate)
+     if slot.Kind == domain.TrackKindAudio && strings.EqualFold(codecName, "opus") {
+         rtpmapVal = fmt.Sprintf("%d %s/%d/2", slot.PayloadType, codecName, slot.ClockRate)
+     }
+
+     md.Attributes = append(md.Attributes,
+         sdp.Attribute{Key: "mid", Value: slot.MID},
+         sdp.Attribute{Key: "sendonly"},
+         sdp.Attribute{Key: "rtcp-mux"},
+         sdp.Attribute{
+             Key:   "rtpmap",
+             Value: rtpmapVal,
+         },
+     )
+     if strings.EqualFold(codecName, "opus") {
+         md.Attributes = append(md.Attributes, sdp.Attribute{
+             Key:   "fmtp",
+             Value: fmt.Sprintf("%d minptime=10;useinbandfec=1", slot.PayloadType),
+         })
+     }
+     if slot.Kind == domain.TrackKindVideo {
+         md.Attributes = append(md.Attributes,
+             sdp.Attribute{Key: "rtcp-fb", Value: fmt.Sprintf("%d goog-remb", slot.PayloadType)},
+             sdp.Attribute{Key: "rtcp-fb", Value: fmt.Sprintf("%d transport-cc", slot.PayloadType)},
+             sdp.Attribute{Key: "rtcp-fb", Value: fmt.Sprintf("%d ccm fir", slot.PayloadType)},
+             sdp.Attribute{Key: "rtcp-fb", Value: fmt.Sprintf("%d nack", slot.PayloadType)},
+             sdp.Attribute{Key: "rtcp-fb", Value: fmt.Sprintf("%d nack pli", slot.PayloadType)},
+         )
+     }
+     ```
+   - This produces RFC 4566 / RFC 7587 compliant `a=rtpmap:100 opus/48000/2` and `a=rtpmap:101 VP8/90000`, allowing Chromium to parse the subscriber offer without rejection.
+
+===================================================================
