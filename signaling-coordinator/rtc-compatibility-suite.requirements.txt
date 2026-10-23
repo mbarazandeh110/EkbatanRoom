@@ -363,7 +363,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-011
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -396,4 +396,16 @@ STATUS: OPEN
    - In `room_actor.go` (or `ParticipantSession`): track `PublisherTransportConnected` and only call `ConnectTransport` if `!session.PubTransportConnected()` (setting it to `true` upon success).
    - In `internal/adapters/outbound/media_node_grpc/client.go`: ensure idempotency by treating `connect() already called` as a non-fatal / successful operation.
 
+8. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-011):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-011]: Tracked publisher and subscriber transport connection lifecycle state in `ParticipantSession` (`PubTransportConnected` / `SubTransportConnected`). In `RoomActor.PublishTracks` and `HandleSubscriberAnswer`, `ConnectTransport` is now only invoked once per transport lifecycle, preventing duplicate DTLS connection calls during Unified Plan renegotiations.
+     2. Outbound gRPC adapter `MediaNodeClient.ConnectTransport` was made idempotent by treating `connect() already called` errors as successful, satisfying Twelve-Factor backing service resilience (Factor IV).
+   - Modified Files:
+     - `internal/application/participant_session.go`: Added `pubTransportConnected` and `subTransportConnected` flags with thread-safe getters and setters.
+     - `internal/application/room_actor.go`: Guarded `ConnectTransport` invocations in `PublishTracks` and `HandleSubscriberAnswer` with connection state checks.
+     - `internal/adapters/outbound/media_node_grpc/client.go`: Made `ConnectTransport` idempotent against `connect() already called` errors.
+     - `internal/adapters/outbound/media_node_grpc/client_test.go`: Added `TestMediaNodeClient_ConnectTransport_IdempotentAlreadyCalled`.
+     - `internal/application/room_actor_test.go`: Verified single transport connection per peer across multiple publisher offers in `TestRoomActor_TwoPeerPublishSubscribeSession`.
+   - Verification: All 29 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================

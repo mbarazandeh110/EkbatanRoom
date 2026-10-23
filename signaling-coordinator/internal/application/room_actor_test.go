@@ -17,9 +17,10 @@ type mockOutboundEngine struct {
 	createdRouters   []string
 	closedRouters    []string
 	createdTransports []*domain.CreateTransportCommand
-	closedTransports []*closedTransportEntry
-	produced         []*domain.ProduceCommand
-	consumed         []*domain.ConsumeCommand
+	connectedTransports []*domain.ConnectTransportCommand
+	closedTransports    []*closedTransportEntry
+	produced            []*domain.ProduceCommand
+	consumed            []*domain.ConsumeCommand
 }
 
 type closedTransportEntry struct {
@@ -29,12 +30,13 @@ type closedTransportEntry struct {
 
 func newMockOutboundEngine() *mockOutboundEngine {
 	return &mockOutboundEngine{
-		createdRouters:    make([]string, 0),
-		closedRouters:     make([]string, 0),
-		createdTransports: make([]*domain.CreateTransportCommand, 0),
-		closedTransports:  make([]*closedTransportEntry, 0),
-		produced:          make([]*domain.ProduceCommand, 0),
-		consumed:          make([]*domain.ConsumeCommand, 0),
+		createdRouters:      make([]string, 0),
+		closedRouters:       make([]string, 0),
+		createdTransports:   make([]*domain.CreateTransportCommand, 0),
+		connectedTransports: make([]*domain.ConnectTransportCommand, 0),
+		closedTransports:    make([]*closedTransportEntry, 0),
+		produced:            make([]*domain.ProduceCommand, 0),
+		consumed:            make([]*domain.ConsumeCommand, 0),
 	}
 }
 
@@ -77,6 +79,9 @@ func (m *mockOutboundEngine) CreateTransport(ctx context.Context, cmd *domain.Cr
 }
 
 func (m *mockOutboundEngine) ConnectTransport(ctx context.Context, cmd *domain.ConnectTransportCommand) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.connectedTransports = append(m.connectedTransports, cmd)
 	return nil
 }
 
@@ -363,6 +368,40 @@ func TestRoomActor_TwoPeerPublishSubscribeSession(t *testing.T) {
 	}
 	if aliceSession.State() != domain.NegotiationStateStable {
 		t.Fatalf("expected Alice to return to Stable, got %s", aliceSession.State())
+	}
+
+	// Verify REQ-011: ConnectTransport must be called at most once per transport lifecycle
+	// Bob published twice, Alice answered twice, but their transports should each only connect once
+	engine.mu.Lock()
+	bobPubConnects := 0
+	alicePubConnects := 0
+	bobSubConnects := 0
+	aliceSubConnects := 0
+	for _, c := range engine.connectedTransports {
+		switch c.TransportID {
+		case "pub-bob":
+			bobPubConnects++
+		case "pub-alice":
+			alicePubConnects++
+		case "sub-bob":
+			bobSubConnects++
+		case "sub-alice":
+			aliceSubConnects++
+		}
+	}
+	engine.mu.Unlock()
+
+	if bobPubConnects != 1 {
+		t.Fatalf("expected pub-bob to connect exactly once, connected %d times", bobPubConnects)
+	}
+	if alicePubConnects != 1 {
+		t.Fatalf("expected pub-alice to connect exactly once, connected %d times", alicePubConnects)
+	}
+	if bobSubConnects != 1 {
+		t.Fatalf("expected sub-bob to connect exactly once, connected %d times", bobSubConnects)
+	}
+	if aliceSubConnects != 1 {
+		t.Fatalf("expected sub-alice to connect exactly once, connected %d times", aliceSubConnects)
 	}
 }
 

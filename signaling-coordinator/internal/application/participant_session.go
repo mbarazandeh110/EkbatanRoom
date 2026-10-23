@@ -17,9 +17,11 @@ type ParticipantSession struct {
 	subTransport     *domain.TransportInfo
 	responder        ports.PeerResponderPort
 	negotiationState domain.NegotiationState
-	slotTable        *domain.SDPSlotTable
-	pendingTracks    []*domain.Track
-	closed           bool
+	slotTable             *domain.SDPSlotTable
+	pendingTracks         []*domain.Track
+	closed                bool
+	pubTransportConnected bool
+	subTransportConnected bool
 }
 
 func NewParticipantSession(
@@ -57,6 +59,30 @@ func (s *ParticipantSession) Responder() ports.PeerResponderPort {
 
 func (s *ParticipantSession) SlotTable() *domain.SDPSlotTable {
 	return s.slotTable
+}
+
+func (s *ParticipantSession) PubTransportConnected() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pubTransportConnected
+}
+
+func (s *ParticipantSession) SetPubTransportConnected(connected bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pubTransportConnected = connected
+}
+
+func (s *ParticipantSession) SubTransportConnected() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subTransportConnected
+}
+
+func (s *ParticipantSession) SetSubTransportConnected(connected bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subTransportConnected = connected
 }
 
 func (s *ParticipantSession) State() domain.NegotiationState {

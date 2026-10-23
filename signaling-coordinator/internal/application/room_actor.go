@@ -234,15 +234,18 @@ func (a *RoomActor) PublishTracks(
 	}
 	p := session.Participant()
 
-	// 1. Connect Publisher Transport on the SFU
-	err := a.transportPort.ConnectTransport(ctx, &domain.ConnectTransportCommand{
-		RouterID:           a.room.RouterID,
-		TransportID:        p.PublisherTransportID,
-		DtlsRole:           dtlsRole,
-		RemoteFingerprints: fingerprints,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect publisher transport: %w", err)
+	// 1. Connect Publisher Transport on the SFU (once per transport lifecycle)
+	if !session.PubTransportConnected() {
+		err := a.transportPort.ConnectTransport(ctx, &domain.ConnectTransportCommand{
+			RouterID:           a.room.RouterID,
+			TransportID:        p.PublisherTransportID,
+			DtlsRole:           dtlsRole,
+			RemoteFingerprints: fingerprints,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect publisher transport: %w", err)
+		}
+		session.SetPubTransportConnected(true)
 	}
 
 	publishedTracks := make([]*domain.Track, 0, len(tracks))
@@ -346,14 +349,17 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 
 	p := session.Participant()
 
-	// Connect Subscriber Transport on the SFU
-	if len(fingerprints) > 0 {
-		_ = a.transportPort.ConnectTransport(ctx, &domain.ConnectTransportCommand{
+	// Connect Subscriber Transport on the SFU (once per transport lifecycle)
+	if len(fingerprints) > 0 && !session.SubTransportConnected() {
+		err := a.transportPort.ConnectTransport(ctx, &domain.ConnectTransportCommand{
 			RouterID:           a.room.RouterID,
 			TransportID:        p.SubscriberTransportID,
 			DtlsRole:           dtlsRole,
 			RemoteFingerprints: fingerprints,
 		})
+		if err == nil {
+			session.SetSubTransportConnected(true)
+		}
 	}
 
 	if err := session.AnswerReceivedTransition(); err != nil {

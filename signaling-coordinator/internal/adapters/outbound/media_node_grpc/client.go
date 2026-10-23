@@ -3,6 +3,7 @@ package media_node_grpc
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -154,6 +155,11 @@ func (c *MediaNodeClient) ConnectTransport(ctx context.Context, cmd *domain.Conn
 		RemoteFingerprints: remoteFps,
 	})
 	if err != nil {
+		// Idempotency: Mediasoup returns an error if connect() is already called on the transport.
+		// In WebRTC renegotiation, duplicate connect calls are non-fatal.
+		if strings.Contains(err.Error(), "already called") {
+			return nil
+		}
 		return fmt.Errorf("grpc connect transport failed (transport_id=%s): %w", cmd.TransportID, err)
 	}
 	return nil

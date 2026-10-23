@@ -220,3 +220,27 @@ func TestMediaNodeClient_Produce_And_Consume(t *testing.T) {
 		t.Fatalf("unexpected consume result: %+v", cons)
 	}
 }
+
+func TestMediaNodeClient_ConnectTransport_IdempotentAlreadyCalled(t *testing.T) {
+	mockClient := &mockSfuMediaEngineServiceClient{
+		ConnectTransportFunc: func(ctx context.Context, in *sfuv1.ConnectTransportRequest, opts ...grpc.CallOption) (*sfuv1.ConnectTransportResponse, error) {
+			// Simulate mediasoup returning already called error
+			return nil, errors.New("rpc error: code = Internal desc = Mediasoup error: Failed to connect transport: Received response error: connect() already called")
+		},
+	}
+
+	adapter := media_node_grpc.NewMediaNodeClient(mockClient, 2*time.Second)
+	err := adapter.ConnectTransport(context.Background(), &domain.ConnectTransportCommand{
+		RouterID:    "r-1",
+		TransportID: "t-1",
+		DtlsRole:    "client",
+		RemoteFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "AA:BB:CC"},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("expected connect() already called to be handled as idempotent success, got error: %v", err)
+	}
+}
+
