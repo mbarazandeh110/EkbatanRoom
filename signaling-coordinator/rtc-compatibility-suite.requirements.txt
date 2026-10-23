@@ -637,7 +637,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-015
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: PROPOSED
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -709,4 +709,14 @@ STATUS: PROPOSED
      ```
    - This produces RFC 4566 / RFC 7587 compliant `a=rtpmap:100 opus/48000/2` and `a=rtpmap:101 VP8/90000`, allowing Chromium to parse the subscriber offer without rejection.
 
+8. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-015):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-015]: In `internal/adapters/inbound/livekit/sdp_mapper.go` (`GenerateSubscriberOffer`), stripped any leading media type prefix (e.g. `audio/`, `video/`) from `slot.MimeType` to ensure `a=rtpmap` emits only the codec subtype alone per RFC 4566 Section 6 and RFC 8866 Section 6.6.
+     2. Appended channel parameter `/2` for Opus audio tracks per RFC 7587 (`a=rtpmap:<pt> opus/48000/2`), added standard Opus `fmtp` (`minptime=10;useinbandfec=1`), and added WebRTC RTCP feedback attributes (`goog-remb`, `transport-cc`, `ccm fir`, `nack`, `nack pli`) for video slots.
+     3. This eliminates Chromium SDP parse errors (`Invalid value: opus`) during `setRemoteDescription` and allows subscriber peer connections to successfully negotiate.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added codec prefix stripping, Opus `/2` channel encoding, Opus `fmtp`, and video `rtcp-fb` lines to `GenerateSubscriberOffer`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Updated `TestSDPMapper_GenerateSubscriberOffer_ActiveAndInactiveSlots` and added `TestSDPMapper_GenerateSubscriberOffer_RFC4566MimeTypeStrippingAndVideoFeedback`.
+   - Verification: All 32 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================

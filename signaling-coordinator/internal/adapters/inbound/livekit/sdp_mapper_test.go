@@ -173,6 +173,82 @@ func TestSDPMapper_GenerateSubscriberOffer_ActiveAndInactiveSlots(t *testing.T) 
 	if !strings.Contains(offer, "a=mid:1") || !strings.Contains(offer, "a=inactive") || !strings.Contains(offer, "m=video 0 ") {
 		t.Fatalf("expected inactive video slot with port 0, got:\n%s", offer)
 	}
+
+	// RFC 4566 / RFC 7587: a=rtpmap:111 opus/48000/2 and fmtp
+	if !strings.Contains(offer, "a=rtpmap:111 opus/48000/2") {
+		t.Fatalf("expected a=rtpmap:111 opus/48000/2 in offer, got:\n%s", offer)
+	}
+	if !strings.Contains(offer, "a=fmtp:111 minptime=10;useinbandfec=1") {
+		t.Fatalf("expected a=fmtp:111 minptime=10;useinbandfec=1 in offer, got:\n%s", offer)
+	}
+}
+
+func TestSDPMapper_GenerateSubscriberOffer_RFC4566MimeTypeStrippingAndVideoFeedback(t *testing.T) {
+	transport := &domain.TransportInfo{
+		TransportID: "sub-transport-rfc",
+		IceUfrag:    "sub-ufrag",
+		IcePwd:      "sub-pwd",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "AA:BB:CC"},
+		},
+	}
+
+	// Mediasoup returns MimeType with media prefix: "audio/opus" and "video/VP8"
+	slots := []*domain.SDPSlot{
+		{
+			Index:       0,
+			MID:         "0",
+			Kind:        domain.TrackKindAudio,
+			Active:      true,
+			TrackSID:    "TR_aud",
+			SSRC:        60001,
+			PayloadType: 100,
+			ClockRate:   48000,
+			MimeType:    "audio/opus",
+		},
+		{
+			Index:       1,
+			MID:         "1",
+			Kind:        domain.TrackKindVideo,
+			Active:      true,
+			TrackSID:    "TR_vid",
+			SSRC:        60002,
+			PayloadType: 101,
+			ClockRate:   90000,
+			MimeType:    "video/VP8",
+		},
+	}
+
+	offer, err := livekit.GenerateSubscriberOffer(transport, slots, "PA_bob")
+	if err != nil {
+		t.Fatalf("GenerateSubscriberOffer failed: %v", err)
+	}
+
+	// Must NOT contain media prefix in rtpmap
+	if strings.Contains(offer, "audio/opus") {
+		t.Fatalf("subscriber offer rtpmap must NOT contain media prefix 'audio/opus', got:\n%s", offer)
+	}
+	if strings.Contains(offer, "video/VP8") {
+		t.Fatalf("subscriber offer rtpmap must NOT contain media prefix 'video/VP8', got:\n%s", offer)
+	}
+
+	// Must contain pure subtype rtpmap
+	if !strings.Contains(offer, "a=rtpmap:100 opus/48000/2") {
+		t.Fatalf("expected 'a=rtpmap:100 opus/48000/2', got:\n%s", offer)
+	}
+	if !strings.Contains(offer, "a=fmtp:100 minptime=10;useinbandfec=1") {
+		t.Fatalf("expected 'a=fmtp:100 minptime=10;useinbandfec=1', got:\n%s", offer)
+	}
+	if !strings.Contains(offer, "a=rtpmap:101 VP8/90000") {
+		t.Fatalf("expected 'a=rtpmap:101 VP8/90000', got:\n%s", offer)
+	}
+
+	// Video rtcp-fb feedback attributes
+	if !strings.Contains(offer, "a=rtcp-fb:101 goog-remb") ||
+		!strings.Contains(offer, "a=rtcp-fb:101 transport-cc") ||
+		!strings.Contains(offer, "a=rtcp-fb:101 nack pli") {
+		t.Fatalf("expected video rtcp-fb lines in offer, got:\n%s", offer)
+	}
 }
 
 func TestSDPMapper_ApplicationDataChannelOffer(t *testing.T) {

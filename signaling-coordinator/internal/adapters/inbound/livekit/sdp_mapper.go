@@ -478,15 +478,39 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 			md.MediaName.Formats = append(md.MediaName.Formats, fmt.Sprintf("%d", slot.RTXPayloadType))
 		}
 
+		codecName := slot.MimeType
+		if idx := strings.Index(codecName, "/"); idx != -1 {
+			codecName = codecName[idx+1:]
+		}
+		rtpmapVal := fmt.Sprintf("%d %s/%d", slot.PayloadType, codecName, slot.ClockRate)
+		if slot.Kind == domain.TrackKindAudio && strings.EqualFold(codecName, "opus") {
+			rtpmapVal = fmt.Sprintf("%d %s/%d/2", slot.PayloadType, codecName, slot.ClockRate)
+		}
+
 		md.Attributes = append(md.Attributes,
 			sdp.Attribute{Key: "mid", Value: slot.MID},
 			sdp.Attribute{Key: "sendonly"},
 			sdp.Attribute{Key: "rtcp-mux"},
 			sdp.Attribute{
 				Key:   "rtpmap",
-				Value: fmt.Sprintf("%d %s/%d", slot.PayloadType, slot.MimeType, slot.ClockRate),
+				Value: rtpmapVal,
 			},
 		)
+		if strings.EqualFold(codecName, "opus") {
+			md.Attributes = append(md.Attributes, sdp.Attribute{
+				Key:   "fmtp",
+				Value: fmt.Sprintf("%d minptime=10;useinbandfec=1", slot.PayloadType),
+			})
+		}
+		if slot.Kind == domain.TrackKindVideo {
+			md.Attributes = append(md.Attributes,
+				sdp.Attribute{Key: "rtcp-fb", Value: fmt.Sprintf("%d goog-remb", slot.PayloadType)},
+				sdp.Attribute{Key: "rtcp-fb", Value: fmt.Sprintf("%d transport-cc", slot.PayloadType)},
+				sdp.Attribute{Key: "rtcp-fb", Value: fmt.Sprintf("%d ccm fir", slot.PayloadType)},
+				sdp.Attribute{Key: "rtcp-fb", Value: fmt.Sprintf("%d nack", slot.PayloadType)},
+				sdp.Attribute{Key: "rtcp-fb", Value: fmt.Sprintf("%d nack pli", slot.PayloadType)},
+			)
+		}
 
 		if slot.RTXPayloadType > 0 {
 			md.Attributes = append(md.Attributes,
