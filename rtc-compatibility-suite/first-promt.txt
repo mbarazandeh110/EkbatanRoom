@@ -1,7 +1,7 @@
 # Engineering Workflow
 
 Before implementation:
-1. Read `GEMINI.md`, `.agents/rules.md`, and skills `.agents/skills/clean-test-architecture-solid/SKILL.md`, `.agents/skills/code-reviewer/SKILL.md`, `.agents/skills/context-driven-development/SKILL.md`, `.agents/skills/e2e-testing-patterns/SKILL.md`, `.agents/skills/microservices-patterns/SKILL.md`, `.agents/skills/playwright-skill/SKILL.md`, `.agents/skills/systematic-debugging/SKILL.md`, `.agents/skills/tdd-workflows-tdd-cycle/SKILL.md`, `.agents/skills/twelve-factor-engineering/SKILL.md`, and `.agents/skills/webrtc-gate-testing/SKILL.md`.
+1. Read `GEMINI.md`, `.agents/rules.md`, and skills `.agents/skills/clean-test-architecture-solid/SKILL.md`, `.agent/skills/cross-service-rfc/SKILL.md`, `.agents/skills/code-reviewer/SKILL.md`, `.agents/skills/context-driven-development/SKILL.md`, `.agents/skills/e2e-testing-patterns/SKILL.md`, `.agents/skills/microservices-patterns/SKILL.md`, `.agents/skills/playwright-skill/SKILL.md`, `.agents/skills/systematic-debugging/SKILL.md`, `.agents/skills/tdd-workflows-tdd-cycle/SKILL.md`, `.agents/skills/twelve-factor-engineering/SKILL.md`, and `.agents/skills/webrtc-gate-testing/SKILL.md`.
 2. Inspect the repository and verify the exact pinned version of `livekit-client` to be used.
 3. Identify assumptions, ambiguities, and blockers.
 4. Propose a phased implementation plan with testable acceptance criteria that strictly follows Clean Test Architecture and SOLID principles.
