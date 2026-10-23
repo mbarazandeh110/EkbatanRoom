@@ -1,17 +1,17 @@
 {
   "suiteVersion": "1.0.0",
   "sdkVersion": "2.23.0",
-  "runId": "run-1792762900460",
-  "timestamp": "2026-10-23T13:41:40.461Z",
+  "runId": "run-1792765484778",
+  "timestamp": "2026-10-23T14:24:44.778Z",
   "browser": {
     "name": "chromium",
     "version": "131.0.6778.33"
   },
   "overallStatus": "FAILED",
   "summary": {
-    "passed": 0,
+    "passed": 1,
     "failed": 1,
-    "blocked": 4,
+    "blocked": 3,
     "notRun": 0,
     "total": 5
   },
@@ -19,67 +19,272 @@
     "gate_01_connection": {
       "gateId": "gate_01_connection",
       "name": "Gate 1: Connection & Protocol Handshake",
-      "status": "FAILED",
-      "startTime": "2026-10-23T13:41:40.553Z",
-      "endTime": "2026-10-23T13:41:56.060Z",
-      "durationMs": 15507,
-      "checks": {},
+      "status": "PASSED",
+      "startTime": "2026-10-23T14:24:44.869Z",
+      "endTime": "2026-10-23T14:24:45.431Z",
+      "durationMs": 562,
+      "checks": {
+        "ws_handshake": {
+          "name": "ws_handshake",
+          "status": "PASSED",
+          "description": "WebSocket connection established to /rtc endpoint"
+        },
+        "join_protocol": {
+          "name": "join_protocol",
+          "status": "PASSED",
+          "description": "Completed protocol v12 JoinResponse exchange"
+        },
+        "participant_state": {
+          "name": "participant_state",
+          "status": "PASSED",
+          "description": "Participant enrolled in room gate1-verification-room with identity verifier-gate1"
+        }
+      },
       "signalingEvents": [
         {
-          "timestamp": "2026-10-23T13:41:40.809Z",
+          "timestamp": "2026-10-23T14:24:45.119Z",
           "direction": "inbound",
           "type": "WebSocketFrame",
           "payloadSummary": "inbound frame (20 bytes)",
           "rawPayloadRedacted": "{\"type\":\"connected\"}"
         },
         {
-          "timestamp": "2026-10-23T13:41:41.035Z",
+          "timestamp": "2026-10-23T14:24:45.353Z",
           "direction": "inbound",
           "type": "WebSocketFrame",
           "payloadSummary": "inbound frame (160 bytes)",
           "rawPayloadRedacted": "[Binary protobuf frame: 160 bytes]"
         },
         {
-          "timestamp": "2026-10-23T13:41:41.039Z",
+          "timestamp": "2026-10-23T14:24:45.357Z",
           "direction": "inbound",
           "type": "WebSocketFrame",
           "payloadSummary": "inbound frame (51 bytes)",
           "rawPayloadRedacted": "[Binary protobuf frame: 51 bytes]"
         },
         {
-          "timestamp": "2026-10-23T13:41:51.138Z",
-          "direction": "inbound",
+          "timestamp": "2026-10-23T14:24:45.379Z",
+          "direction": "outbound",
           "type": "WebSocketFrame",
-          "payloadSummary": "inbound frame (160 bytes)",
-          "rawPayloadRedacted": "[Binary protobuf frame: 160 bytes]"
+          "payloadSummary": "outbound frame (474 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 474 bytes]"
         },
         {
-          "timestamp": "2026-10-23T13:41:51.142Z",
+          "timestamp": "2026-10-23T14:24:45.381Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (194 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 194 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:45.382Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (178 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 178 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:45.383Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (197 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 197 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:45.385Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (1139 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 1139 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:45.390Z",
           "direction": "outbound",
           "type": "WebSocketFrame",
           "payloadSummary": "outbound frame (4 bytes)",
           "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
         },
         {
-          "timestamp": "2026-10-23T13:41:51.142Z",
-          "direction": "inbound",
+          "timestamp": "2026-10-23T14:24:45.442Z",
+          "direction": "outbound",
           "type": "WebSocketFrame",
-          "payloadSummary": "inbound frame (51 bytes)",
-          "rawPayloadRedacted": "[Binary protobuf frame: 51 bytes]"
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
         }
-      ],
-      "failureReason": "page.evaluate: ConnectionError: could not establish pc connection\n    at _ConnectionError.internal (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:10886:12)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:19168:36"
+      ]
     },
     "gate_02_bidirectional_rtp": {
       "gateId": "gate_02_bidirectional_rtp",
       "name": "Gate 2: Bidirectional Media RTP & Video Rendering",
-      "status": "BLOCKED",
-      "startTime": "",
-      "endTime": "",
-      "durationMs": 0,
+      "status": "FAILED",
+      "startTime": "2026-10-23T14:24:45.609Z",
+      "endTime": "2026-10-23T14:24:46.307Z",
+      "durationMs": 698,
       "checks": {},
-      "signalingEvents": [],
-      "blockedReason": "Prerequisite Gate 1 failed: page.evaluate: ConnectionError: could not establish pc connection\n    at _ConnectionError.internal (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:10886:12)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:19168:36"
+      "signalingEvents": [
+        {
+          "timestamp": "2026-10-23T14:24:45.702Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (20 bytes)",
+          "rawPayloadRedacted": "{\"type\":\"connected\"}"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:45.881Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (20 bytes)",
+          "rawPayloadRedacted": "{\"type\":\"connected\"}"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.036Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (138 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 138 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.040Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (43 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 43 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.062Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (474 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 474 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.063Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (193 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 193 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.065Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (178 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 178 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.065Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (198 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 198 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.067Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (1139 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 1139 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.072Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.168Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (80 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 80 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.170Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (175 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 175 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.177Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (80 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 80 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.200Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (474 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 474 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.202Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (193 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 193 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.203Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (177 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 177 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.203Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (198 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 198 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.205Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (927 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 927 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.207Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (1139 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 1139 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.211Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.321Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.322Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (39 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 39 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T14:24:46.339Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        }
+      ],
+      "failureReason": "page.evaluate: PublishTrackError: failed to publish track, insufficient permissions\n    at LocalParticipant.<anonymous> (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29081:15)\n    at Generator.next (<anonymous>)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7769:67\n    at new Promise (<anonymous>)\n    at __awaiter (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7751:10)\n    at LocalParticipant.publish (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29078:12)\n    at LocalParticipant.<anonymous> (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29029:48)\n    at Generator.next (<anonymous>)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7769:67\n    at new Promise (<anonymous>)"
     },
     "gate_03_concurrency_glare": {
       "gateId": "gate_03_concurrency_glare",
@@ -90,7 +295,7 @@
       "durationMs": 0,
       "checks": {},
       "signalingEvents": [],
-      "blockedReason": "Prerequisite Gate 1 failed: page.evaluate: ConnectionError: could not establish pc connection\n    at _ConnectionError.internal (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:10886:12)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:19168:36"
+      "blockedReason": "Prerequisite Gate 2 failed: page.evaluate: PublishTrackError: failed to publish track, insufficient permissions\n    at LocalParticipant.<anonymous> (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29081:15)\n    at Generator.next (<anonymous>)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7769:67\n    at new Promise (<anonymous>)\n    at __awaiter (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7751:10)\n    at LocalParticipant.publish (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29078:12)\n    at LocalParticipant.<anonymous> (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29029:48)\n    at Generator.next (<anonymous>)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7769:67\n    at new Promise (<anonymous>)"
     },
     "gate_04_simulcast_layers": {
       "gateId": "gate_04_simulcast_layers",
@@ -101,7 +306,7 @@
       "durationMs": 0,
       "checks": {},
       "signalingEvents": [],
-      "blockedReason": "Prerequisite Gate 1 failed: page.evaluate: ConnectionError: could not establish pc connection\n    at _ConnectionError.internal (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:10886:12)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:19168:36"
+      "blockedReason": "Prerequisite Gate 2 failed: page.evaluate: PublishTrackError: failed to publish track, insufficient permissions\n    at LocalParticipant.<anonymous> (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29081:15)\n    at Generator.next (<anonymous>)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7769:67\n    at new Promise (<anonymous>)\n    at __awaiter (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7751:10)\n    at LocalParticipant.publish (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29078:12)\n    at LocalParticipant.<anonymous> (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29029:48)\n    at Generator.next (<anonymous>)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7769:67\n    at new Promise (<anonymous>)"
     },
     "gate_05_ice_restart": {
       "gateId": "gate_05_ice_restart",
@@ -112,7 +317,7 @@
       "durationMs": 0,
       "checks": {},
       "signalingEvents": [],
-      "blockedReason": "Prerequisite Gate 1 failed: page.evaluate: ConnectionError: could not establish pc connection\n    at _ConnectionError.internal (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:10886:12)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:19168:36"
+      "blockedReason": "Prerequisite Gate 2 failed: page.evaluate: PublishTrackError: failed to publish track, insufficient permissions\n    at LocalParticipant.<anonymous> (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29081:15)\n    at Generator.next (<anonymous>)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7769:67\n    at new Promise (<anonymous>)\n    at __awaiter (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7751:10)\n    at LocalParticipant.publish (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29078:12)\n    at LocalParticipant.<anonymous> (http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:29029:48)\n    at Generator.next (<anonymous>)\n    at http://localhost:5173/node_modules/.vite/deps/livekit-client.js?v=7244a45a:7769:67\n    at new Promise (<anonymous>)"
     }
   }
 }

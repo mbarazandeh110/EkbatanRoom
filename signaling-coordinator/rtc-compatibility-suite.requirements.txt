@@ -269,3 +269,81 @@ STATUS: IMPLEMENTED
      - `TestConfig_EnvOverrides` in `internal/config/config_test.go`
    - Verification: All 27 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-009
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Contract Compliance] Populate ParticipantInfo.Permission in JoinResponse
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When Alice attempts to publish tracks in `02-bidirectional-rtp.spec.ts`:
+     `await clientA.publishTracks({ audio: true, video: true })`
+   - In official `livekit-client`, `LocalParticipant.publish` inspects `this.permissions`:
+     ```javascript
+     if (!this.permissions?.canPublish) {
+         throw new PublishTrackError("failed to publish track, insufficient permissions");
+     }
+     ```
+   - In `internal/adapters/inbound/livekit/responder.go` (`SendJoinResponse`, lines 106-111):
+     ```go
+     Participant: &livekitproto.ParticipantInfo{
+         Sid:      res.Participant.SID,
+         Identity: res.Participant.ID,
+         Name:     res.Participant.Name,
+         State:    livekitproto.ParticipantInfo_JOINED,
+         // Permission is nil!
+     }
+     ```
+   - Because `Permission` is not set, `livekit-client` receives `null` permissions and aborts track publication with:
+     `[ClientA LOG] warning no permissions present for publishing track`
+     `Error: page.evaluate: PublishTrackError: failed to publish track, insufficient permissions`
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `SendJoinResponse` (and for entries in `otherParticipants`), populate `Permission: &livekitproto.ParticipantPermission{ CanPublish: true, CanSubscribe: true, CanPublishData: true }` so the official SDK allows track publishing.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-010
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | WebRTC SDP RFC 8122 Compliance] Single DTLS fingerprint attribute per level in SDP generation
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go`:
+     - In `GeneratePublisherAnswer` (lines 274-279):
+       ```go
+       for _, fp := range transport.DtlsFingerprints {
+           ans.Attributes = append(ans.Attributes, sdp.Attribute{
+               Key:   "fingerprint",
+               Value: fmt.Sprintf("%s %s", fp.Algorithm, fp.Value),
+           })
+       }
+       ```
+     - In `GenerateSubscriberOffer` (lines 391-396):
+       ```go
+       for _, fp := range transport.DtlsFingerprints {
+           offer.Attributes = append(offer.Attributes, sdp.Attribute{
+               Key:   "fingerprint",
+               Value: fmt.Sprintf("%s %s", fp.Algorithm, fp.Value),
+           })
+       }
+       ```
+   - `sfu-media-node` returns multiple DTLS fingerprints for different hash algorithms (e.g., `sha-224`, `sha-256`, `sha-384`, `sha-512`).
+   - Appending all entries creates multiple `a=fingerprint` attributes at the session level in the synthesized SDP.
+   - Per RFC 8122 (Section 5) and standard WebRTC engines (Chromium):
+     Each session or media description MUST NOT have more than one fingerprint attribute for the same role.
+   - When `livekit-client` calls `pc.setRemoteDescription(offer)` for the subscriber connection, Chromium fails SDP parsing with error:
+     `[ClientA ERROR] Failed to execute 'setRemoteDescription' on 'RTCPeerConnection': Failed to parse SessionDescription. a=fingerprint:sha-224 ... Can't have multiple fingerprint attributes at the same level.`
+     `[ClientA LOG] error unable to set offer`
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In both `GeneratePublisherAnswer` and `GenerateSubscriberOffer`, select a single fingerprint from `transport.DtlsFingerprints` (prioritizing `sha-256`, or the first entry if `sha-256` is absent), and emit exactly ONE `a=fingerprint` line at session level.
+
+===================================================================
