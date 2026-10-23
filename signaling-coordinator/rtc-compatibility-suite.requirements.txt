@@ -409,3 +409,55 @@ STATUS: IMPLEMENTED
      - `internal/application/room_actor_test.go`: Verified single transport connection per peer across multiple publisher offers in `TestRoomActor_TwoPeerPublishSubscribeSession`.
    - Verification: All 29 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-012
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Inter-Service Contract] Include channels field for audio codecs in rtp_parameters_json
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When Alice publishes an audio track, `sdp_mapper.go` constructs `RtpParametersJSON` in lines 181-188:
+     ```go
+     rtpParams := map[string]interface{}{
+         "codecs": []map[string]interface{}{
+             {
+                 "mimeType":    fmt.Sprintf("%s/%s", kind, codecName),
+                 "payloadType": pt,
+                 "clockRate":   clockRate,
+             },
+         },
+         "encodings": []map[string]interface{}{
+             {
+                 "ssrc": ssrc,
+             },
+         },
+     }
+     ```
+   - In `sfu-media-node` (Rust / mediasoup), `parse_rtp_parameters` deserializes the JSON into `mediasoup::types::RtpParameters`.
+   - The Rust definition of `RtpCodecParameters::Audio` is:
+     ```rust
+     pub enum RtpCodecParameters {
+         Audio {
+             mime_type: MimeTypeAudio,
+             payload_type: u8,
+             clock_rate: NonZeroU32,
+             channels: NonZeroU8, // <--- REQUIRED field without #[serde(default)]!
+             ...
+         },
+         Video { ... }
+     }
+     ```
+   - Because `channels` was omitted from the audio codec object, `serde_json` fails to deserialize `RtpCodecParameters::Audio`, rejects `Video` (due to MIME type mismatch), and returns gRPC status `InvalidArgument`:
+     `livekit publish tracks error: failed to produce track audio: grpc produce failed: rpc error: code = InvalidArgument desc = Invalid rtp_parameters_json: data did not match any variant of untagged enum RtpCodecParameters at line 1 column 73`
+   - Because `Produce` fails, `PublishTracks` fails, dropping the offer. Alice never receives the SDP answer for `offer_id: 2`, causing `02-bidirectional-rtp.spec.ts` to time out.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `sdp_mapper.go`, when constructing `codecEntry` for `RtpParametersJSON`:
+     - If `kind == domain.TrackKindAudio`: parse `channels` from `rtpmap` (e.g. `111 opus/48000/2` -> `channels = 2`, default to `2` for audio if omitted) and add `"channels": channels` to the codec JSON object.
+     - Also include `"mid": mid` at top level if `mid != ""` to provide standard mediasoup RTP parameters.
+
+===================================================================
