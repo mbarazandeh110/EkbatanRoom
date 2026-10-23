@@ -116,3 +116,65 @@ STATUS: IMPLEMENTED
      - Added assertions verifying non-empty RtpCapabilitiesJSON in `internal/application/room_actor_test.go`
    - Verification: All 19 tests pass cleanly under `go test -v -race -count=1 ./...`.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-005
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Interop Blocker] Parse DTLS Fingerprints from all media descriptions (including m=application) and format DataChannel answer
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When official `livekit-client` (v2.23.0) connects to `/rtc` and completes Join, it immediately initiates WebRTC PeerConnection negotiation before any audio/video tracks are published.
+   - Chromium generates an initial publisher offer containing a WebRTC DataChannel:
+     `m=application 9 UDP/DTLS/SCTP webrtc-datachannel`
+     with media-level DTLS attributes:
+     `a=setup:actpass`
+     `a=fingerprint:sha-256 <hash>`
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`, lines 72-76):
+     ```go
+     for _, md := range s.MediaDescriptions {
+         kind := domain.TrackKind(md.MediaName.Media)
+         if kind != domain.TrackKindAudio && kind != domain.TrackKindVideo {
+             continue
+         }
+         // Fingerprint extraction is placed AFTER this continue!
+     ```
+   - Because `md.MediaName.Media` is `"application"`, the loop triggers `continue` before extracting `a=fingerprint` and `a=setup`.
+   - Consequently, `parsed.RemoteFingerprints` is empty (`len == 0`).
+   - When `ws_handler.go` calls `coordinator.PublishTracks` -> `mediaNodeClient.ConnectTransport`, the Rust `sfu-media-node` rejects the transport connection with gRPC error:
+     `livekit publish tracks error: failed to connect publisher transport: grpc connect transport failed: rpc error: code = InvalidArgument desc = At least one DTLS fingerprint is required`
+   - Because of this error, `ws_handler.go` drops the offer and sends no SDP answer. `livekit-client` negotiation times out after 15 seconds with `ConnectionError: could not establish pc connection`, causing Gate 1 (`01-connection.spec.ts`) to fail.
+   - Furthermore, in `GeneratePublisherAnswer` (lines 285-303):
+     `ansMd.MediaName.Protos = []string{"UDP/TLS/RTP/SAVPF"}` and `ansMd.Attributes` appends `recvonly` and `rtcp-mux`. For `m=application`, this generates invalid SDP for data channels. `ansMd.MediaName.Protos` should preserve `md.MediaName.Protos`, and `recvonly`/`rtcp-mux` should only be added if `md.MediaName.Media != "application"`.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `ParsePublisherOffer`, extract `a=fingerprint` and `a=setup` from all `md.Attributes` regardless of media type (including `m=application`) before skipping non-audio/video media for track parsing.
+   - In `GeneratePublisherAnswer`, for `m=application`, preserve `md.MediaName.Protos` (e.g. `UDP/DTLS/SCTP`), omit RTP attributes (`recvonly`, `rtcp-mux`), and preserve `sctp-port` if present.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-006
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Protocol Compatibility | Route Handling] Support /rtc/ prefix in HTTP router for /rtc/v1 fallback elimination
+
+2. REASON & TECHNICAL EVIDENCE:
+   - Official `livekit-client` v12 protocol attempts connecting to `/rtc/v1?...` by default.
+   - In `cmd/coordinator/main.go` line 131:
+     `mux.Handle("/rtc", liveKitHandler)`
+   - Go's `http.ServeMux` requires a trailing slash (`/rtc/`) to match subpaths such as `/rtc/v1`.
+   - Currently, `/rtc/v1` returns HTTP 404, prompting client console errors:
+     `WebSocket connection to 'ws://127.0.0.1:7880/rtc/v1?...' failed: Unexpected response code: 404`
+     `warning Initial connection failed: v1 RTC path not found. Consider upgrading your LiveKit server version – Retrying`
+     before falling back to `/rtc`.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - Register `mux.Handle("/rtc/", liveKitHandler)` alongside `mux.Handle("/rtc", liveKitHandler)` so that both `/rtc` and `/rtc/v1` route directly to `liveKitHandler` without 404 errors.
+
+===================================================================

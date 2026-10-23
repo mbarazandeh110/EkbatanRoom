@@ -20,6 +20,8 @@ test.describe('Gate 1: Connection & Protocol Handshake (01-connection)', () => {
     let participant;
     try {
       participant = await createParticipant(identity, roomId, gateId);
+      participant.getPage().on('console', msg => console.log('[GATE1 LOG]', msg.type(), msg.text()));
+      participant.getPage().on('pageerror', err => console.log('[GATE1 ERROR]', err.message));
 
       // 1. Create valid test token
       const token = await tokenFactory.createToken(roomId, identity, {

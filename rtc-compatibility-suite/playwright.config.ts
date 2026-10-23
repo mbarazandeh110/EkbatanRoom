@@ -22,6 +22,7 @@ export default defineConfig({
         '--use-fake-ui-for-media-stream',
         '--use-fake-device-for-media-stream',
         '--allow-loopback-in-peer-connection',
+        '--disable-web-security',
         '--no-sandbox',
         '--disable-setuid-sandbox'
       ]
