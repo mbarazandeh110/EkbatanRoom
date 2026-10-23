@@ -366,3 +366,63 @@ func TestRoomActor_TwoPeerPublishSubscribeSession(t *testing.T) {
 	}
 }
 
+func TestRoomManager_LifecycleAndRouting(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	iceServers := []domain.IceServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}
+
+	manager := application.NewRoomManager(engine, engine, engine, iceServers)
+
+	respAlice := newMockResponder()
+	joinRes, err := manager.Join(ctx, "room-mgr-1", "alice", "Alice", respAlice)
+	if err != nil {
+		t.Fatalf("manager.Join failed: %v", err)
+	}
+	if joinRes.Participant.ID != "alice" {
+		t.Fatalf("expected participant alice, got %s", joinRes.Participant.ID)
+	}
+
+	fingerprints := []domain.DtlsFingerprintInfo{
+		{Algorithm: "sha-256", Value: "11:22:33:44:55"},
+	}
+
+	tracks := []domain.TrackPublishCommand{
+		{
+			Kind:              domain.TrackKindAudio,
+			SSRC:              1234,
+			PayloadType:       111,
+			Codec:             "opus",
+			ClockRate:         48000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"audio/opus"}]}`,
+		},
+	}
+
+	pubTransport, err := manager.PublishTracks(ctx, "room-mgr-1", "alice", "client", fingerprints, tracks)
+	if err != nil {
+		t.Fatalf("manager.PublishTracks failed: %v", err)
+	}
+	if pubTransport == nil {
+		t.Fatal("expected non-nil pubTransport")
+	}
+
+	aliceTracks := joinRes.Participant.ListTracks()
+	if len(aliceTracks) > 0 {
+		err = manager.SetTrackMuted(ctx, "room-mgr-1", "alice", aliceTracks[0].SID, true)
+		if err != nil {
+			t.Fatalf("manager.SetTrackMuted failed: %v", err)
+		}
+	}
+
+	err = manager.Leave(ctx, "room-mgr-1", "alice")
+	if err != nil {
+		t.Fatalf("manager.Leave failed: %v", err)
+	}
+
+	// Operations on non-existent room should return ErrRoomNotFound
+	err = manager.Leave(ctx, "non-existent-room", "alice")
+	if err != domain.ErrRoomNotFound {
+		t.Fatalf("expected ErrRoomNotFound, got %v", err)
+	}
+}
+
+

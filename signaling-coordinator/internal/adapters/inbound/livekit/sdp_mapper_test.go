@@ -147,3 +147,57 @@ func TestSDPMapper_GenerateSubscriberOffer_ActiveAndInactiveSlots(t *testing.T) 
 		t.Fatalf("expected inactive video slot with port 0, got:\n%s", offer)
 	}
 }
+
+func TestSDPMapper_ApplicationDataChannelOffer(t *testing.T) {
+	dataChannelOffer := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+c=IN IP4 0.0.0.0
+a=mid:0
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=sctp-port:5000
+a=max-message-size:262144
+`
+	parsed, err := livekit.ParsePublisherOffer(dataChannelOffer)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed for data channel offer: %v", err)
+	}
+
+	if parsed.DTLSRole != "client" {
+		t.Fatalf("expected client DTLS role from actpass in application m-line, got %s", parsed.DTLSRole)
+	}
+	if len(parsed.RemoteFingerprints) != 1 {
+		t.Fatalf("expected 1 remote fingerprint from application m-line, got %d", len(parsed.RemoteFingerprints))
+	}
+	if parsed.RemoteFingerprints[0].Algorithm != "sha-256" {
+		t.Fatalf("unexpected algorithm: %s", parsed.RemoteFingerprints[0].Algorithm)
+	}
+
+	transport := &domain.TransportInfo{
+		TransportID: "pub-transport",
+		IceUfrag:    "ufrag-test",
+		IcePwd:      "pwd-test",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF"},
+		},
+	}
+
+	answer, err := livekit.GeneratePublisherAnswer(dataChannelOffer, transport)
+	if err != nil {
+		t.Fatalf("GeneratePublisherAnswer failed: %v", err)
+	}
+
+	if !strings.Contains(answer, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel") {
+		t.Fatalf("expected preserved UDP/DTLS/SCTP protos in application answer, got:\n%s", answer)
+	}
+	if strings.Contains(answer, "recvonly") || strings.Contains(answer, "rtcp-mux") {
+		t.Fatalf("application answer must not contain RTP recvonly or rtcp-mux attributes, got:\n%s", answer)
+	}
+	if !strings.Contains(answer, "a=sctp-port:5000") {
+		t.Fatalf("expected sctp-port retained in answer, got:\n%s", answer)
+	}
+}

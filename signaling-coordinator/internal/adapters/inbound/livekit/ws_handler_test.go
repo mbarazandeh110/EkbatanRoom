@@ -388,3 +388,47 @@ func TestLiveKitResponder_SubscriberOfferSequenceAndMid(t *testing.T) {
 		t.Fatalf("unexpected midToTrackId in offer2: %+v", offer2.MidToTrackId)
 	}
 }
+
+func TestLiveKitWSHandler_RtcV1Path(t *testing.T) {
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord)
+
+	mux := http.NewServeMux()
+	mux.Handle("/rtc", handler)
+	mux.Handle("/rtc/", handler)
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc/v1?room=conference-v1&identity=bob&name=Bob"
+
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, resp, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial to /rtc/v1 failed: %v", err)
+	}
+	defer conn.Close()
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101 Switching Protocols on /rtc/v1, got %d", resp.StatusCode)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	msgType, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read join message: %v", err)
+	}
+	if msgType != websocket.BinaryMessage {
+		t.Fatalf("expected binary message, got %d", msgType)
+	}
+
+	var signalResp livekitproto.SignalResponse
+	if err := proto.Unmarshal(data, &signalResp); err != nil {
+		t.Fatalf("failed to unmarshal signal response: %v", err)
+	}
+
+	join := signalResp.GetJoin()
+	if join == nil || join.Room.Name != "conference-v1" {
+		t.Fatalf("expected Join response with room conference-v1, got %+v", join)
+	}
+}

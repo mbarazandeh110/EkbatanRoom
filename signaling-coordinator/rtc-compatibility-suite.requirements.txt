@@ -120,7 +120,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-005
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -158,7 +158,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-006
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -177,4 +177,17 @@ STATUS: OPEN
 3. EXPECTED BOUNDARY BEHAVIOR:
    - Register `mux.Handle("/rtc/", liveKitHandler)` alongside `mux.Handle("/rtc", liveKitHandler)` so that both `/rtc` and `/rtc/v1` route directly to `liveKitHandler` without 404 errors.
 
+===================================================================
+5. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-005 & REQ-006):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-005]: Preserved Hexagonal SDP translation boundaries in inbound LiveKit adapter (`internal/adapters/inbound/livekit/sdp_mapper.go`). Moving DTLS setup/fingerprint parsing ahead of audio/video filtering ensures that DataChannel-only offers (e.g., initial Chromium offer without published tracks) correctly extract remote fingerprints to pass to the outbound `MediaStreamPort.ConnectTransport`. For answer generation, application m-lines retain their original transport protocols (e.g., `UDP/DTLS/SCTP`) and omit RTP-specific attributes (`recvonly`, `rtcp-mux`), while preserving SCTP port attributes.
+     2. [REQ-006]: Registered `/rtc/` alongside `/rtc` in `cmd/coordinator/main.go` using Go standard library `http.ServeMux` subpath matching. This cleanly serves LiveKit protocol v12 `/rtc/v1` without breaking standard `/rtc` requests or introducing external routing dependencies.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Extracted DTLS attributes from all m-lines and formatted DataChannel answers cleanly.
+     - `cmd/coordinator/main.go`: Added `mux.Handle("/rtc/", liveKitHandler)`.
+   - Added Tests:
+     - `TestSDPMapper_ApplicationDataChannelOffer` in `internal/adapters/inbound/livekit/sdp_mapper_test.go`
+     - `TestLiveKitWSHandler_RtcV1Path` in `internal/adapters/inbound/livekit/ws_handler_test.go`
+   - Verification: All 22 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================

@@ -70,12 +70,7 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 
 	// 2. Media descriptions
 	for _, md := range s.MediaDescriptions {
-		kind := domain.TrackKind(md.MediaName.Media)
-		if kind != domain.TrackKindAudio && kind != domain.TrackKindVideo {
-			continue
-		}
-
-		// Media level fingerprints and setup
+		// Media level fingerprints and setup (check for ALL media descriptions, including application)
 		for _, attr := range md.Attributes {
 			if attr.Key == "fingerprint" {
 				parts := strings.SplitN(attr.Value, " ", 2)
@@ -94,6 +89,11 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 					dtlsRole = "server"
 				}
 			}
+		}
+
+		kind := domain.TrackKind(md.MediaName.Media)
+		if kind != domain.TrackKindAudio && kind != domain.TrackKindVideo {
+			continue
 		}
 
 		mid, _ := md.Attribute("mid")
@@ -281,11 +281,18 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 	// Build media descriptions answering each offer m-line
 	for _, md := range s.MediaDescriptions {
 		mid, _ := md.Attribute("mid")
+		isApp := strings.EqualFold(md.MediaName.Media, "application")
+
+		protos := []string{"UDP/TLS/RTP/SAVPF"}
+		if isApp && len(md.MediaName.Protos) > 0 {
+			protos = md.MediaName.Protos
+		}
+
 		ansMd := &sdp.MediaDescription{
 			MediaName: sdp.MediaName{
 				Media:   md.MediaName.Media,
 				Port:    sdp.RangedPort{Value: 9},
-				Protos:  []string{"UDP/TLS/RTP/SAVPF"},
+				Protos:  protos,
 				Formats: md.MediaName.Formats,
 			},
 			ConnectionInformation: &sdp.ConnectionInformation{
@@ -298,13 +305,23 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 		if mid != "" {
 			ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "mid", Value: mid})
 		}
-		ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "recvonly"})
-		ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "rtcp-mux"})
 
-		// Retain rtpmap and rtcp-fb from offer
-		for _, attr := range md.Attributes {
-			if attr.Key == "rtpmap" || attr.Key == "rtcp-fb" || attr.Key == "fmtp" {
-				ansMd.Attributes = append(ansMd.Attributes, attr)
+		if !isApp {
+			ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "recvonly"})
+			ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "rtcp-mux"})
+
+			// Retain rtpmap and rtcp-fb from offer
+			for _, attr := range md.Attributes {
+				if attr.Key == "rtpmap" || attr.Key == "rtcp-fb" || attr.Key == "fmtp" {
+					ansMd.Attributes = append(ansMd.Attributes, attr)
+				}
+			}
+		} else {
+			// Retain sctp-port and max-message-size from offer
+			for _, attr := range md.Attributes {
+				if attr.Key == "sctp-port" || attr.Key == "max-message-size" {
+					ansMd.Attributes = append(ansMd.Attributes, attr)
+				}
 			}
 		}
 

@@ -129,6 +129,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/rtc", liveKitHandler)
+	mux.Handle("/rtc/", liveKitHandler)
 	mux.Handle("/ws/ortc", ortcHandler)
 	mux.Handle("/metrics", telemetry.DefaultMetrics().Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
