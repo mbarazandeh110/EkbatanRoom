@@ -720,3 +720,52 @@ STATUS: IMPLEMENTED
      - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Updated `TestSDPMapper_GenerateSubscriberOffer_ActiveAndInactiveSlots` and added `TestSDPMapper_GenerateSubscriberOffer_RFC4566MimeTypeStrippingAndVideoFeedback`.
    - Verification: All 32 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-016
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: PROPOSED
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Protocol Compatibility | Track Publication Signaling] Broadcast ParticipantUpdate in RoomActor.PublishTracks
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When a participant (Alice) publishes audio or video tracks:
+     1. In `RoomActor.PublishTracks` (`internal/application/room_actor.go` lines 254-285), tracks are produced on `sfu-media-node` and added to `p.AddTrack(domainTrack)`.
+     2. `room_actor.go` lines 301-351 coordinates subscriptions on other participants (Bob), creates consumers on `sfu-media-node`, and sends `SendSubscriberOffer` to Bob with `slot.TrackSID`.
+     3. HOWEVER, `PublishTracks` NEVER calls `a.broadcastParticipantUpdateLocked()`.
+     4. When Bob receives `SendSubscriberOffer` and applies the remote SDP, WebRTC fires the `ontrack` event.
+     5. Official `livekit-client` (`Room.onTrackAdded`) calls `RemoteParticipant(Alice).addSubscribedMediaTrack`.
+     6. In `RemoteParticipant.addSubscribedMediaTrack` (`RemoteParticipant.ts` lines 223-247):
+        ```typescript
+        let publication = this.getTrackPublicationBySid(sid);
+        if (!publication) {
+          if (triesLeft === 0) {
+            this.log.error('could not find published track', {
+              ...this.logContext,
+              trackSid: sid,
+            });
+            this.emit(ParticipantEvent.TrackSubscriptionFailed, sid);
+            return;
+          }
+          ...
+        }
+        ```
+        Because `signaling-coordinator` never sent `ParticipantUpdate` with Alice's tracks to Bob, `RemoteParticipant(Alice).trackPublications` is completely empty.
+     7. Bob waits 3 seconds (20 retries * 150ms) for track metadata to arrive, then logs:
+        `[ClientB LOG] error could not find published track {room: gate2-media-room, roomID: gate2-media-room, participant: peer-bob, participantID: PA_5de0202e, remoteParticipantID: PA_20f8c491}`
+        and emits `TrackSubscriptionFailed`.
+     8. The remote track is never subscribed or attached to the `<video>` / `<audio>` elements, causing `waitForRemoteTrack` in `02-bidirectional-rtp.spec.ts` to time out.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/application/room_actor.go` (`PublishTracks`), when new tracks are published (`len(publishedTracks) > 0`):
+     Invoke `a.broadcastParticipantUpdateLocked()` right before (or after) dispatching subscriber offers:
+     ```go
+     if len(publishedTracks) > 0 {
+         a.broadcastParticipantUpdateLocked()
+     }
+     ```
+   - This sends `ParticipantUpdate` with Alice's newly published tracks to Bob, enabling `livekit-client` on Bob to create the corresponding `RemoteTrackPublication` records and successfully complete subscription and media rendering.
+
+===================================================================
