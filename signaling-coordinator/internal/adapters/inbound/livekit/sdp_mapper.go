@@ -201,15 +201,24 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			codecEntry["channels"] = channels
 		}
 
+		rtcpParams := map[string]interface{}{
+			"reducedSize": true,
+		}
+		if cname != "" {
+			rtcpParams["cname"] = cname
+		}
+
 		rtpParams := map[string]interface{}{
 			"codecs": []map[string]interface{}{
 				codecEntry,
 			},
+			"headerExtensions": []map[string]interface{}{},
 			"encodings": []map[string]interface{}{
 				{
 					"ssrc": ssrc,
 				},
 			},
+			"rtcp": rtcpParams,
 		}
 		if mid != "" {
 			rtpParams["mid"] = mid

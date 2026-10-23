@@ -474,7 +474,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-013
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: PROPOSED
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -552,4 +552,13 @@ STATUS: PROPOSED
      ```
    - This satisfies the mediasoup `RtpParameters` deserialization contract on `sfu-media-node`.
 
+8. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-013):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-013]: In `internal/adapters/inbound/livekit/sdp_mapper.go`, included `headerExtensions: []` and `rtcp: {"reducedSize": true, "cname": cname}` in the constructed `RtpParametersJSON`.
+     2. This strictly matches Mediasoup's `mediasoup_types::rtp_parameters::RtpParameters` and `RtcpParameters` schema expected by `sfu-media-node` without requiring changes to `sfu-media-node`'s domain validation. It resolves `missing field headerExtensions` deserialization errors and allows `Produce` RPC calls to succeed.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added `rtcpParams` (`reducedSize: true`, optional `cname`) and `headerExtensions: []` to `rtpParams`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added assertions verifying `headerExtensions` and `rtcp` in `TestSDPMapper_ParsePublisherOffer` and `TestSDPMapper_AudioChannelsDefaultFallback`.
+   - Verification: All 30 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================

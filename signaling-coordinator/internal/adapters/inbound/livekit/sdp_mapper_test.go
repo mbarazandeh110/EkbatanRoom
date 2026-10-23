@@ -61,6 +61,15 @@ func TestSDPMapper_ParsePublisherOffer(t *testing.T) {
 	if !strings.Contains(audio.RtpParametersJSON, `"mid":"0"`) {
 		t.Fatalf("expected audio RtpParametersJSON to contain \"mid\":\"0\", got: %s", audio.RtpParametersJSON)
 	}
+	if !strings.Contains(audio.RtpParametersJSON, `"headerExtensions":[]`) {
+		t.Fatalf("expected audio RtpParametersJSON to contain \"headerExtensions\":[], got: %s", audio.RtpParametersJSON)
+	}
+	if !strings.Contains(audio.RtpParametersJSON, `"reducedSize":true`) {
+		t.Fatalf("expected audio RtpParametersJSON to contain \"reducedSize\":true, got: %s", audio.RtpParametersJSON)
+	}
+	if !strings.Contains(audio.RtpParametersJSON, `"cname":"test-cname"`) {
+		t.Fatalf("expected audio RtpParametersJSON to contain \"cname\":\"test-cname\", got: %s", audio.RtpParametersJSON)
+	}
 
 	video := parsed.Tracks[1]
 	if video.Kind != domain.TrackKindVideo || video.SSRC != 2001 || video.RTXSSRC != 2002 || video.PayloadType != 96 {
@@ -71,6 +80,12 @@ func TestSDPMapper_ParsePublisherOffer(t *testing.T) {
 	}
 	if !strings.Contains(video.RtpParametersJSON, `"mid":"1"`) {
 		t.Fatalf("expected video RtpParametersJSON to contain \"mid\":\"1\", got: %s", video.RtpParametersJSON)
+	}
+	if !strings.Contains(video.RtpParametersJSON, `"headerExtensions":[]`) {
+		t.Fatalf("expected video RtpParametersJSON to contain \"headerExtensions\":[], got: %s", video.RtpParametersJSON)
+	}
+	if !strings.Contains(video.RtpParametersJSON, `"reducedSize":true`) {
+		t.Fatalf("expected video RtpParametersJSON to contain \"reducedSize\":true, got: %s", video.RtpParametersJSON)
 	}
 }
 
@@ -304,6 +319,16 @@ a=ssrc:5555 cname:test-cname
 	if !strings.Contains(audio.RtpParametersJSON, `"mid":"audio-mid"`) {
 		t.Fatalf("expected RtpParametersJSON to contain \"mid\":\"audio-mid\", got: %s", audio.RtpParametersJSON)
 	}
+	if !strings.Contains(audio.RtpParametersJSON, `"headerExtensions":[]`) {
+		t.Fatalf("expected RtpParametersJSON to contain \"headerExtensions\":[], got: %s", audio.RtpParametersJSON)
+	}
+	if !strings.Contains(audio.RtpParametersJSON, `"reducedSize":true`) {
+		t.Fatalf("expected RtpParametersJSON to contain \"reducedSize\":true, got: %s", audio.RtpParametersJSON)
+	}
+	if !strings.Contains(audio.RtpParametersJSON, `"cname":"test-cname"`) {
+		t.Fatalf("expected RtpParametersJSON to contain \"cname\":\"test-cname\", got: %s", audio.RtpParametersJSON)
+	}
 }
+
 
 
