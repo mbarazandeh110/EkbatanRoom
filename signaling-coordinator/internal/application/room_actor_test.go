@@ -276,6 +276,11 @@ func TestRoomActor_TwoPeerPublishSubscribeSession(t *testing.T) {
 	if len(engine.consumed) != 2 {
 		t.Fatalf("expected Bob to consume 2 tracks, got %d", len(engine.consumed))
 	}
+	for _, cmd := range engine.consumed {
+		if cmd.RtpCapabilitiesJSON == "" || cmd.RtpCapabilitiesJSON == `{"codecs":[]}` {
+			t.Fatalf("expected valid non-empty codecs in consume RtpCapabilitiesJSON, got: %s", cmd.RtpCapabilitiesJSON)
+		}
+	}
 
 	// Bob must be in WaitingForAnswer state
 	if bobSession.State() != domain.NegotiationStateWaitingForAnswer {

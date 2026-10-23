@@ -2,6 +2,7 @@ package livekit
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -145,9 +146,11 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch msg := req.Message.(type) {
 		case *livekitproto.SignalRequest_Offer:
 			offerStart := time.Now()
+			offerID := msg.Offer.GetId()
 			slog.DebugContext(ctx, "received publisher offer",
 				"room_id", roomID,
 				"identity", identity,
+				"offer_id", offerID,
 				"sdp", msg.Offer.GetSdp(),
 			)
 
@@ -202,19 +205,68 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.DebugContext(ctx, "sending publisher answer",
 				"room_id", roomID,
 				"identity", identity,
+				"offer_id", offerID,
 				"sdp", answerSDP,
 			)
+
+			midToTrackId := make(map[string]string)
+			for _, t := range parsed.Tracks {
+				if t.MID != "" {
+					midToTrackId[t.MID] = t.MID
+				}
+			}
 
 			answerMsg := &livekitproto.SignalResponse{
 				Message: &livekitproto.SignalResponse_Answer{
 					Answer: &livekitproto.SessionDescription{
-						Type: "answer",
-						Sdp:  answerSDP,
+						Type:         "answer",
+						Sdp:          answerSDP,
+						Id:           offerID,
+						MidToTrackId: midToTrackId,
 					},
 				},
 			}
 			_ = responder.send(answerMsg)
 			telemetry.DefaultMetrics().RecordSDPNegotiation("publisher", time.Since(offerStart).Seconds())
+
+		case *livekitproto.SignalRequest_AddTrack:
+			addTrack := msg.AddTrack
+			trackSID := addTrack.GetSid()
+			if trackSID == "" {
+				trackSID = fmt.Sprintf("TR_%s", uuid.NewString()[:12])
+			}
+
+			slog.InfoContext(ctx, "received add track request",
+				"room_id", roomID,
+				"identity", identity,
+				"cid", addTrack.GetCid(),
+				"track_sid", trackSID,
+				"type", addTrack.GetType().String(),
+			)
+
+			trackInfo := &livekitproto.TrackInfo{
+				Sid:        trackSID,
+				Name:       addTrack.GetName(),
+				Type:       addTrack.GetType(),
+				Muted:      addTrack.GetMuted(),
+				Width:      addTrack.GetWidth(),
+				Height:     addTrack.GetHeight(),
+				Simulcast:  len(addTrack.GetLayers()) > 0 || len(addTrack.GetSimulcastCodecs()) > 0,
+				DisableDtx: addTrack.GetDisableDtx(),
+				Source:     addTrack.GetSource(),
+				Layers:     addTrack.GetLayers(),
+			}
+
+			trackPubMsg := &livekitproto.SignalResponse{
+				Message: &livekitproto.SignalResponse_TrackPublished{
+					TrackPublished: &livekitproto.TrackPublishedResponse{
+						Cid:   addTrack.GetCid(),
+						Track: trackInfo,
+					},
+				},
+			}
+			_ = responder.send(trackPubMsg)
+			telemetry.DefaultMetrics().RecordWSMessage("livekit", "track_published", "ok")
 
 		case *livekitproto.SignalRequest_Answer:
 			ansStart := time.Now()

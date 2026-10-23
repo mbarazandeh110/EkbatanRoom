@@ -20,6 +20,7 @@ type LiveKitResponder struct {
 	mu           sync.Mutex
 	conn         *websocket.Conn
 	subTransport *domain.TransportInfo
+	offerSeq     uint32
 	closed       bool
 }
 
@@ -107,6 +108,8 @@ func (r *LiveKitResponder) SendJoinResponse(res *domain.JoinResult) error {
 func (r *LiveKitResponder) SendSubscriberOffer(slots []*domain.SDPSlot, participantSID string) error {
 	r.mu.Lock()
 	subTransport := r.subTransport
+	r.offerSeq++
+	offerID := r.offerSeq
 	r.mu.Unlock()
 
 	if subTransport == nil {
@@ -118,11 +121,20 @@ func (r *LiveKitResponder) SendSubscriberOffer(slots []*domain.SDPSlot, particip
 		return err
 	}
 
+	midToTrackId := make(map[string]string)
+	for _, slot := range slots {
+		if slot.Active && slot.TrackSID != "" && slot.MID != "" {
+			midToTrackId[slot.MID] = slot.TrackSID
+		}
+	}
+
 	msg := &livekitproto.SignalResponse{
 		Message: &livekitproto.SignalResponse_Offer{
 			Offer: &livekitproto.SessionDescription{
-				Type: "offer",
-				Sdp:  sdpOffer,
+				Type:         "offer",
+				Sdp:          sdpOffer,
+				Id:           offerID,
+				MidToTrackId: midToTrackId,
 			},
 		},
 	}

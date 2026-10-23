@@ -2,7 +2,7 @@
 RFC / REQUIREMENT ID: REQ-001
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -35,7 +35,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-002
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -52,7 +52,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-003
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -84,7 +84,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-004
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -98,8 +98,21 @@ STATUS: OPEN
    - Outbound `SignalResponse_Offer` for subscribers should include a non-zero monotonic `Id: uint32` and `MidToTrackId: map[string]string` mapping each media section MID to its track SID.
 
 ===================================================================
-4. RESOLUTION & ARCHITECTURAL TRIAGE (To be completed by signaling-coordinator owner):
-   - Decision: PENDING
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & IMPLEMENTED
    - Architectural Justification:
-   - Modified Files & Added Tests:
+     1. [REQ-001 & REQ-002]: Preserved strict protocol isolation (SRP/DIP). LiveKit-specific message handling (Offer ID matching and SignalRequest_AddTrack -> SignalResponse_TrackPublished) is contained entirely within `internal/adapters/inbound/livekit/ws_handler.go` without leaking protobuf contracts into the domain.
+     2. [REQ-003]: Preserved pure domain interfaces. MediaStreamPort.Consume in `room_actor.go` now propagates the router's active RTP capabilities or standard WebRTC capabilities (Opus + VP8 + H264) rather than empty codecs, enabling mediasoup router.can_consume() validation to succeed deterministically.
+     3. [REQ-004]: LiveKitResponder in `responder.go` maintains monotonic atomic sequence IDs and generates midToTrackId from active Unified Plan slots, fulfilling LiveKit client subscriber offer specification.
+   - Modified Files:
+     - `internal/domain/room.go`: Added RtpCapabilitiesJSON to Room aggregate.
+     - `internal/application/room_actor.go`: Propagate router RTP capabilities / standard WebRTC fallback to MediaStreamPort.Consume.
+     - `internal/adapters/inbound/livekit/ws_handler.go`: Propagate Offer.Id to Answer.Id, populate MidToTrackId, and handle SignalRequest_AddTrack with SignalResponse_TrackPublished.
+     - `internal/adapters/inbound/livekit/responder.go`: Added monotonic offer sequence ID and midToTrackId mapping to SendSubscriberOffer.
+   - Added Tests:
+     - `TestLiveKitWSHandler_OfferAnswerIdMatch` in `internal/adapters/inbound/livekit/ws_handler_test.go`
+     - `TestLiveKitWSHandler_AddTrackRequest` in `internal/adapters/inbound/livekit/ws_handler_test.go`
+     - `TestLiveKitResponder_SubscriberOfferSequenceAndMid` in `internal/adapters/inbound/livekit/ws_handler_test.go`
+     - Added assertions verifying non-empty RtpCapabilitiesJSON in `internal/application/room_actor_test.go`
+   - Verification: All 19 tests pass cleanly under `go test -v -race -count=1 ./...`.
 ===================================================================

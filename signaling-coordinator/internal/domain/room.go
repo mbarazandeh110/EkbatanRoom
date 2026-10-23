@@ -15,12 +15,13 @@ const (
 type Room struct {
 	mu sync.RWMutex
 
-	ID           string
-	RouterID     string
-	Status       RoomStatus
-	CreatedAt    time.Time
-	ClosedAt     time.Time
-	Participants map[string]*Participant
+	ID                  string
+	RouterID            string
+	RtpCapabilitiesJSON string
+	Status              RoomStatus
+	CreatedAt           time.Time
+	ClosedAt            time.Time
+	Participants        map[string]*Participant
 }
 
 func NewRoom(id, routerID string) *Room {
@@ -31,6 +32,18 @@ func NewRoom(id, routerID string) *Room {
 		CreatedAt:    time.Now(),
 		Participants: make(map[string]*Participant),
 	}
+}
+
+func (r *Room) SetRtpCapabilitiesJSON(caps string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.RtpCapabilitiesJSON = caps
+}
+
+func (r *Room) GetRtpCapabilitiesJSON() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.RtpCapabilitiesJSON
 }
 
 func (r *Room) IsActive() bool {

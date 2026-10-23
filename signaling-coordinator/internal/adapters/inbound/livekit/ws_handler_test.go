@@ -147,3 +147,244 @@ func TestLiveKitWSHandler_JoinHandshake(t *testing.T) {
 		t.Fatalf("expected Leave to be called after disconnect")
 	}
 }
+
+func TestLiveKitWSHandler_OfferAnswerIdMatch(t *testing.T) {
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc?room=conference-101&identity=alice&name=Alice%20Smith"
+
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// 1. Drain Join message
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read join: %v", err)
+	}
+
+	// 2. Send Offer with ID = 42
+	dummyOfferSDP := "v=0\r\no=- 12345 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendonly\r\na=rtpmap:111 opus/48000/2\r\na=setup:actpass\r\na=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF\r\n"
+	offerReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_Offer{
+			Offer: &livekitproto.SessionDescription{
+				Type: "offer",
+				Sdp:  dummyOfferSDP,
+				Id:   42,
+			},
+		},
+	}
+	reqData, _ := proto.Marshal(offerReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, reqData); err != nil {
+		t.Fatalf("failed to send offer: %v", err)
+	}
+
+	// 3. Read Answer and verify Answer.Id == 42
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, respData, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read answer message: %v", err)
+	}
+
+	var signalResp livekitproto.SignalResponse
+	if err := proto.Unmarshal(respData, &signalResp); err != nil {
+		t.Fatalf("failed to unmarshal answer response: %v", err)
+	}
+
+	ans := signalResp.GetAnswer()
+	if ans == nil {
+		t.Fatalf("expected Answer response, got %+v", signalResp.Message)
+	}
+	if ans.Id != 42 {
+		t.Fatalf("expected Answer.Id == 42 to match Offer.Id, got %d", ans.Id)
+	}
+	if ans.MidToTrackId == nil || ans.MidToTrackId["0"] != "0" {
+		t.Fatalf("expected MidToTrackId to contain mid '0', got %+v", ans.MidToTrackId)
+	}
+}
+
+func TestLiveKitWSHandler_AddTrackRequest(t *testing.T) {
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc?room=conference-101&identity=alice&name=Alice%20Smith"
+
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// 1. Drain Join message
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read join: %v", err)
+	}
+
+	// 2. Send AddTrack request
+	addTrackReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_AddTrack{
+			AddTrack: &livekitproto.AddTrackRequest{
+				Cid:    "client-cid-999",
+				Name:   "microphone",
+				Type:   livekitproto.TrackType_AUDIO,
+				Source: livekitproto.TrackSource_MICROPHONE,
+			},
+		},
+	}
+	reqData, _ := proto.Marshal(addTrackReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, reqData); err != nil {
+		t.Fatalf("failed to send add track request: %v", err)
+	}
+
+	// 3. Read TrackPublished response
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, respData, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read track published message: %v", err)
+	}
+
+	var signalResp livekitproto.SignalResponse
+	if err := proto.Unmarshal(respData, &signalResp); err != nil {
+		t.Fatalf("failed to unmarshal track published response: %v", err)
+	}
+
+	tp := signalResp.GetTrackPublished()
+	if tp == nil {
+		t.Fatalf("expected TrackPublished response, got %+v", signalResp.Message)
+	}
+	if tp.Cid != "client-cid-999" {
+		t.Fatalf("expected Cid == client-cid-999, got %s", tp.Cid)
+	}
+	if tp.Track == nil || !strings.HasPrefix(tp.Track.Sid, "TR_") {
+		t.Fatalf("expected Track.Sid with prefix TR_, got %+v", tp.Track)
+	}
+	if tp.Track.Type != livekitproto.TrackType_AUDIO || tp.Track.Name != "microphone" {
+		t.Fatalf("unexpected track info: %+v", tp.Track)
+	}
+}
+
+func TestLiveKitResponder_SubscriberOfferSequenceAndMid(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	var responder *livekit.LiveKitResponder
+	var serverConn *websocket.Conn
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		serverConn, err = upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade error: %v", err)
+			return
+		}
+		responder = livekit.NewLiveKitResponder(serverConn)
+		wg.Done()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer clientConn.Close()
+	wg.Wait()
+	defer serverConn.Close()
+
+	// Initialize JoinResult to set subTransport
+	joinRes := &domain.JoinResult{
+		Room:        domain.NewRoom("r1", "router1"),
+		Participant: domain.NewParticipant("p1", "PA_1", "User1"),
+		SubscriberTransport: &domain.TransportInfo{
+			TransportID: "sub-1",
+			IceUfrag:    "ufrag-sub",
+			IcePwd:      "pwd-sub",
+		},
+	}
+	if err := responder.SendJoinResponse(joinRes); err != nil {
+		t.Fatalf("SendJoinResponse failed: %v", err)
+	}
+	// Drain join message on client
+	_, _, _ = clientConn.ReadMessage()
+
+	// Send 1st subscriber offer
+	slots1 := []*domain.SDPSlot{
+		{
+			Index:       0,
+			MID:         "0",
+			Kind:        domain.TrackKindAudio,
+			Active:      true,
+			TrackSID:    "TR_audio_1",
+			PayloadType: 111,
+			ClockRate:   48000,
+		},
+	}
+	if err := responder.SendSubscriberOffer(slots1, "PA_1"); err != nil {
+		t.Fatalf("1st SendSubscriberOffer failed: %v", err)
+	}
+
+	// Read 1st offer
+	_, msg1Bytes, err := clientConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read 1st offer: %v", err)
+	}
+	var resp1 livekitproto.SignalResponse
+	if err := proto.Unmarshal(msg1Bytes, &resp1); err != nil {
+		t.Fatalf("failed to unmarshal 1st offer: %v", err)
+	}
+	offer1 := resp1.GetOffer()
+	if offer1 == nil {
+		t.Fatalf("expected Offer message, got %+v", resp1.Message)
+	}
+	if offer1.Id != 1 {
+		t.Fatalf("expected offer1.Id == 1, got %d", offer1.Id)
+	}
+	if offer1.MidToTrackId["0"] != "TR_audio_1" {
+		t.Fatalf("expected mid 0 -> TR_audio_1, got %+v", offer1.MidToTrackId)
+	}
+
+	// Send 2nd subscriber offer
+	slots2 := append(slots1, &domain.SDPSlot{
+		Index:       1,
+		MID:         "1",
+		Kind:        domain.TrackKindVideo,
+		Active:      true,
+		TrackSID:    "TR_video_2",
+		PayloadType: 96,
+		ClockRate:   90000,
+	})
+	if err := responder.SendSubscriberOffer(slots2, "PA_1"); err != nil {
+		t.Fatalf("2nd SendSubscriberOffer failed: %v", err)
+	}
+
+	// Read 2nd offer
+	_, msg2Bytes, err := clientConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read 2nd offer: %v", err)
+	}
+	var resp2 livekitproto.SignalResponse
+	if err := proto.Unmarshal(msg2Bytes, &resp2); err != nil {
+		t.Fatalf("failed to unmarshal 2nd offer: %v", err)
+	}
+	offer2 := resp2.GetOffer()
+	if offer2.Id != 2 {
+		t.Fatalf("expected offer2.Id == 2 (monotonic), got %d", offer2.Id)
+	}
+	if offer2.MidToTrackId["0"] != "TR_audio_1" || offer2.MidToTrackId["1"] != "TR_video_2" {
+		t.Fatalf("unexpected midToTrackId in offer2: %+v", offer2.MidToTrackId)
+	}
+}

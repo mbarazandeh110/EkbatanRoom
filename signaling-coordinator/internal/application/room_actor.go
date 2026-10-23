@@ -11,6 +11,10 @@ import (
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
 
+// defaultWebRTCRtpCapabilitiesJSON provides fallback standard WebRTC codecs (Opus, VP8, H264)
+// so mediasoup router.can_consume() validation succeeds even when router caps are not pre-cached.
+const defaultWebRTCRtpCapabilitiesJSON = `{"codecs":[{"mimeType":"audio/opus","kind":"audio","clockRate":48000,"channels":2,"preferredPayloadType":111},{"mimeType":"video/VP8","kind":"video","clockRate":90000,"preferredPayloadType":96},{"mimeType":"video/H264","kind":"video","clockRate":90000,"preferredPayloadType":125,"parameters":{"level-asymmetry-allowed":1,"packetization-mode":1,"profile-level-id":"42e01f"}}],"headerExtensions":[]}`
+
 // RoomActor owns the room lifecycle, participant roster, and coordinates media resources.
 type RoomActor struct {
 	mu sync.Mutex
@@ -22,6 +26,14 @@ type RoomActor struct {
 	mediaStreamPort ports.MediaStreamPort
 	iceServers      []domain.IceServer
 	closed          bool
+}
+
+func (a *RoomActor) getRtpCapabilitiesJSON() string {
+	caps := a.room.GetRtpCapabilitiesJSON()
+	if caps != "" && caps != `{"codecs":[]}` {
+		return caps
+	}
+	return defaultWebRTCRtpCapabilitiesJSON
 }
 
 func NewRoomActor(
@@ -61,6 +73,7 @@ func (a *RoomActor) Join(
 			return nil, fmt.Errorf("failed to create media router for room %s: %w", a.room.ID, err)
 		}
 		a.room.RouterID = routerInfo.RouterID
+		a.room.SetRtpCapabilitiesJSON(routerInfo.RtpCapabilitiesJSON)
 	}
 
 	// 2. Provision Publisher WebRTC transport on the SFU node
@@ -289,7 +302,7 @@ func (a *RoomActor) PublishTracks(
 				RouterID:              a.room.RouterID,
 				SubscriberTransportID: otherSession.Participant().SubscriberTransportID,
 				ProducerID:            t.ID,
-				RtpCapabilitiesJSON:   `{"codecs":[]}`,
+				RtpCapabilitiesJSON:   a.getRtpCapabilitiesJSON(),
 				Paused:                false,
 			})
 			if err != nil {
@@ -356,7 +369,7 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 				RouterID:              a.room.RouterID,
 				SubscriberTransportID: p.SubscriberTransportID,
 				ProducerID:            t.ID,
-				RtpCapabilitiesJSON:   `{"codecs":[]}`,
+				RtpCapabilitiesJSON:   a.getRtpCapabilitiesJSON(),
 				Paused:                false,
 			})
 			if err != nil {
