@@ -1,0 +1,105 @@
+===================================================================
+RFC / REQUIREMENT ID: REQ-001
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Contract Compliance] SignalResponse_Answer must include Answer.Id matching SignalRequest_Offer.Id
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When official `livekit-client` (v2.23.0) publishes a track, it sends a `SignalRequest_Offer` with a sequential `id: uint32` (e.g. id=1).
+   - In `internal/adapters/inbound/livekit/ws_handler.go` (lines 208-215), the synthesized publisher answer is returned as:
+     ```go
+     answerMsg := &livekitproto.SignalResponse{
+         Message: &livekitproto.SignalResponse_Answer{
+             Answer: &livekitproto.SessionDescription{
+                 Type: "answer",
+                 Sdp:  answerSDP,
+             },
+         },
+     }
+     ```
+   - Notice that `Answer.Id` is not set (defaults to 0).
+   - In `livekit-client`'s engine negotiation flow, the client snapshots `i = this.publisher.latestOfferId` (e.g. 1) and waits for the `"offerAnswered"` event with handler `s = e => { e > i && (o(), t()) }`.
+   - Because `Answer.Id` is 0, `e` is 0, and `0 > 1` is false. The promise never resolves, and after 15 seconds the client throws:
+     `[ClientA LOG] warning negotiation due to track publish failed, retrying after reconnect: NegotiationError: negotiation timed out`
+   - Playwright test `02-bidirectional-rtp.spec.ts` times out at 30s as a direct consequence.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - For every inbound `SignalRequest_Offer` with `id := msg.Offer.GetId()`, the outbound `SignalResponse_Answer` MUST set `Answer.Id = id` (or `msg.Offer.GetId()`).
+   - If available, `Answer.MidToTrackId` should also be populated to allow the client to map transceiver MIDs.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-002
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Feature Completeness] AddTrackRequest handling and TrackPublishedResponse in ws_handler.go
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In `internal/adapters/inbound/livekit/ws_handler.go`, `SignalRequest_AddTrack` is currently missing from `switch msg := req.Message.(type)` and falls through to `default:` in the repository branch.
+   - `livekit-client` calls `client.sendAddTrack(req)` and awaits a matching `SignalResponse_TrackPublished` with `TrackPublishedResponse{ Cid: req.Cid, Track: ... }`. If absent, track publication fails or stalls.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - Inbound `SignalRequest_AddTrack` must be parsed, allocate a track SID, register the track in the participant session, and respond with `SignalResponse_TrackPublished` containing the matching `cid` and track metadata.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-003
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Inter-Service Protocol] Valid RTP capabilities in MediaStreamPort.Consume command
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In `internal/application/room_actor.go` lines 287-295:
+     ```go
+     consRes, err := a.mediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
+         RequestID:             uuid.NewString(),
+         RouterID:              a.room.RouterID,
+         SubscriberTransportID: otherSession.Participant().SubscriberTransportID,
+         ProducerID:            t.ID,
+         RtpCapabilitiesJSON:   `{"codecs":[]}`,
+         Paused:                false,
+     })
+     if err != nil {
+         continue
+     }
+     ```
+   - In `sfu-media-node` (Rust mediasoup), `can_consume(&producer_id, &rtp_capabilities)` validates whether the subscriber's RTP capabilities support the producer's codec.
+   - When `codecs` is empty (`[]`), `can_consume` returns `false`, and `sfu-media-node` returns gRPC status `InvalidArgument / IncompatibleCodec: Router cannot consume producer with given RTP capabilities`.
+   - The coordinator ignores this error with `continue`, resulting in no subscriber consumers being created, no media being forwarded through the SFU, and Bob never receiving Alice's RTP packets.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - `ConsumeCommand` sent to `sfu-media-node` must include the subscriber's actual or standard RTP capabilities (including opus audio and vp8/h264 video codec definitions with clock rates and payload types) so mediasoup router can establish the consumer.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-004
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Contract Compliance] Subscriber Offer Sequence ID & MID Mapping
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When tracks are published in the room and the coordinator notifies other participants via `SendSubscriberOffer`, `LiveKitResponder.SendSubscriberOffer` generates a subscriber offer SDP.
+   - In official `livekit-client`, `onOffer` parses `SignalResponse_Offer` and uses `msg.Offer.GetId()` as the offer ID and `msg.Offer.GetMidToTrackId()` to map SDP MIDs to track SIDs.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - Outbound `SignalResponse_Offer` for subscribers should include a non-zero monotonic `Id: uint32` and `MidToTrackId: map[string]string` mapping each media section MID to its track SID.
+
+===================================================================
+4. RESOLUTION & ARCHITECTURAL TRIAGE (To be completed by signaling-coordinator owner):
+   - Decision: PENDING
+   - Architectural Justification:
+   - Modified Files & Added Tests:
+===================================================================

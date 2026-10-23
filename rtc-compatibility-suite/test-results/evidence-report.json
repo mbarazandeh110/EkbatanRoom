@@ -1,0 +1,659 @@
+{
+  "suiteVersion": "1.0.0",
+  "sdkVersion": "2.23.0",
+  "runId": "run-1792754625480",
+  "timestamp": "2026-10-23T11:23:45.480Z",
+  "browser": {
+    "name": "chromium",
+    "version": "131.0.6778.33"
+  },
+  "overallStatus": "FAILED",
+  "summary": {
+    "passed": 1,
+    "failed": 1,
+    "blocked": 3,
+    "notRun": 0,
+    "total": 5
+  },
+  "gates": {
+    "gate_01_connection": {
+      "gateId": "gate_01_connection",
+      "name": "Gate 1: Connection & Protocol Handshake",
+      "status": "PASSED",
+      "startTime": "2026-10-23T11:23:45.576Z",
+      "endTime": "2026-10-23T11:23:46.157Z",
+      "durationMs": 581,
+      "checks": {
+        "ws_handshake": {
+          "name": "ws_handshake",
+          "status": "PASSED",
+          "description": "WebSocket connection established to /rtc endpoint"
+        },
+        "join_protocol": {
+          "name": "join_protocol",
+          "status": "PASSED",
+          "description": "Completed protocol v12 JoinResponse exchange"
+        },
+        "participant_state": {
+          "name": "participant_state",
+          "status": "PASSED",
+          "description": "Participant enrolled in room gate1-verification-room with identity verifier-gate1"
+        }
+      },
+      "signalingEvents": [
+        {
+          "timestamp": "2026-10-23T11:23:45.868Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (20 bytes)",
+          "rawPayloadRedacted": "{\"type\":\"connected\"}"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.047Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (169 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 169 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.050Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (60 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 60 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.050Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (60 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 60 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.056Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8358 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8358 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.070Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (194 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 194 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.070Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (178 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 178 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.071Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (196 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 196 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.075Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.084Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (12109 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 12109 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.084Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (60 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 60 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.089Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8385 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8385 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.175Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        }
+      ]
+    },
+    "gate_02_bidirectional_rtp": {
+      "gateId": "gate_02_bidirectional_rtp",
+      "name": "Gate 2: Bidirectional Media RTP & Video Rendering",
+      "status": "FAILED",
+      "startTime": "2026-10-23T11:23:46.315Z",
+      "endTime": "2026-10-23T11:24:16.486Z",
+      "durationMs": 30171,
+      "checks": {},
+      "signalingEvents": [
+        {
+          "timestamp": "2026-10-23T11:23:46.406Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (20 bytes)",
+          "rawPayloadRedacted": "{\"type\":\"connected\"}"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.578Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (20 bytes)",
+          "rawPayloadRedacted": "{\"type\":\"connected\"}"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.719Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (141 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 141 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.722Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (46 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 46 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.722Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (46 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 46 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.726Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8358 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8358 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.741Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (194 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 194 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.742Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (178 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 178 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.742Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (198 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 198 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.746Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.755Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (12111 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 12111 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.755Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (46 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 46 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.758Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8385 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8385 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.831Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (86 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 86 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.833Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (925 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 925 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.833Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (86 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 86 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.834Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (181 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 181 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.838Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (86 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 86 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.839Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (86 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 86 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.844Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8358 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8358 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.860Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (193 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 193 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.861Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (178 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 178 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.862Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (198 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 198 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.865Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.874Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (12110 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 12110 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.875Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (86 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 86 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.875Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (86 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 86 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.880Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8385 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8385 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.926Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (48 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 48 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.930Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (57 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 57 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.958Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (13257 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 13257 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.963Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (110 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 110 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.963Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (1256 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 1256 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.964Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (110 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 110 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:46.965Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8900 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8900 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:56.720Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (7 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 7 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:56.720Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (10 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 10 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:56.720Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:56.835Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (7 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 7 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:56.835Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (10 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 10 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:23:56.835Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.439Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (42 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 42 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.443Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.467Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (181 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 181 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.469Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.469Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (86 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 86 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.469Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (86 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 86 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.470Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (86 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 86 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.470Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (86 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 86 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.475Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8357 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8357 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.486Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (194 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 194 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.486Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (178 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 178 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:02.487Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (198 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 198 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:04.470Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (48 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 48 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:04.475Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (57 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 57 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:04.507Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (13256 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 13256 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:04.509Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (110 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 110 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:04.509Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (110 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 110 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:04.511Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8899 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8899 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:06.834Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (7 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 7 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:06.834Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (10 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 10 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:06.834Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:12.467Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (7 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 7 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:12.467Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (10 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 10 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:12.467Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (8 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 8 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:16.442Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (15 bytes)",
+          "rawPayloadRedacted": "{\"type\":\"ping\"}"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:16.494Z",
+          "direction": "inbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "inbound frame (42 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 42 bytes]"
+        },
+        {
+          "timestamp": "2026-10-23T11:24:16.502Z",
+          "direction": "outbound",
+          "type": "WebSocketFrame",
+          "payloadSummary": "outbound frame (4 bytes)",
+          "rawPayloadRedacted": "[Binary protobuf frame: 4 bytes]"
+        }
+      ],
+      "failureReason": "page.evaluate: Target page, context or browser has been closed"
+    },
+    "gate_03_concurrency_glare": {
+      "gateId": "gate_03_concurrency_glare",
+      "name": "Gate 3: Concurrency & Negotiation Glare Protection",
+      "status": "BLOCKED",
+      "startTime": "",
+      "endTime": "",
+      "durationMs": 0,
+      "checks": {},
+      "signalingEvents": [],
+      "blockedReason": "Prerequisite Gate 2 failed: page.evaluate: Target page, context or browser has been closed"
+    },
+    "gate_04_simulcast_layers": {
+      "gateId": "gate_04_simulcast_layers",
+      "name": "Gate 4: Simulcast Layers & Quality Update Mapping",
+      "status": "BLOCKED",
+      "startTime": "",
+      "endTime": "",
+      "durationMs": 0,
+      "checks": {},
+      "signalingEvents": [],
+      "blockedReason": "Prerequisite Gate 2 failed: page.evaluate: Target page, context or browser has been closed"
+    },
+    "gate_05_ice_restart": {
+      "gateId": "gate_05_ice_restart",
+      "name": "Gate 5: ICE Restart & Media Resumption",
+      "status": "BLOCKED",
+      "startTime": "",
+      "endTime": "",
+      "durationMs": 0,
+      "checks": {},
+      "signalingEvents": [],
+      "blockedReason": "Prerequisite Gate 2 failed: page.evaluate: Target page, context or browser has been closed"
+    }
+  }
+}

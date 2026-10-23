@@ -1,0 +1,7 @@
+node_modules/
+dist/
+test-results/playwright-report.json
+test-results/test-evidence-report.json
+playwright-report/
+blob-report/
+.npm/

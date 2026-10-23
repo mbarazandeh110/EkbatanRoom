@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EkbatanRoom WebRTC Compatibility Harness</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        margin: 20px;
+        background: #0f172a;
+        color: #f8fafc;
+      }
+      .container {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .status-box {
+        padding: 12px;
+        border-radius: 8px;
+        background: #1e293b;
+        border: 1px solid #334155;
+      }
+      .media-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      .media-card {
+        background: #1e293b;
+        border-radius: 8px;
+        padding: 12px;
+        border: 1px solid #334155;
+      }
+      video {
+        width: 100%;
+        max-height: 360px;
+        background: #020617;
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>WebRTC E2E Compatibility Test Harness</h2>
+      <div class="status-box">
+        <div><strong>Status:</strong> <span id="harness-status">IDLE</span></div>
+        <div><strong>Connection State:</strong> <span id="connection-state">disconnected</span></div>
+        <div><strong>Room:</strong> <span id="room-name">-</span></div>
+        <div><strong>Participant:</strong> <span id="participant-identity">-</span></div>
+        <div><strong>Remote Count:</strong> <span id="remote-participants-count">0</span></div>
+      </div>
+
+      <div class="media-grid">
+        <div class="media-card">
+          <h3>Local Media</h3>
+          <div id="local-media-container">
+            <video id="local-video" autoplay playsinline muted></video>
+          </div>
+        </div>
+
+        <div class="media-card">
+          <h3>Remote Media</h3>
+          <div id="remote-media-container">
+            <video id="remote-video" autoplay playsinline></video>
+            <audio id="remote-audio" autoplay></audio>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
