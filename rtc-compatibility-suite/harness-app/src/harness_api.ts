@@ -102,18 +102,44 @@ export class HarnessController {
     });
 
     room.on(
+      RoomEvent.TrackPublished,
+      (pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+        console.log(`[HarnessApp] TrackPublished: ${pub.trackSid} kind=${pub.kind} from=${participant.identity}`);
+      }
+    );
+
+    room.on(
+      RoomEvent.TrackSubscriptionFailed,
+      (sid: string, participant: RemoteParticipant) => {
+        console.warn(`[HarnessApp] TrackSubscriptionFailed: sid=${sid} from=${participant.identity}`);
+      }
+    );
+
+    room.on(
       RoomEvent.TrackSubscribed,
       (track: Track, pub: RemoteTrackPublication, participant: RemoteParticipant) => {
+        console.log(`[HarnessApp] TrackSubscribed: sid=${pub.trackSid} kind=${track.kind} from=${participant.identity}`);
         this.state.subscribedTrackSids.push(pub.trackSid);
 
         if (track.kind === Track.Kind.Video) {
           const videoEl = document.getElementById('remote-video') as HTMLVideoElement | null;
           if (videoEl) {
+            console.log('[HarnessApp] Attaching video track to #remote-video');
             track.attach(videoEl);
+            videoEl.onloadedmetadata = () => {
+              console.log(`[HarnessApp] #remote-video onloadedmetadata: ${videoEl.videoWidth}x${videoEl.videoHeight}`);
+            };
+            videoEl.onplaying = () => {
+              console.log('[HarnessApp] #remote-video onplaying');
+            };
+            videoEl.onerror = (e) => {
+              console.error('[HarnessApp] #remote-video onerror:', e);
+            };
           }
         } else if (track.kind === Track.Kind.Audio) {
           const audioEl = document.getElementById('remote-audio') as HTMLAudioElement | null;
           if (audioEl) {
+            console.log('[HarnessApp] Attaching audio track to #remote-audio');
             track.attach(audioEl);
           }
         }
@@ -122,6 +148,7 @@ export class HarnessController {
     );
 
     room.on(RoomEvent.TrackUnsubscribed, (track: Track, pub: RemoteTrackPublication) => {
+      console.log(`[HarnessApp] TrackUnsubscribed: sid=${pub.trackSid}`);
       this.state.subscribedTrackSids = this.state.subscribedTrackSids.filter(sid => sid !== pub.trackSid);
       track.detach();
       this.updateDom();

@@ -890,3 +890,45 @@ STATUS: IMPLEMENTED
      - `internal/application/slice3_features_test.go`: Added `TestRoomActor_Leave_BatchedSlotInactivationAndBundleRFC8843`.
    - Verification: All 33 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-020
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Protocol Compatibility | Mediasoup RtpParameters & RTCP Feedback] Include rtcpFeedback in Producer RtpParameters and Consumer RtpCapabilities for Video Keyframe Transmission
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In Gate 2 E2E tests, after resolving REQ-017 (ICE-lite), REQ-018 (BUNDLE mid filtering), and REQ-019 (RTX codec):
+     - Audio transmission is 100% successful and bidirectional: Alice sends 333 packets (30,383 bytes) and Bob receives 333 packets (30,383 bytes) with perfect byte-for-byte fidelity.
+     - Video transmission: Alice encodes and transmits 233,442 bytes (251 packets, 131 frames encoded) on SSRC `1621984538` to the SFU publisher transport.
+     - However, Bob's subscriber transport receives 0 video packets (`bytesReceived: 0, packetsReceived: 0, framesReceived: 0`).
+   - Technical root cause in Mediasoup SFU:
+     - In Mediasoup (`sfu-media-node`), a video `Consumer` requires a Keyframe (IDR frame) before it can begin forwarding video RTP packets to a new subscriber.
+     - When a subscriber connects, Mediasoup's consumer dispatches a Keyframe Request (PLI / FIR) to the Producer over RTCP.
+     - However, in `ParsePublisherOffer` (`internal/adapters/inbound/livekit/sdp_mapper.go`), the `codecEntry` inside `RtpParametersJSON` sent to `Produce` contains only `mimeType`, `payloadType`, and `clockRate`. It completely omits `rtcpFeedback`.
+     - When `rtcpFeedback` is missing, Mediasoup's `Producer` registers empty feedback mechanisms (`rtcpFeedback: []`).
+     - As a result, Mediasoup's `RequestKeyFrame()` is a no-op because it believes the producer codec does not support PLI/FIR.
+     - Without a keyframe request received by the producer, Alice continues transmitting only delta P-frames.
+     - Mediasoup drops all delta frames waiting for a keyframe, resulting in 0 video packets delivered to the subscriber.
+   - In addition, in `internal/application/room_actor.go` (`getRtpCapabilitiesJSON`), ensure that the RTP capabilities JSON passed to `Consume` also specifies `rtcpFeedback` for video codecs:
+     `{"type": "nack"}, {"type": "nack", "parameter": "pli"}, {"type": "ccm", "parameter": "fir"}, {"type": "goog-remb"}, {"type": "transport-cc"}`.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`):
+     For video tracks (`kind == domain.TrackKindVideo`), populate `codecEntry["rtcpFeedback"]`:
+     ```go
+     codecEntry["rtcpFeedback"] = []map[string]interface{}{
+         {"type": "nack"},
+         {"type": "nack", "parameter": "pli"},
+         {"type": "ccm", "parameter": "fir"},
+         {"type": "goog-remb"},
+         {"type": "transport-cc"},
+     }
+     ```
+   - In `internal/application/room_actor.go` (`getRtpCapabilitiesJSON`):
+     Ensure the video codec capabilities include the same `rtcpFeedback` entries.
+   - This allows Mediasoup's `Producer` to receive and process PLI/FIR keyframe requests, signaling Alice to generate an initial IDR keyframe, unlocking video forwarding to Bob.
+===================================================================
