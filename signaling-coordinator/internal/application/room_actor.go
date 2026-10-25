@@ -2,7 +2,9 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -12,8 +14,9 @@ import (
 )
 
 // defaultWebRTCRtpCapabilitiesJSON provides fallback standard WebRTC codecs (Opus, VP8, H264)
-// so mediasoup router.can_consume() validation succeeds even when router caps are not pre-cached.
-const defaultWebRTCRtpCapabilitiesJSON = `{"codecs":[{"mimeType":"audio/opus","kind":"audio","clockRate":48000,"channels":2,"preferredPayloadType":111},{"mimeType":"video/VP8","kind":"video","clockRate":90000,"preferredPayloadType":96},{"mimeType":"video/H264","kind":"video","clockRate":90000,"preferredPayloadType":125,"parameters":{"level-asymmetry-allowed":1,"packetization-mode":1,"profile-level-id":"42e01f"}}],"headerExtensions":[]}`
+// with standard RTCP feedback (PLI/FIR/NACK) so mediasoup router.can_consume() validation succeeds
+// and keyframe requests are enabled for video consumers.
+const defaultWebRTCRtpCapabilitiesJSON = `{"codecs":[{"mimeType":"audio/opus","kind":"audio","clockRate":48000,"channels":2,"preferredPayloadType":111},{"mimeType":"video/VP8","kind":"video","clockRate":90000,"preferredPayloadType":96,"rtcpFeedback":[{"type":"nack"},{"type":"nack","parameter":"pli"},{"type":"ccm","parameter":"fir"},{"type":"goog-remb"},{"type":"transport-cc"}]},{"mimeType":"video/H264","kind":"video","clockRate":90000,"preferredPayloadType":125,"parameters":{"level-asymmetry-allowed":1,"packetization-mode":1,"profile-level-id":"42e01f"},"rtcpFeedback":[{"type":"nack"},{"type":"nack","parameter":"pli"},{"type":"ccm","parameter":"fir"},{"type":"goog-remb"},{"type":"transport-cc"}]}],"headerExtensions":[]}`
 
 // RoomActor owns the room lifecycle, participant roster, and coordinates media resources.
 type RoomActor struct {
@@ -30,10 +33,53 @@ type RoomActor struct {
 
 func (a *RoomActor) getRtpCapabilitiesJSON() string {
 	caps := a.room.GetRtpCapabilitiesJSON()
-	if caps != "" && caps != `{"codecs":[]}` {
-		return caps
+	return ensureVideoRtcpFeedback(caps)
+}
+
+func ensureVideoRtcpFeedback(capsJSON string) string {
+	if capsJSON == "" || capsJSON == `{"codecs":[]}` {
+		return defaultWebRTCRtpCapabilitiesJSON
 	}
-	return defaultWebRTCRtpCapabilitiesJSON
+
+	var caps struct {
+		Codecs           []map[string]interface{} `json:"codecs"`
+		HeaderExtensions []interface{}            `json:"headerExtensions"`
+	}
+	if err := json.Unmarshal([]byte(capsJSON), &caps); err != nil {
+		return capsJSON
+	}
+
+	standardVideoFeedback := []map[string]interface{}{
+		{"type": "nack"},
+		{"type": "nack", "parameter": "pli"},
+		{"type": "ccm", "parameter": "fir"},
+		{"type": "goog-remb"},
+		{"type": "transport-cc"},
+	}
+
+	modified := false
+	for _, codec := range caps.Codecs {
+		kind, _ := codec["kind"].(string)
+		mimeType, _ := codec["mimeType"].(string)
+		isVideo := strings.EqualFold(kind, "video") || strings.HasPrefix(strings.ToLower(mimeType), "video/")
+		if isVideo {
+			fb, hasFB := codec["rtcpFeedback"].([]interface{})
+			if !hasFB || len(fb) == 0 {
+				codec["rtcpFeedback"] = standardVideoFeedback
+				modified = true
+			}
+		}
+	}
+
+	if !modified {
+		return capsJSON
+	}
+
+	updated, err := json.Marshal(caps)
+	if err != nil {
+		return capsJSON
+	}
+	return string(updated)
 }
 
 func NewRoomActor(

@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"ekbatan-room/signaling-coordinator/internal/application"
@@ -269,6 +270,49 @@ func TestRoomActor_Leave_BatchedSlotInactivationAndBundleRFC8843(t *testing.T) {
 	}
 	if bobSession.State() != domain.NegotiationStateStable {
 		t.Fatalf("expected Bob to return to Stable, got %s", bobSession.State())
+	}
+}
+
+func TestRoomActor_EnsureVideoRtcpFeedbackInCapabilities(t *testing.T) {
+	engine := newMockOutboundEngine()
+	iceServers := []domain.IceServer{{URLs: []string{"stun:stun.example.com"}}}
+	actor := application.NewRoomActor("conf-caps-fb", engine, engine, engine, iceServers)
+	ctx := context.Background()
+
+	respAlice := newMockResponder()
+	respBob := newMockResponder()
+
+	_, _ = actor.Join(ctx, "alice", "Alice", respAlice)
+	_, _ = actor.Join(ctx, "bob", "Bob", respBob)
+
+	fingerprints := []domain.DtlsFingerprintInfo{{Algorithm: "sha-256", Value: "11:22"}}
+
+	// Alice publishes video
+	_, err := actor.PublishTracks(ctx, "alice", "client", fingerprints, []domain.TrackPublishCommand{
+		{
+			Kind:              domain.TrackKindVideo,
+			SSRC:              9999,
+			PayloadType:       96,
+			Codec:             "VP8",
+			ClockRate:         90000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"video/VP8","payloadType":96,"clockRate":90000,"rtcpFeedback":[{"type":"nack"},{"type":"nack","parameter":"pli"}]}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Alice publish failed: %v", err)
+	}
+
+	// Verify Bob's consume command received capabilities with rtcpFeedback
+	if len(engine.consumed) == 0 {
+		t.Fatalf("expected at least 1 consume command")
+	}
+	for _, cmd := range engine.consumed {
+		if !strings.Contains(cmd.RtpCapabilitiesJSON, `"parameter":"pli"`) {
+			t.Fatalf("expected consume RtpCapabilitiesJSON to contain PLI, got: %s", cmd.RtpCapabilitiesJSON)
+		}
+		if !strings.Contains(cmd.RtpCapabilitiesJSON, `"parameter":"fir"`) {
+			t.Fatalf("expected consume RtpCapabilitiesJSON to contain FIR, got: %s", cmd.RtpCapabilitiesJSON)
+		}
 	}
 }
 

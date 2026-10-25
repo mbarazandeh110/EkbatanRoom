@@ -97,6 +97,53 @@ func TestSDPMapper_ParsePublisherOffer(t *testing.T) {
 	if !strings.Contains(video.RtpParametersJSON, `"apt":96`) {
 		t.Fatalf("expected video RtpParametersJSON to contain apt:96, got: %s", video.RtpParametersJSON)
 	}
+
+	// REQ-020: Standard video RTCP feedback fallback
+	if !strings.Contains(video.RtpParametersJSON, `"rtcpFeedback"`) {
+		t.Fatalf("expected video RtpParametersJSON to contain rtcpFeedback, got: %s", video.RtpParametersJSON)
+	}
+	if !strings.Contains(video.RtpParametersJSON, `"parameter":"pli"`) {
+		t.Fatalf("expected video RtpParametersJSON to contain PLI feedback, got: %s", video.RtpParametersJSON)
+	}
+	if !strings.Contains(video.RtpParametersJSON, `"parameter":"fir"`) {
+		t.Fatalf("expected video RtpParametersJSON to contain FIR feedback, got: %s", video.RtpParametersJSON)
+	}
+}
+
+func TestSDPMapper_ParsePublisherOffer_ExplicitVideoRtcpFeedback(t *testing.T) {
+	sdpWithRtcpFb := `v=0
+o=- 12345 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:video-0
+a=sendonly
+a=setup:actpass
+a=rtpmap:96 VP8/90000
+a=rtcp-fb:96 nack
+a=rtcp-fb:96 nack pli
+a=rtcp-fb:96 ccm fir
+a=rtcp-fb:96 goog-remb
+a=ssrc:5555 cname:explicit-fb
+`
+	parsed, err := livekit.ParsePublisherOffer(sdpWithRtcpFb)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+	if len(parsed.Tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(parsed.Tracks))
+	}
+	video := parsed.Tracks[0]
+	if !strings.Contains(video.RtpParametersJSON, `"parameter":"pli"`) {
+		t.Fatalf("expected parsed PLI feedback, got: %s", video.RtpParametersJSON)
+	}
+	if !strings.Contains(video.RtpParametersJSON, `"parameter":"fir"`) {
+		t.Fatalf("expected parsed FIR feedback, got: %s", video.RtpParametersJSON)
+	}
+	if !strings.Contains(video.RtpParametersJSON, `"type":"goog-remb"`) {
+		t.Fatalf("expected parsed goog-remb feedback, got: %s", video.RtpParametersJSON)
+	}
 }
 
 func TestSDPMapper_GeneratePublisherAnswer_ExplicitPassive(t *testing.T) {

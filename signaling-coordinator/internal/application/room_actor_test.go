@@ -3,6 +3,7 @@ package application_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -284,6 +285,13 @@ func TestRoomActor_TwoPeerPublishSubscribeSession(t *testing.T) {
 	for _, cmd := range engine.consumed {
 		if cmd.RtpCapabilitiesJSON == "" || cmd.RtpCapabilitiesJSON == `{"codecs":[]}` {
 			t.Fatalf("expected valid non-empty codecs in consume RtpCapabilitiesJSON, got: %s", cmd.RtpCapabilitiesJSON)
+		}
+		// REQ-020: Verify rtcpFeedback with PLI for video keyframe requests
+		if !strings.Contains(cmd.RtpCapabilitiesJSON, `"rtcpFeedback"`) {
+			t.Fatalf("expected consume RtpCapabilitiesJSON to contain rtcpFeedback, got: %s", cmd.RtpCapabilitiesJSON)
+		}
+		if !strings.Contains(cmd.RtpCapabilitiesJSON, `"parameter":"pli"`) {
+			t.Fatalf("expected consume RtpCapabilitiesJSON to contain PLI feedback, got: %s", cmd.RtpCapabilitiesJSON)
 		}
 	}
 

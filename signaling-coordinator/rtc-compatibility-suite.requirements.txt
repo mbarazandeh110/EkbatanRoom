@@ -894,7 +894,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-020
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -931,4 +931,17 @@ STATUS: OPEN
    - In `internal/application/room_actor.go` (`getRtpCapabilitiesJSON`):
      Ensure the video codec capabilities include the same `rtcpFeedback` entries.
    - This allows Mediasoup's `Producer` to receive and process PLI/FIR keyframe requests, signaling Alice to generate an initial IDR keyframe, unlocking video forwarding to Bob.
+
+8. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-020):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-020]: In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`), parsed all incoming `a=rtcp-fb` SDP attributes into `codecEntry["rtcpFeedback"]` and guaranteed that for video tracks (`domain.TrackKindVideo`), standard feedback mechanisms (`nack`, `nack pli`, `ccm fir`, `goog-remb`, `transport-cc`) are always populated. This allows Mediasoup's `Producer` to register active keyframe feedback handlers.
+     2. In `internal/application/room_actor.go`, updated `defaultWebRTCRtpCapabilitiesJSON` to include `rtcpFeedback` on VP8 and H264 video codecs, and introduced `ensureVideoRtcpFeedback` in `getRtpCapabilitiesJSON()`. When `Consume` commands are issued, consumer capabilities consistently include PLI/FIR/NACK feedback, enabling Mediasoup consumers to request an initial keyframe (IDR frame) from the producer and unblocking video forwarding to subscriber transports.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added RTCP feedback parsing from SDP with standard WebRTC video feedback fallback (`nack`, `nack pli`, `ccm fir`, `goog-remb`, `transport-cc`) in `ParsePublisherOffer`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added assertions in `TestSDPMapper_ParsePublisherOffer` and added `TestSDPMapper_ParsePublisherOffer_ExplicitVideoRtcpFeedback`.
+     - `internal/application/room_actor.go`: Updated `defaultWebRTCRtpCapabilitiesJSON` and implemented `ensureVideoRtcpFeedback` in `getRtpCapabilitiesJSON`.
+     - `internal/application/room_actor_test.go`: Added assertions verifying `rtcpFeedback` and `pli` in consume `RtpCapabilitiesJSON`.
+     - `internal/application/slice3_features_test.go`: Added `TestRoomActor_EnsureVideoRtcpFeedbackInCapabilities`.
+   - Verification: All 35 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================

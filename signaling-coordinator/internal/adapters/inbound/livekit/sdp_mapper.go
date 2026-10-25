@@ -201,6 +201,58 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			codecEntry["channels"] = channels
 		}
 
+		// REQ-020: Parse RTCP feedback attributes or provide standard video feedback
+		var rtcpFeedback []map[string]interface{}
+		hasPLI := false
+		hasFIR := false
+		for _, attr := range md.Attributes {
+			if attr.Key == "rtcp-fb" {
+				parts := strings.Fields(attr.Value)
+				if len(parts) >= 2 {
+					fbPT := parts[0]
+					if fbPT == strconv.FormatUint(uint64(pt), 10) || fbPT == "*" {
+						fbType := parts[1]
+						entry := map[string]interface{}{
+							"type": fbType,
+						}
+						if len(parts) >= 3 {
+							entry["parameter"] = parts[2]
+							if fbType == "nack" && parts[2] == "pli" {
+								hasPLI = true
+							}
+							if fbType == "ccm" && parts[2] == "fir" {
+								hasFIR = true
+							}
+						}
+						rtcpFeedback = append(rtcpFeedback, entry)
+					}
+				}
+			}
+		}
+
+		if kind == domain.TrackKindVideo {
+			if len(rtcpFeedback) == 0 {
+				rtcpFeedback = []map[string]interface{}{
+					{"type": "nack"},
+					{"type": "nack", "parameter": "pli"},
+					{"type": "ccm", "parameter": "fir"},
+					{"type": "goog-remb"},
+					{"type": "transport-cc"},
+				}
+			} else {
+				if !hasPLI {
+					rtcpFeedback = append(rtcpFeedback, map[string]interface{}{"type": "nack", "parameter": "pli"})
+				}
+				if !hasFIR {
+					rtcpFeedback = append(rtcpFeedback, map[string]interface{}{"type": "ccm", "parameter": "fir"})
+				}
+			}
+		}
+
+		if len(rtcpFeedback) > 0 {
+			codecEntry["rtcpFeedback"] = rtcpFeedback
+		}
+
 		rtcpParams := map[string]interface{}{
 			"reducedSize": true,
 		}
