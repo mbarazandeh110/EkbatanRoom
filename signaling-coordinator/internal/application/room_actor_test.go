@@ -108,7 +108,7 @@ func (m *mockOutboundEngine) Produce(ctx context.Context, cmd *domain.ProduceCom
 	defer m.mu.Unlock()
 	m.produced = append(m.produced, cmd)
 	return &domain.ProduceResult{
-		ProducerID: fmt.Sprintf("prod-%s", cmd.PeerID),
+		ProducerID: fmt.Sprintf("prod-%s-%s", cmd.PeerID, cmd.Kind),
 		Kind:       cmd.Kind,
 	}, nil
 }

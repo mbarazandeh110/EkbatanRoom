@@ -87,6 +87,16 @@ func TestSDPMapper_ParsePublisherOffer(t *testing.T) {
 	if !strings.Contains(video.RtpParametersJSON, `"reducedSize":true`) {
 		t.Fatalf("expected video RtpParametersJSON to contain \"reducedSize\":true, got: %s", video.RtpParametersJSON)
 	}
+	// REQ-019: RTX codec registration
+	if !strings.Contains(video.RtpParametersJSON, `"mimeType":"video/rtx"`) {
+		t.Fatalf("expected video RtpParametersJSON to register RTX codec, got: %s", video.RtpParametersJSON)
+	}
+	if !strings.Contains(video.RtpParametersJSON, `"payloadType":97`) {
+		t.Fatalf("expected video RtpParametersJSON to contain RTX payloadType 97, got: %s", video.RtpParametersJSON)
+	}
+	if !strings.Contains(video.RtpParametersJSON, `"apt":96`) {
+		t.Fatalf("expected video RtpParametersJSON to contain apt:96, got: %s", video.RtpParametersJSON)
+	}
 }
 
 func TestSDPMapper_GeneratePublisherAnswer_ExplicitPassive(t *testing.T) {
@@ -110,6 +120,10 @@ func TestSDPMapper_GeneratePublisherAnswer_ExplicitPassive(t *testing.T) {
 	// Must contain a=setup:passive for DTLS encryption handshake
 	if !strings.Contains(answer, "a=setup:passive") {
 		t.Fatalf("expected a=setup:passive in answer, got:\n%s", answer)
+	}
+	// REQ-017: ice-lite attribute
+	if !strings.Contains(answer, "a=ice-lite") {
+		t.Fatalf("expected a=ice-lite in answer for Mediasoup compatibility, got:\n%s", answer)
 	}
 	if !strings.Contains(answer, "a=ice-ufrag:server-ufrag") {
 		t.Fatalf("expected server ice-ufrag, got:\n%s", answer)
@@ -161,6 +175,16 @@ func TestSDPMapper_GenerateSubscriberOffer_ActiveAndInactiveSlots(t *testing.T) 
 	if !strings.Contains(offer, "a=setup:actpass") {
 		t.Fatalf("expected a=setup:actpass in subscriber offer")
 	}
+	// REQ-017: ice-lite attribute in subscriber offer for Mediasoup compatibility
+	if !strings.Contains(offer, "a=ice-lite") {
+		t.Fatalf("expected a=ice-lite in subscriber offer, got:\n%s", offer)
+	}
+
+	// REQ-018: RFC 8843 BUNDLE compliance: only active slots are in BUNDLE
+	if !strings.Contains(offer, "a=group:BUNDLE 0") || strings.Contains(offer, "a=group:BUNDLE 0 1") {
+		t.Fatalf("expected BUNDLE to only contain active slot 0, got:\n%s", offer)
+	}
+
 	// Active slot 0 must have port 9, sendonly, and msid
 	if !strings.Contains(offer, "a=mid:0") || !strings.Contains(offer, "a=sendonly") {
 		t.Fatalf("expected active mid:0 sendonly")
@@ -180,6 +204,24 @@ func TestSDPMapper_GenerateSubscriberOffer_ActiveAndInactiveSlots(t *testing.T) 
 	}
 	if !strings.Contains(offer, "a=fmtp:111 minptime=10;useinbandfec=1") {
 		t.Fatalf("expected a=fmtp:111 minptime=10;useinbandfec=1 in offer, got:\n%s", offer)
+	}
+
+	// REQ-018: If all slots are inactive, no BUNDLE attribute should be emitted
+	allInactiveSlots := []*domain.SDPSlot{
+		{
+			Index:       0,
+			MID:         "0",
+			Kind:        domain.TrackKindAudio,
+			Active:      false,
+			PayloadType: 111,
+		},
+	}
+	offerAllInactive, err := livekit.GenerateSubscriberOffer(transport, allInactiveSlots, "PA_alice")
+	if err != nil {
+		t.Fatalf("GenerateSubscriberOffer failed for all inactive slots: %v", err)
+	}
+	if strings.Contains(offerAllInactive, "a=group:BUNDLE") {
+		t.Fatalf("expected no BUNDLE attribute when all slots are inactive, got:\n%s", offerAllInactive)
 	}
 }
 

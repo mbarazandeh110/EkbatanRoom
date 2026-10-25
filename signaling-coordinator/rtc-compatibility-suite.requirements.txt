@@ -782,7 +782,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-017
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -817,7 +817,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-018
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -848,7 +848,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-019
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -876,4 +876,17 @@ STATUS: OPEN
          })
      }
      ```
+
+8. RESOLUTION & ARCHITECTURAL TRIAGE (REQ-017, REQ-018 & REQ-019):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-017]: Added `a=ice-lite` session attribute to both `GenerateSubscriberOffer` and `GeneratePublisherAnswer` in `internal/adapters/inbound/livekit/sdp_mapper.go`. Per RFC 8445 Section 5.1.1, an ICE-lite agent MUST advertise `ice-lite` in all session descriptions. This informs the browser (Chromium) that Mediasoup is an ICE-lite endpoint, ensuring Chromium takes the `ICE-CONTROLLING` role and avoiding STUN 487 Role Conflict errors.
+     2. [REQ-018]: In `internal/adapters/inbound/livekit/sdp_mapper.go` (`GenerateSubscriberOffer`), filtered MIDs in `a=group:BUNDLE` so only active slots (`slot.Active == true`) are bundled, omitting `a=group:BUNDLE` completely when all slots are inactive. This strictly conforms to RFC 8843 Section 7.2.1 which mandates that rejected/inactive m-lines MUST NOT be bundled. Furthermore, in `internal/application/room_actor.go` (`leaveLocked`), all tracks of a departing participant are inactivated across remaining participant sessions in a single batch before sending a single `SendSubscriberOffer` per remaining session, eliminating sequential offer races and Chromium `setRemoteDescription` mid-rejection errors during peer leave.
+     3. [REQ-019]: In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`), when `rtxPT > 0`, the associated RTX codec descriptor (`mimeType: <kind>/rtx`, `payloadType: rtxPT`, `parameters: {"apt": pt}`) is appended to `codecs` in `RtpParametersJSON`. This allows Mediasoup's `Producer` to find the associated retransmission codec via `GetRtxCodecForEncoding` and prevents packet drop warnings (`no stream found for received packet`).
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added `a=ice-lite` session attribute to offers and answers, filtered BUNDLE MIDs to active slots only, and added RTX codec descriptor to `codecs`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added unit tests for `a=ice-lite`, active-only BUNDLE grouping, and RTX codec registration.
+     - `internal/application/room_actor.go`: Batched slot inactivation across leaving participant tracks before sending single renegotiation offer per remaining peer in `leaveLocked`.
+     - `internal/application/slice3_features_test.go`: Added `TestRoomActor_Leave_BatchedSlotInactivationAndBundleRFC8843`.
+   - Verification: All 33 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================

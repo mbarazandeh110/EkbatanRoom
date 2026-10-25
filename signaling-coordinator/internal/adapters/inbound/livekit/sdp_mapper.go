@@ -208,10 +208,22 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			rtcpParams["cname"] = cname
 		}
 
+		codecs := []map[string]interface{}{
+			codecEntry,
+		}
+		if rtxPT > 0 {
+			codecs = append(codecs, map[string]interface{}{
+				"mimeType":    fmt.Sprintf("%s/rtx", kind),
+				"payloadType": rtxPT,
+				"clockRate":   clockRate,
+				"parameters": map[string]interface{}{
+					"apt": pt,
+				},
+			})
+		}
+
 		rtpParams := map[string]interface{}{
-			"codecs": []map[string]interface{}{
-				codecEntry,
-			},
+			"codecs":           codecs,
 			"headerExtensions": []map[string]interface{}{},
 			"encodings": []map[string]interface{}{
 				{
@@ -319,6 +331,7 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 		sdp.Attribute{Key: "ice-ufrag", Value: transport.IceUfrag},
 		sdp.Attribute{Key: "ice-pwd", Value: transport.IcePwd},
 		sdp.Attribute{Key: "ice-options", Value: "trickle"},
+		sdp.Attribute{Key: "ice-lite"},
 		sdp.Attribute{Key: "setup", Value: "passive"},
 	)
 
@@ -420,14 +433,16 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 		},
 	}
 
-	mids := make([]string, 0, len(slots))
+	activeMids := make([]string, 0, len(slots))
 	for _, slot := range slots {
-		mids = append(mids, slot.MID)
+		if slot.Active {
+			activeMids = append(activeMids, slot.MID)
+		}
 	}
-	if len(mids) > 0 {
+	if len(activeMids) > 0 {
 		offer.Attributes = append(offer.Attributes, sdp.Attribute{
 			Key:   "group",
-			Value: "BUNDLE " + strings.Join(mids, " "),
+			Value: "BUNDLE " + strings.Join(activeMids, " "),
 		})
 	}
 
@@ -436,6 +451,7 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 		sdp.Attribute{Key: "ice-ufrag", Value: transport.IceUfrag},
 		sdp.Attribute{Key: "ice-pwd", Value: transport.IcePwd},
 		sdp.Attribute{Key: "ice-options", Value: "trickle"},
+		sdp.Attribute{Key: "ice-lite"},
 		sdp.Attribute{Key: "setup", Value: "actpass"},
 	)
 

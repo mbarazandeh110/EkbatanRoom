@@ -162,16 +162,19 @@ func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) error
 	_, _ = a.room.RemoveParticipant(participantID)
 	_ = session.Close()
 
-	// Inactivate all slots for this participant's tracks on other participants
-	for _, track := range p.ListTracks() {
-		for _, otherSession := range a.sessions {
+	// Inactivate all slots for this participant's tracks on remaining participants in a single batch (REQ-018)
+	leavingTracks := p.ListTracks()
+	for _, otherSession := range a.sessions {
+		inactivatedCount := 0
+		for _, track := range leavingTracks {
 			if _, ok := otherSession.SlotTable().InactivateSlotByTrackSID(track.SID); ok {
-				if otherSession.State() == domain.NegotiationStateStable {
-					if err := otherSession.StartOfferTransition(); err == nil {
-						if otherSession.Responder() != nil {
-							_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), otherSession.Participant().SID)
-						}
-					}
+				inactivatedCount++
+			}
+		}
+		if inactivatedCount > 0 && otherSession.State() == domain.NegotiationStateStable {
+			if err := otherSession.StartOfferTransition(); err == nil {
+				if otherSession.Responder() != nil {
+					_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), otherSession.Participant().SID)
 				}
 			}
 		}
