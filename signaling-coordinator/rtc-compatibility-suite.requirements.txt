@@ -778,3 +778,102 @@ STATUS: IMPLEMENTED
      - `internal/application/room_actor_test.go`: Added assertions verifying that Bob receives `ParticipantUpdate` containing Alice's published tracks in `TestRoomActor_TwoPeerPublishSubscribeSession`.
    - Verification: All 32 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-017
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Protocol Compatibility | WebRTC RFC 5245 & RFC 8445 Compliance] Include a=ice-lite in SDP session descriptions for Mediasoup ICE server compatibility
+
+2. REASON & TECHNICAL EVIDENCE:
+   - `sfu-media-node` uses Mediasoup (`RTC::ICE::IceServer`), which implements an ICE-lite agent.
+   - Mediasoup strictly expects the remote browser peer to be `ICE-CONTROLLING`. In `IceServer.cpp`:
+     ```cpp
+     if (request->GetIceControlled())
+     {
+         MS_WARN_TAG(ice, "peer indicates ICE-CONTROLLED in STUN Binding request => 487");
+         // Reply 487 (Role Conflict)
+         ...
+     }
+     ```
+   - In `GenerateSubscriberOffer` (`internal/adapters/inbound/livekit/sdp_mapper.go`), the session attributes omit `a=ice-lite`.
+   - Per RFC 5245 Section 5.1.1 and RFC 8445 Section 6.1.1, when a browser receives an SDP offer from a peer that does not announce `a=ice-lite`, the browser acts as the Answerer and defaults to the `ICE-CONTROLLED` role.
+   - When the browser (Chromium) sends STUN Binding requests with `ICE-CONTROLLED`, Mediasoup rejects all of them with:
+     `RTC::ICE::IceServer::ProcessStunRequest() | peer indicates ICE-CONTROLLED in STUN Binding request => 487`
+   - Consequently, the subscriber transport ICE state never connects, the DTLS handshake never completes, and no media (RTP) packets are delivered to the subscriber, causing `waitForRemoteTrack` in `02-bidirectional-rtp.spec.ts` to time out at 15000ms.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - Per RFC 8445 Section 5.1.1:
+     "An ICE-lite implementation MUST include the 'ice-lite' attribute in every ICE-related SDP description it generates (offers and answers)."
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go`:
+     1. In `GenerateSubscriberOffer`, add `sdp.Attribute{Key: "ice-lite"}` at session level.
+     2. In `GeneratePublisherAnswer`, add `sdp.Attribute{Key: "ice-lite"}` at session level.
+   - This signals to the browser that the remote peer is an ICE-lite agent, causing the browser to assume the `ICE-CONTROLLING` role. Mediasoup accepts the STUN Binding requests with 200 OK, establishes the ICE tuple, DTLS handshake succeeds, and RTP flows.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-018
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Protocol Compatibility | WebRTC RFC 8843 BUNDLE Compliance & Teardown Batching] Exclude inactive/rejected m-lines from BUNDLE group and batch slot inactivation on participant leave
+
+2. REASON & TECHNICAL EVIDENCE:
+   - RFC 8843 Section 7.2.1 and Section 7.3.2 dictate:
+     "An offerer MUST NOT include a media description that is rejected (port set to zero) in a BUNDLE group."
+   - In `GenerateSubscriberOffer` (`internal/adapters/inbound/livekit/sdp_mapper.go`), lines 423-432 collect all slot MIDs into `a=group:BUNDLE ...` unconditionally:
+     ```go
+     mids := make([]string, 0, len(slots))
+     for _, slot := range slots {
+         mids = append(mids, slot.MID)
+     }
+     ```
+   - When a track is unpublished or a participant leaves, its slot is marked `Active: false` with port 0 (`md.MediaName.Port = sdp.RangedPort{Value: 0}`).
+   - Because `GenerateSubscriberOffer` bundles port 0 MIDs together with port 9 MIDs (e.g. `a=group:BUNDLE 0 1` where mid 0 is port 0 and mid 1 is port 9), Chromium rejects the offer during teardown with:
+     `[ClientB ERROR] Failed to execute 'setRemoteDescription' on 'RTCPeerConnection': Failed to set remote offer sdp: The m= section with mid='1' should be rejected.`
+   - In addition, in `internal/application/room_actor.go` (`leaveLocked` lines 166-178), the loop iterates over `p.ListTracks()` and immediately triggers `InactivateSlotByTrackSID` and `SendSubscriberOffer` per track, resulting in multiple rapid sequential offers where slot 0 is inactivated while slot 1 is still active.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`GenerateSubscriberOffer`):
+     Filter the MIDs included in `a=group:BUNDLE` so that ONLY active slots (`slot.Active == true`) are included. If no slots are active (`len(activeMids) == 0`), do not emit the `a=group:BUNDLE` attribute.
+   - In `internal/application/room_actor.go` (`leaveLocked`):
+     For each remaining session in `a.sessions`, inactivate all slots matching any of the leaving participant's tracks first. Then, if any slot was inactivated and the session is in `NegotiationStateStable`, send exactly ONE `SendSubscriberOffer` per remaining session.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-019
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [SFU Integration | Mediasoup RtpParameters] Register RTX codec in RtpParameters for video tracks with RTX
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer` lines 211-230):
+     When `rtxSSRC > 0`, it adds `"rtx": {"ssrc": rtxSSRC}` into `rtpParams["encodings"]`.
+     However, it does not add the associated RTX codec into `rtpParams["codecs"]`.
+   - Mediasoup's `Producer.cpp` looks up `GetRtxCodecForEncoding(encoding)`. If the RTX codec (with associated payload type `apt`) is not present in `codecs`, Mediasoup cannot associate the RTX packet to any stream and logs:
+     `RTC::Producer::ReceiveRtpPacket() | no stream found for received packet [ssrc:...]`
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`):
+     When `rtxPT > 0`, append the RTX codec descriptor to `codecs`:
+     ```go
+     if rtxPT > 0 {
+         codecs = append(codecs, map[string]interface{}{
+             "mimeType":    fmt.Sprintf("%s/rtx", kind),
+             "payloadType": rtxPT,
+             "clockRate":   clockRate,
+             "parameters": map[string]interface{}{
+                 "apt": pt,
+             },
+         })
+     }
+     ```
+===================================================================
