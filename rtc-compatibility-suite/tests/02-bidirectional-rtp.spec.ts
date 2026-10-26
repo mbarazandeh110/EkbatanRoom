@@ -18,7 +18,7 @@ test.describe('Gate 2: Bidirectional Media RTP & Video Rendering (02-bidirection
 
     sharedEvidenceRecorder.startGate(gateId);
 
-    const roomId = 'gate2-media-room';
+    const roomId = `gate2-media-room-${Date.now()}`;
     const clientAId = 'peer-alice';
     const clientBId = 'peer-bob';
     const checks: Record<string, GateCheckResult> = {};
@@ -27,20 +27,18 @@ test.describe('Gate 2: Bidirectional Media RTP & Video Rendering (02-bidirection
     let clientB;
 
     try {
-      // 1. Create independent browser contexts for Client A and Client B
+      // 1. Create Client A and join
       clientA = await createParticipant(clientAId, roomId, gateId);
-      clientB = await createParticipant(clientBId, roomId, gateId);
-
       clientA.getPage().on('console', msg => console.log('[ClientA LOG]', msg.type(), msg.text()));
       clientA.getPage().on('pageerror', err => console.log('[ClientA ERROR]', err.message));
+      const tokenA = await tokenFactory.createToken(roomId, clientAId, { name: 'Alice' });
+      await clientA.join(suiteConfig.signalingUrl, tokenA);
+
+      // 2. Create Client B and join
+      clientB = await createParticipant(clientBId, roomId, gateId);
       clientB.getPage().on('console', msg => console.log('[ClientB LOG]', msg.type(), msg.text()));
       clientB.getPage().on('pageerror', err => console.log('[ClientB ERROR]', err.message));
-
-      const tokenA = await tokenFactory.createToken(roomId, clientAId, { name: 'Alice' });
       const tokenB = await tokenFactory.createToken(roomId, clientBId, { name: 'Bob' });
-
-      // 2. Both participants connect to the same room
-      await clientA.join(suiteConfig.signalingUrl, tokenA);
       await clientB.join(suiteConfig.signalingUrl, tokenB);
 
       // Wait for participants to discover each other
@@ -51,6 +49,96 @@ test.describe('Gate 2: Bidirectional Media RTP & Video Rendering (02-bidirection
       // Step A: Forward Direction (Client A Publishes -> Client B Subscribes)
       // ---------------------------------------------------------
       await clientA.publishTracks({ audio: true, video: true });
+
+      for (let i = 0; i < 4; i++) {
+        await clientB.getPage().waitForTimeout(1000);
+        if (i === 0) {
+          const sdpsA = await clientA.getPage().evaluate(() => {
+            const room = (window.testHarness as any)?.room;
+            const pub = room?.engine?.pcManager?.publisher;
+            const pc: RTCPeerConnection | undefined = pub?.pc ?? pub;
+            return {
+              pubOffer: pc?.localDescription?.sdp,
+              pubAnswer: pc?.remoteDescription?.sdp,
+            };
+          });
+          const sdpsB = await clientB.getPage().evaluate(() => {
+            const room = (window.testHarness as any)?.room;
+            const sub = room?.engine?.pcManager?.subscriber;
+            const pc: RTCPeerConnection | undefined = sub?.pc ?? sub;
+            return {
+              subOffer: pc?.remoteDescription?.sdp,
+              subAnswer: pc?.localDescription?.sdp,
+            };
+          });
+          console.log('[SDP Alice Pub Offer]\n', sdpsA.pubOffer);
+          console.log('[SDP Alice Pub Answer]\n', sdpsA.pubAnswer);
+          console.log('[SDP Bob Sub Offer]\n', sdpsB.subOffer);
+          console.log('[SDP Bob Sub Answer]\n', sdpsB.subAnswer);
+        }
+        const statsA = await clientA.getPage().evaluate(async () => {
+          const room = (window.testHarness as unknown as { room: { engine: { pcManager?: { publisher?: { getStats?: () => Promise<RTCStatsReport> } } } } }).room;
+          const pubPc = room?.engine?.pcManager?.publisher;
+          const out: Record<string, unknown>[] = [];
+          if (pubPc?.getStats) {
+            const reports = await pubPc.getStats();
+            reports.forEach((r) => {
+              if (r.type === 'outbound-rtp') {
+                out.push({
+                  kind: r.kind,
+                  ssrc: r.ssrc,
+                  bytesSent: r.bytesSent,
+                  packetsSent: r.packetsSent,
+                  framesEncoded: r.framesEncoded,
+                  keyFramesEncoded: (r as unknown as { keyFramesEncoded?: number }).keyFramesEncoded,
+                  pliCount: (r as unknown as { pliCount?: number }).pliCount,
+                  firCount: (r as unknown as { firCount?: number }).firCount,
+                  nackCount: (r as unknown as { nackCount?: number }).nackCount
+                });
+              }
+            });
+          }
+          return out;
+        });
+
+        const statsB = await clientB.getPage().evaluate(async () => {
+          const room = (window.testHarness as unknown as { room: { engine: { pcManager?: { subscriber?: { getStats?: () => Promise<RTCStatsReport> } } } } }).room;
+          const subPc = room?.engine?.pcManager?.subscriber;
+          const inb: Record<string, unknown>[] = [];
+          if (subPc?.getStats) {
+            const reports = await subPc.getStats();
+            reports.forEach((r) => {
+              if (r.type === 'inbound-rtp') {
+                inb.push({
+                  kind: r.kind,
+                  ssrc: r.ssrc,
+                  bytesReceived: r.bytesReceived,
+                  packetsReceived: r.packetsReceived,
+                  framesDecoded: (r as unknown as { framesDecoded?: number }).framesDecoded,
+                  keyFramesDecoded: (r as unknown as { keyFramesDecoded?: number }).keyFramesDecoded,
+                  pliCount: (r as unknown as { pliCount?: number }).pliCount,
+                  firCount: (r as unknown as { firCount?: number }).firCount,
+                  nackCount: (r as unknown as { nackCount?: number }).nackCount
+                });
+              }
+            });
+          }
+          const videoEl = document.querySelector('#remote-video') as HTMLVideoElement | null;
+          return {
+            inbound: inb,
+            videoEl: {
+              srcObject: !!videoEl?.srcObject,
+              readyState: videoEl?.readyState,
+              videoWidth: videoEl?.videoWidth,
+              videoHeight: videoEl?.videoHeight
+            }
+          };
+        });
+
+        console.log(`[RTCP Check +${i + 1}s] Alice Outbound:`, JSON.stringify(statsA));
+        console.log(`[RTCP Check +${i + 1}s] Bob Inbound:`, JSON.stringify(statsB));
+        if ((statsB.videoEl.videoWidth ?? 0) > 0) break;
+      }
 
       // Client B waits for remote track to be attached and rendered
       await clientB.waitForRemoteTrack('video', 15000);

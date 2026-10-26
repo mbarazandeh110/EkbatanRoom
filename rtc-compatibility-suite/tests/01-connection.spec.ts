@@ -13,7 +13,7 @@ test.describe('Gate 1: Connection & Protocol Handshake (01-connection)', () => {
     const gateId = 'gate_01_connection';
     sharedEvidenceRecorder.startGate(gateId);
 
-    const roomId = 'gate1-verification-room';
+    const roomId = `gate1-verification-room-${Date.now()}`;
     const identity = 'verifier-gate1';
     const checks: Record<string, GateCheckResult> = {};
 

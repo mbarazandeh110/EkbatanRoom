@@ -7,8 +7,11 @@ import {
   RoomConnectOptions,
   RemoteTrackPublication,
   RemoteParticipant,
-  ConnectionState
+  ConnectionState,
+  setLogLevel
 } from 'livekit-client';
+
+setLogLevel('trace');
 
 export interface HarnessState {
   status: 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';

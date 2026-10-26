@@ -945,3 +945,61 @@ STATUS: IMPLEMENTED
      - `internal/application/slice3_features_test.go`: Added `TestRoomActor_EnsureVideoRtcpFeedbackInCapabilities`.
    - Verification: All 35 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-021
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Inter-Service Protocol & WebRTC SDP RFC 5576 Compliance] Preserve primary media SSRC in ParsePublisherOffer and map RTX SSRC without overwriting primary media SSRC
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When Alice publishes video in Gate 2 (`02-bidirectional-rtp.spec.ts`), official `livekit-client` generates the following video m-line attributes in the publisher SDP offer:
+     ```sdp
+     a=rtpmap:96 VP8/90000
+     a=rtpmap:97 rtx/90000
+     a=fmtp:97 apt=96
+     a=ssrc-group:FID 814331902 3655270929
+     a=ssrc:814331902 cname:BOx/v2pfypsuv0kf
+     a=ssrc:814331902 msid:4da05d30-0011-4571-86af-1f2f009d6bfd fdacb0d6-9dc0-4d87-b0e5-a58aca45b299
+     a=ssrc:3655270929 cname:BOx/v2pfypsuv0kf
+     a=ssrc:3655270929 msid:4da05d30-0011-4571-86af-1f2f009d6bfd fdacb0d6-9dc0-4d87-b0e5-a58aca45b299
+     ```
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`):
+     - When scanning `a=ssrc:` attributes, each line sets `parsedTrack.SSRC = ssrcVal`.
+     - When multiple `a=ssrc:` lines are present (media SSRC `814331902` followed by RTX SSRC `3655270929`), the second SSRC line unconditionally overwrites `parsedTrack.SSRC` with `3655270929`.
+     - Consequently:
+       1. `ProduceCommand.SSRC` is passed as `3655270929` (the retransmission SSRC) instead of `814331902` (the primary media SSRC).
+       2. In `rtpParams["encodings"][0]["ssrc"]`, the primary encoding SSRC is set to `3655270929` instead of `814331902`.
+   - When Alice transmits live VP8 video packets on media SSRC `814331902`, Mediasoup inspects `rtpParameters.encodings` to find an encoding where `encoding.ssrc == ssrc` (`Producer.cpp` lines 890-903).
+   - Because `encoding.ssrc` is `3655270929`, `3655270929 == 814331902` evaluates to `false`.
+   - Mediasoup drops every video packet transmitted by Alice and logs hundreds of warnings:
+     `RTC::Producer::ReceiveRtpPacket() | no stream found for received packet [ssrc:814331902]`
+   - As a direct result:
+     - Alice transmits 126,605 bytes of video (147 packets, 80 frames encoded).
+     - Mediasoup drops all 147 video packets at the producer.
+     - Bob receives 0 video packets (`bytesReceived: 0`), and `waitForRemoteTrack('video')` times out after 15000ms.
+   - Note: Audio succeeds 100% (18,085 bytes transferred) solely because audio has no RTX and therefore only a single `a=ssrc:` line, preventing the SSRC from being overwritten.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`):
+     1. When parsing `a=ssrc-group:FID <mediaSSRC> <rtxSSRC>`:
+        - The first SSRC token MUST be treated as the primary media SSRC (`mediaSSRC`).
+        - The second SSRC token MUST be treated as the RTX SSRC (`rtxSSRC`).
+     2. When parsing `a=ssrc:<ssrc>` lines:
+        - If `mediaSSRC` was already identified via `a=ssrc-group:FID` (or if an initial SSRC was already recorded and no FID group exists), a subsequent `a=ssrc:` line matching `rtxSSRC` MUST NOT overwrite `parsedTrack.SSRC`.
+        - Specifically:
+          `parsedTrack.SSRC` MUST ALWAYS be the primary media SSRC (e.g. `814331902`).
+     3. In `rtpParams["encodings"]`:
+        - `encodings[0]["ssrc"]` MUST be `mediaSSRC` (e.g. `814331902`).
+        - If `rtxSSRC > 0`, `encodings[0]["rtx"] = map[string]interface{}{"ssrc": rtxSSRC}`.
+     4. In `domain.ProduceCommand`:
+        - `cmd.SSRC` MUST be `mediaSSRC`.
+   - This ensures Mediasoup's `Producer` associates inbound video RTP packets with the media encoding, successfully creating the `RtpStream` and forwarding video to subscribers.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: PENDING
+   - Architectural Justification:
+   - Modified Files & Added Tests:
