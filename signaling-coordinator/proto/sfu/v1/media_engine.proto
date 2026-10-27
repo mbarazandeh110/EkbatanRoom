@@ -24,6 +24,14 @@ service SfuMediaEngineService {
   rpc CloseResource(CloseResourceRequest) returns (CloseResourceResponse);
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
   rpc WatchNodeEvents(WatchNodeEventsRequest) returns (stream NodeEvent);
+
+  // ۵. استعلام مستقیم ظرفیت و وزن نود (در بدو اتصال Coordinator یا Health Check)
+  rpc GetNodeCapacity(GetNodeCapacityRequest) returns (NodeCapacityMetrics);
+
+  // ۶. مدیریت PipeTransport بین‌نودی (فقط برای زمانی که نود به Hard Threshold می‌رسد و اتاق بین دو سرور Cascade می‌شود)
+  // توجه: Pipe بین ورکرهای داخل یک نود کاملاً خودکار و پنهان در داخل sfu-media-node انجام می‌شود و نیازی به RPC ندارد.
+  rpc CreatePipeTransport(CreatePipeTransportRequest) returns (CreatePipeTransportResponse);
+  rpc ConnectPipeTransport(ConnectPipeTransportRequest) returns (ConnectPipeTransportResponse);
 }
 
 enum ResourceType {
@@ -33,6 +41,68 @@ enum ResourceType {
   RESOURCE_TYPE_PRODUCER = 3;
   RESOURCE_TYPE_CONSUMER = 4;
 }
+
+message GetNodeCapacityRequest {}
+
+// پیام جامع وضعیت ظرفیت، وزن و بار ترکیبی نود (Hybrid Predictive-Reactive Load)
+message NodeCapacityMetrics {
+  // کل وزن پردازشی نود (مثلاً alive_workers * 1000) برای مقایسه سرورهای ناهمگن (۸ هسته‌ای در برابر ۳۲ هسته‌ای)
+  uint32 total_capacity_weight = 1;
+  
+  // تعداد کل ورکرها و ورکرهای سالم فعال در این نود
+  uint32 total_workers = 2;
+  uint32 alive_workers = 3;
+
+  // ۱. بار منطقی رزروشده (Predictive): مجموع امتیاز منابع فعال تقسیم بر وزن کل (۰.۰ تا ۱۰۰.۰)
+  float logical_load_percent = 4;
+
+  // ۲. بار واقعی سخت‌افزاری (Reactive): میانگین مصرف CPU پروسه‌های mediasoup-worker (۰.۰ تا ۱۰۰.۰)
+  float cpu_usage_percent = 5;
+
+  // ۳. درصد مصرف حافظه RAM کل نود (صرفاً جهت Circuit Breaker اضطراری)
+  float memory_usage_percent = 6;
+
+  // ۴. بار پرترین ورکر فعلی نود (برای تشخیص اشباع تک‌هسته‌ای)
+  float max_worker_load_percent = 7;
+
+  // ۵. درصد پر بودن نهایی و موثر نود: max(logical_load_percent, cpu_usage_percent)
+  // سرویس signaling-coordinator تصمیمات Soft/Hard Threshold را روی این عدد اعمال می‌کند
+  float effective_load_percent = 8;
+
+  // آمار شمارشی منابع فعال روی نود (برای Observability و دیباگ زمان‌بند)
+  uint32 active_routers = 9;
+  uint32 active_transports = 10;
+  uint32 active_producers = 11;
+  uint32 active_consumers = 12;
+
+  // آیا نود در حال خاموش شدن نرم (Graceful Draining) است؟
+  bool is_draining = 13;
+}
+
+// پیام‌های مربوط به PipeTransport بین دو نود مجزا (Inter-Node Cascading)
+message CreatePipeTransportRequest {
+  string request_id = 1;
+  string router_id = 2;
+  bool enable_srtp = 3;
+  bool enable_rtx = 4;
+}
+
+message CreatePipeTransportResponse {
+  string pipe_transport_id = 1;
+  string ip = 2;
+  uint32 port = 3;
+  string srtp_parameters_json = 4;
+}
+
+message ConnectPipeTransportRequest {
+  string router_id = 1;
+  string pipe_transport_id = 2;
+  string remote_ip = 3;
+  uint32 remote_port = 4;
+  string remote_srtp_parameters_json = 5;
+}
+
+message ConnectPipeTransportResponse {}
 
 message CreateRouterRequest {
   string request_id = 1; // کلید Idempotency (الزامی)
@@ -194,6 +264,7 @@ message NodeEvent {
     MediaScoreEvent media_score = 4;
     LayerChangedEvent layer_changed = 5;
     ResourceClosedEvent resource_closed = 6;
+    NodeCapacityMetrics node_capacity = 7; // اضافه شده برای گزارش بلادرنگ بار و وزن نود
   }
 }
 
