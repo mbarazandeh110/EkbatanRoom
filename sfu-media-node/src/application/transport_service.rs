@@ -284,7 +284,7 @@ impl TransportUseCase for TransportService {
             .into_iter()
             .map(|fp| (fp.algorithm, fp.value))
             .collect();
-        let fingerprints = validation::parse_dtls_fingerprints(&fp_tuples)?;
+        let fingerprints = parse_dtls_fingerprints(&fp_tuples)?;
         let dtls_parameters = DtlsParameters { role, fingerprints };
 
         transport
@@ -419,4 +419,30 @@ impl TransportUseCase for TransportService {
 
         Ok(())
     }
+}
+
+fn parse_dtls_fingerprints(
+    fingerprints: &[(String, String)],
+) -> Result<Vec<DtlsFingerprint>, SfuDomainError> {
+    if fingerprints.is_empty() {
+        return Err(SfuDomainError::InvalidArgument(
+            "At least one DTLS fingerprint is required".to_string(),
+        ));
+    }
+
+    let mut result = Vec::with_capacity(fingerprints.len());
+    for (algorithm, value) in fingerprints {
+        let json_val = serde_json::json!({
+            "algorithm": algorithm.to_lowercase(),
+            "value": value
+        });
+        let fp: DtlsFingerprint = serde_json::from_value(json_val).map_err(|e| {
+            SfuDomainError::InvalidArgument(format!(
+                "Invalid DTLS fingerprint with algorithm '{algorithm}': {e}"
+            ))
+        })?;
+        result.push(fp);
+    }
+
+    Ok(result)
 }

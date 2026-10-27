@@ -1,6 +1,5 @@
+use crate::domain::entities::{DtlsRole, MediaKind};
 use crate::domain::errors::SfuDomainError;
-use mediasoup::prelude::*;
-use mediasoup::types::data_structures::{DtlsFingerprint, DtlsRole};
 
 pub fn validate_not_empty(field_name: &str, value: &str) -> Result<(), SfuDomainError> {
     if value.trim().is_empty() {
@@ -13,7 +12,7 @@ pub fn validate_not_empty(field_name: &str, value: &str) -> Result<(), SfuDomain
 }
 
 pub fn parse_media_kind(kind: &str) -> Result<MediaKind, SfuDomainError> {
-    match kind.to_lowercase().as_str() {
+    match kind.trim().to_lowercase().as_str() {
         "audio" => Ok(MediaKind::Audio),
         "video" => Ok(MediaKind::Video),
         other => Err(SfuDomainError::InvalidArgument(format!(
@@ -31,74 +30,6 @@ pub fn parse_dtls_role(role: &str) -> Result<DtlsRole, SfuDomainError> {
             "Invalid dtls_role '{other}', expected 'auto', 'client', or 'server'"
         ))),
     }
-}
-
-pub fn parse_rtp_parameters(json_str: &str) -> Result<RtpParameters, SfuDomainError> {
-    let trimmed = json_str.trim();
-    if trimmed.is_empty() {
-        return Err(SfuDomainError::InvalidArgument(
-            "rtp_parameters_json cannot be empty".to_string(),
-        ));
-    }
-
-    let params: RtpParameters = serde_json::from_str(trimmed).map_err(|e| {
-        SfuDomainError::InvalidArgument(format!("Invalid rtp_parameters_json: {e}"))
-    })?;
-
-    if params.codecs.is_empty() {
-        return Err(SfuDomainError::InvalidArgument(
-            "rtp_parameters must include at least one codec".to_string(),
-        ));
-    }
-
-    Ok(params)
-}
-
-pub fn parse_rtp_capabilities(json_str: &str) -> Result<RtpCapabilities, SfuDomainError> {
-    let trimmed = json_str.trim();
-    if trimmed.is_empty() {
-        return Err(SfuDomainError::InvalidArgument(
-            "rtp_capabilities_json cannot be empty".to_string(),
-        ));
-    }
-
-    let caps: RtpCapabilities = serde_json::from_str(trimmed).map_err(|e| {
-        SfuDomainError::InvalidArgument(format!("Invalid rtp_capabilities_json: {e}"))
-    })?;
-
-    if caps.codecs.is_empty() {
-        return Err(SfuDomainError::InvalidArgument(
-            "rtp_capabilities must include at least one codec".to_string(),
-        ));
-    }
-
-    Ok(caps)
-}
-
-pub fn parse_dtls_fingerprints(
-    fingerprints: &[(String, String)],
-) -> Result<Vec<DtlsFingerprint>, SfuDomainError> {
-    if fingerprints.is_empty() {
-        return Err(SfuDomainError::InvalidArgument(
-            "At least one DTLS fingerprint is required".to_string(),
-        ));
-    }
-
-    let mut result = Vec::with_capacity(fingerprints.len());
-    for (algorithm, value) in fingerprints {
-        let json_val = serde_json::json!({
-            "algorithm": algorithm.to_lowercase(),
-            "value": value
-        });
-        let fp: DtlsFingerprint = serde_json::from_value(json_val).map_err(|e| {
-            SfuDomainError::InvalidArgument(format!(
-                "Invalid DTLS fingerprint with algorithm '{algorithm}': {e}"
-            ))
-        })?;
-        result.push(fp);
-    }
-
-    Ok(result)
 }
 
 #[cfg(test)]
@@ -125,6 +56,7 @@ mod tests {
         assert_eq!(parse_dtls_role("auto").unwrap(), DtlsRole::Auto);
         assert_eq!(parse_dtls_role("client").unwrap(), DtlsRole::Client);
         assert_eq!(parse_dtls_role("server").unwrap(), DtlsRole::Server);
+        assert_eq!(parse_dtls_role("").unwrap(), DtlsRole::Auto);
         assert!(parse_dtls_role("invalid").is_err());
     }
 }

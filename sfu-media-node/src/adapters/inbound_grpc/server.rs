@@ -225,8 +225,21 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         instrument_rpc("CloseResource", request, move |req| async move {
             match req.resource_type() {
                 proto::ResourceType::Router => {
+                    if !req.router_id.is_empty()
+                        && !req.resource_id.is_empty()
+                        && req.router_id != req.resource_id
+                    {
+                        return Err(Status::invalid_argument(
+                            "router_id and resource_id must match when closing a Router",
+                        ));
+                    }
+                    let r_id = if !req.resource_id.is_empty() {
+                        &req.resource_id
+                    } else {
+                        &req.router_id
+                    };
                     node.router_service
-                        .close_router(&req.resource_id)
+                        .close_router(r_id)
                         .map_err(Status::from)?;
                 }
                 proto::ResourceType::Transport => {

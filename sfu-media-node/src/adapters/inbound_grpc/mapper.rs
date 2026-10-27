@@ -6,6 +6,8 @@ use crate::ports::inbound::{
     CreateTransportResult, ProduceParams, ProduceResult, RestartIceResult,
 };
 use crate::proto::sfu::v1 as proto;
+use mediasoup::prelude::{RtpCapabilities, RtpParameters};
+use mediasoup::types::data_structures::DtlsFingerprint;
 
 impl From<SfuDomainError> for tonic::Status {
     fn from(err: SfuDomainError) -> Self {
@@ -22,6 +24,74 @@ impl From<SfuDomainError> for tonic::Status {
             SfuDomainError::Internal(msg) => tonic::Status::internal(msg),
         }
     }
+}
+
+pub fn parse_rtp_parameters(json_str: &str) -> Result<RtpParameters, SfuDomainError> {
+    let trimmed = json_str.trim();
+    if trimmed.is_empty() {
+        return Err(SfuDomainError::InvalidArgument(
+            "rtp_parameters_json cannot be empty".to_string(),
+        ));
+    }
+
+    let params: RtpParameters = serde_json::from_str(trimmed).map_err(|e| {
+        SfuDomainError::InvalidArgument(format!("Invalid rtp_parameters_json: {e}"))
+    })?;
+
+    if params.codecs.is_empty() {
+        return Err(SfuDomainError::InvalidArgument(
+            "rtp_parameters must include at least one codec".to_string(),
+        ));
+    }
+
+    Ok(params)
+}
+
+pub fn parse_rtp_capabilities(json_str: &str) -> Result<RtpCapabilities, SfuDomainError> {
+    let trimmed = json_str.trim();
+    if trimmed.is_empty() {
+        return Err(SfuDomainError::InvalidArgument(
+            "rtp_capabilities_json cannot be empty".to_string(),
+        ));
+    }
+
+    let caps: RtpCapabilities = serde_json::from_str(trimmed).map_err(|e| {
+        SfuDomainError::InvalidArgument(format!("Invalid rtp_capabilities_json: {e}"))
+    })?;
+
+    if caps.codecs.is_empty() {
+        return Err(SfuDomainError::InvalidArgument(
+            "rtp_capabilities must include at least one codec".to_string(),
+        ));
+    }
+
+    Ok(caps)
+}
+
+pub fn parse_dtls_fingerprints(
+    fingerprints: &[(String, String)],
+) -> Result<Vec<DtlsFingerprint>, SfuDomainError> {
+    if fingerprints.is_empty() {
+        return Err(SfuDomainError::InvalidArgument(
+            "At least one DTLS fingerprint is required".to_string(),
+        ));
+    }
+
+    let mut result = Vec::with_capacity(fingerprints.len());
+    for (algorithm, value) in fingerprints {
+        let json_val = serde_json::json!({
+            "algorithm": algorithm.to_lowercase(),
+            "value": value
+        });
+        let fp: DtlsFingerprint = serde_json::from_value(json_val).map_err(|e| {
+            SfuDomainError::InvalidArgument(format!(
+                "Invalid DTLS fingerprint with algorithm '{algorithm}': {e}"
+            ))
+        })?;
+        result.push(fp);
+    }
+
+    Ok(result)
 }
 
 pub fn to_create_router_response(
@@ -85,12 +155,8 @@ pub fn from_connect_transport_request(
     validation::validate_not_empty("router_id", &req.router_id)?;
     validation::validate_not_empty("transport_id", &req.transport_id)?;
 
-    let dtls_role = match validation::parse_dtls_role(&req.dtls_role)? {
-        mediasoup::types::data_structures::DtlsRole::Auto => DtlsRole::Auto,
-        mediasoup::types::data_structures::DtlsRole::Client => DtlsRole::Client,
-        mediasoup::types::data_structures::DtlsRole::Server => DtlsRole::Server,
-    };
-    let remote_fingerprints = req
+    let dtls_role = validation::parse_dtls_role(&req.dtls_role)?;
+    let remote_fingerprints: Vec<DtlsFingerprintInfo> = req
         .remote_fingerprints
         .into_iter()
         .map(|f| DtlsFingerprintInfo {
@@ -98,6 +164,12 @@ pub fn from_connect_transport_request(
             value: f.value,
         })
         .collect();
+
+    let fp_tuples: Vec<(String, String)> = remote_fingerprints
+        .iter()
+        .map(|fp| (fp.algorithm.clone(), fp.value.clone()))
+        .collect();
+    let _ = parse_dtls_fingerprints(&fp_tuples)?;
 
     Ok(ConnectTransportParams {
         router_id: req.router_id,
@@ -121,8 +193,8 @@ pub fn from_produce_request(req: proto::ProduceRequest) -> Result<ProduceParams,
     validation::validate_not_empty("transport_id", &req.transport_id)?;
     validation::validate_not_empty("peer_id", &req.peer_id)?;
 
-    let kind: MediaKind = validation::parse_media_kind(&req.kind)?.into();
-    let rtp_parameters = validation::parse_rtp_parameters(&req.rtp_parameters_json)?;
+    let kind = validation::parse_media_kind(&req.kind)?;
+    let rtp_parameters = parse_rtp_parameters(&req.rtp_parameters_json)?;
 
     Ok(ProduceParams {
         request_id: req.request_id,
@@ -160,7 +232,7 @@ pub fn from_consume_request(req: proto::ConsumeRequest) -> Result<ConsumeParams,
     validation::validate_not_empty("subscriber_transport_id", &req.subscriber_transport_id)?;
     validation::validate_not_empty("producer_id", &req.producer_id)?;
 
-    let rtp_capabilities = validation::parse_rtp_capabilities(&req.rtp_capabilities_json)?;
+    let rtp_capabilities = parse_rtp_capabilities(&req.rtp_capabilities_json)?;
 
     Ok(ConsumeParams {
         request_id: req.request_id,

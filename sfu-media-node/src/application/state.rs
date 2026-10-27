@@ -4,11 +4,14 @@ use mediasoup::prelude::*;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use mediasoup::audio_level_observer::AudioLevelObserver;
+
 #[derive(Clone)]
 pub struct RouterItem {
     pub router: Router,
     pub room_id: String,
     pub worker_index: usize,
+    pub audio_level_observer: AudioLevelObserver,
     pub is_closed: Arc<AtomicBool>,
 }
 

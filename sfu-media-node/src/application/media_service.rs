@@ -165,6 +165,30 @@ impl MediaUseCase for MediaService {
                         })
                         .collect();
 
+                    if params.kind == MediaKind::Audio {
+                        let observer_opt = self
+                            .state
+                            .routers
+                            .get(&params.router_id)
+                            .map(|r| r.audio_level_observer.clone());
+                        if let Some(observer) = observer_opt {
+                            use mediasoup::rtp_observer::{
+                                RtpObserver, RtpObserverAddProducerOptions,
+                            };
+                            if let Err(e) = observer
+                                .add_producer(RtpObserverAddProducerOptions::new(producer.id()))
+                                .await
+                            {
+                                tracing::warn!(
+                                    router_id = %params.router_id,
+                                    producer_id = %producer_id,
+                                    error = %e,
+                                    "Failed to add audio producer to AudioLevelObserver"
+                                );
+                            }
+                        }
+                    }
+
                     let item = ProducerItem {
                         producer,
                         router_id: params.router_id.clone(),
@@ -732,14 +756,16 @@ impl MediaUseCase for MediaService {
                     .map(|set| set.iter().map(|id| id.clone()).collect())
                     .unwrap_or_default();
 
-                for pid in producer_ids {
-                    let maybe_p = self.state.producers.get(&pid).map(|p| p.producer.clone());
-                    if let Some(p) = maybe_p {
-                        if let Ok(p_stats) = p.get_stats().await {
-                            for s in p_stats {
-                                packets_received += s.packet_count;
-                            }
-                        }
+                let producer_futs: Vec<_> = producer_ids
+                    .into_iter()
+                    .filter_map(|pid| self.state.producers.get(&pid).map(|p| p.producer.clone()))
+                    .map(|p| async move { p.get_stats().await.ok().unwrap_or_default() })
+                    .collect();
+
+                let p_stats_list = futures_util::future::join_all(producer_futs).await;
+                for p_stats in p_stats_list {
+                    for s in p_stats {
+                        packets_received += s.packet_count;
                     }
                 }
 
@@ -750,15 +776,17 @@ impl MediaUseCase for MediaService {
                     .map(|set| set.iter().map(|id| id.clone()).collect())
                     .unwrap_or_default();
 
-                for cid in consumer_ids {
-                    let maybe_c = self.state.consumers.get(&cid).map(|c| c.consumer.clone());
-                    if let Some(c) = maybe_c {
-                        if let Ok(c_stats) = c.get_stats().await {
-                            for s in c_stats {
-                                if let ConsumerRtpStreamStat::Outbound(out) = s {
-                                    packets_sent += out.packet_count;
-                                }
-                            }
+                let consumer_futs: Vec<_> = consumer_ids
+                    .into_iter()
+                    .filter_map(|cid| self.state.consumers.get(&cid).map(|c| c.consumer.clone()))
+                    .map(|c| async move { c.get_stats().await.ok().unwrap_or_default() })
+                    .collect();
+
+                let c_stats_list = futures_util::future::join_all(consumer_futs).await;
+                for c_stats in c_stats_list {
+                    for s in c_stats {
+                        if let ConsumerRtpStreamStat::Outbound(out) = s {
+                            packets_sent += out.packet_count;
                         }
                     }
                 }

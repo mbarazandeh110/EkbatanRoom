@@ -194,11 +194,57 @@ impl RouterUseCase for RouterService {
                     let caps_json = serde_json::to_string(&router.rtp_capabilities())
                         .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
 
+                    let mut observer_options =
+                        mediasoup::audio_level_observer::AudioLevelObserverOptions::default();
+                    observer_options.interval = 500;
+                    let audio_level_observer = router
+                        .create_audio_level_observer(observer_options)
+                        .await
+                        .map_err(|e| {
+                            SfuDomainError::Mediasoup(format!(
+                                "Failed to create AudioLevelObserver: {e}"
+                            ))
+                        })?;
+
+                    let is_closed = Arc::new(AtomicBool::new(false));
+
+                    let event_publisher = self.event_publisher.clone();
+                    let r_id = router_id.clone();
+                    let state_ref = self.state.clone();
+                    let closed_ref = is_closed.clone();
+
+                    audio_level_observer
+                        .on_volumes(move |volumes| {
+                            if closed_ref.load(Ordering::SeqCst)
+                                || !state_ref.is_router_active(&r_id)
+                            {
+                                return;
+                            }
+
+                            for v in volumes {
+                                let p_id = v.producer.id().to_string();
+                                let peer_id = state_ref
+                                    .producers
+                                    .get(&p_id)
+                                    .map(|p| p.peer_id.clone())
+                                    .unwrap_or_default();
+
+                                event_publisher.publish_active_speaker(
+                                    &r_id,
+                                    &p_id,
+                                    &peer_id,
+                                    v.volume as f32,
+                                );
+                            }
+                        })
+                        .detach();
+
                     let item = RouterItem {
                         router,
                         room_id: room_id.to_string(),
                         worker_index,
-                        is_closed: Arc::new(AtomicBool::new(false)),
+                        audio_level_observer,
+                        is_closed,
                     };
 
                     self.worker_pool.increment_load(worker_index);
@@ -221,22 +267,21 @@ impl RouterUseCase for RouterService {
     fn close_router(&self, router_id: &str) -> Result<(), SfuDomainError> {
         validation::validate_not_empty("router_id", router_id)?;
 
-        // 1. Emit ResourceClosedEvent for router before removing or closing
-        self.event_publisher.publish_resource_closed(
-            router_id,
-            "router",
-            router_id,
-            "router_closed",
-        );
-
-        // 2. Remove router from active maps
+        // Remove router from active maps; emit ResourceClosedEvent ONLY if router actually existed
         if let Some((_, item)) = self.state.routers.remove(router_id) {
             item.is_closed.store(true, Ordering::SeqCst);
             self.state.room_to_router.remove(&item.room_id);
             self.worker_pool.decrement_load(item.worker_index);
             self.metrics.dec_active_routers();
 
-            // 3. Cascade close transports
+            self.event_publisher.publish_resource_closed(
+                router_id,
+                "router",
+                router_id,
+                "router_closed",
+            );
+
+            // Cascade close transports
             if let Some((_, transport_ids)) = self.state.router_transports.remove(router_id) {
                 for tid in transport_ids {
                     self.cascade_close_transport_internal(router_id, &tid);

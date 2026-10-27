@@ -440,3 +440,144 @@ async fn test_worker_load_decrement_underflow_protection() {
     // Another decrement should saturate at 0
     node.worker_pool.decrement_load(0);
 }
+
+#[tokio::test]
+async fn test_close_router_validation_and_no_false_event() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+    let mut rx = node.event_hub.subscribe();
+
+    // 1. Mismatched router_id and resource_id should return InvalidArgument
+    let err = service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: "router-a".to_string(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: "router-b".to_string(),
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+    // 2. Closing a non-existent router should succeed idempotently and NOT publish ResourceClosed event
+    let res = service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: "non-existent-router".to_string(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: "non-existent-router".to_string(),
+        }))
+        .await;
+
+    assert!(res.is_ok());
+
+    // Drain/check events to ensure NO ResourceClosed event was emitted
+    let received_false_event = timeout(Duration::from_millis(200), async {
+        while let Ok(event) = rx.recv().await {
+            if let Some(proto::node_event::Payload::ResourceClosed(rc)) = event.payload {
+                if rc.resource_id == "non-existent-router" {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        !received_false_event,
+        "No ResourceClosed event should be emitted for non-existent router"
+    );
+}
+
+#[tokio::test]
+async fn test_audio_producer_added_to_audio_level_observer_and_stats_join_all() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create Router
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-alo-1".to_string(),
+            room_id: "room-alo-1".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let router_id = r_resp.router_id;
+
+    // 2. Create Transport
+    let tr_resp = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "tr-alo-1".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-alo-1".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let transport_id = tr_resp.transport_id;
+
+    // 3. Produce Audio (this should successfully register with AudioLevelObserver)
+    let opus_rtp_params = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "audio/opus",
+                "clockRate": 48000,
+                "channels": 2,
+                "payloadType": 111,
+                "rtcpFeedback": [],
+                "parameters": {}
+            }
+        ],
+        "headerExtensions": [
+            {
+                "uri": "urn:ietf:params:rtp-hdrext:ssrc-audio-level",
+                "id": 1,
+                "encrypt": false,
+                "parameters": {}
+            }
+        ],
+        "encodings": [
+            {
+                "ssrc": 33333333
+            }
+        ],
+        "rtcp": {
+            "cname": "alo-test-audio",
+            "reducedSize": true
+        }
+    }"#;
+
+    let prod_resp = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "prod-alo-1".to_string(),
+            router_id: router_id.clone(),
+            transport_id: transport_id.clone(),
+            peer_id: "peer-alo-1".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_rtp_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!prod_resp.producer_id.is_empty());
+
+    // 4. Test GetStats on the transport (executing parallelized futures_util::future::join_all)
+    let stats_resp = service
+        .get_stats(Request::new(proto::GetStatsRequest {
+            router_id: router_id.clone(),
+            resource_type: proto::ResourceType::Transport as i32,
+            resource_id: transport_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!stats_resp.stats_json.is_empty());
+}
