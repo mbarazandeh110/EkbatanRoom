@@ -57,3 +57,8 @@
 4. قانون مالکیت فایل‌های قرارداد مشترک (`media_engine.proto` و `SIGNALING_CONTRACT.md`):
    1. مالک انحصاری تغییر `media_engine.proto` فقط چت `sfu-media-node` (Rust) است. اگر چت Go فیلد جدیدی در gRPC نیاز داشت، آن را در `sfu-media-node/signaling-coordinator.requirements.txt` می‌نویسد.
    2. مالک انحصاری تغییر `SIGNALING_CONTRACT.md` فقط چت `signaling-coordinator` (Go) است.
+
+## قوانین زمان‌بندی ظرفیت SFU و توزیع بار (SFU Capacity Scheduling)
+1. **عدم دخالت در توپولوژی ورکرهای داخلی Rust:** سرویس `signaling-coordinator` هر نود `sfu-media-node` را به عنوان یک واحد یکپارچه می‌بیند و هرگز نباید سعی کند ورکرهای داخلی یک نود را مدیریت یا Pipe کند.
+2. **تصمیم‌گیری متمرکز Soft/Hard Threshold:** اعمال مرزهای `SFU_SOFT_THRESHOLD_PERCENT` (پیش‌فرض ۷۰٪ برای اتاق‌های جدید) و `SFU_HARD_THRESHOLD_PERCENT` (پیش‌فرض ۹۰٪ برای سرریز اتاق موجود به نود دیگر) منحصراً بر عهده `signaling-coordinator` و بر پایه فیلد `effective_load_percent` و `total_capacity_weight` دریافتی از نودهای مدیا است.
+3. **اولویت مطلق هم‌جواری اتاق (Room Locality):** تا زمانی که نود میزبان فعلی یک اتاق به مرز Hard Threshold نرسیده است، تمام کاربران جدید همان اتاق باید به همان نود هدایت شوند.

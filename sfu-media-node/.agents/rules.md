@@ -61,3 +61,8 @@
 4. قانون مالکیت فایل‌های قرارداد مشترک (`media_engine.proto` و `SIGNALING_CONTRACT.md`):
    1. مالک انحصاری تغییر `media_engine.proto` فقط چت `sfu-media-node` (Rust) است. اگر چت Go فیلد جدیدی در gRPC نیاز داشت، آن را در `sfu-media-node/signaling-coordinator.requirements.txt` می‌نویسد.
    2. مالک انحصاری تغییر `SIGNALING_CONTRACT.md` فقط چت `signaling-coordinator` (Go) است.
+
+## ۵. قوانین مقیاس‌پذیری چند-ورکری (Intra-Node) و گزارش ظرفیت نود
+1. **شفافیت کامل روتر منطقی:** سرویس `signaling-coordinator` نباید درگیر تعداد ورکرهای داخلی نود شود. توزیع کاربران یک اتاق بزرگ بین ورکرهای داخلی نود و اجرای `pipe_to_router` باید کاملاً در لایه `application` داخل `sfu-media-node` مدیریت شود.
+2. **عدم فیلتر شدن `NodeCapacityMetrics` در `WatchNodeEvents`:** در استریم `WatchNodeEvents`، رویدادهای از نوع `NodeCapacity` سطح نود هستند (`router_id == ""`) و هرگز نباید توسط گارد Zombie Events فیلتر شوند.
+3. **متریک‌های پرومتئوس ظرفیت:** مقادیر `sfu_node_capacity_weight`، `sfu_node_logical_load_percent`، `sfu_node_cpu_usage_percent` و `sfu_node_effective_load_percent` را به عنوان Gauge بدون لیبل‌های کاردینالیتی بالا در `/metrics` ثبت کن.
