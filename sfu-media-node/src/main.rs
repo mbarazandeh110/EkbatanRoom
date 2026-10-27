@@ -2,21 +2,28 @@ use sfu_media_node::proto::sfu::v1::sfu_media_engine_service_server::SfuMediaEng
 use sfu_media_node::{Config, GrpcMediaEngineService, MediaNode};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tonic::transport::Server;
 
-async fn shutdown_signal() {
+async fn wait_for_shutdown() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to install Ctrl+C signal handler");
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            tracing::error!("Failed to install Ctrl+C signal handler: {err}");
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("Failed to install SIGTERM signal handler")
-            .recv()
-            .await;
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(err) => {
+                tracing::error!("Failed to install SIGTERM signal handler: {err}");
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]
@@ -34,7 +41,7 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::from_env();
+    let config = Config::try_from_env()?;
     sfu_media_node::observability::init_observability(&config.observability)?;
 
     tracing::info!(
@@ -54,16 +61,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let grpc_addr: SocketAddr = format!("0.0.0.0:{}", config.grpc_port).parse()?;
     let media_node = Arc::new(MediaNode::new(config).await?);
-    let service = GrpcMediaEngineService::new(media_node);
+    let service = GrpcMediaEngineService::new(media_node.clone());
 
     tracing::info!("gRPC server listening on {}", grpc_addr);
 
     Server::builder()
         .add_service(SfuMediaEngineServiceServer::new(service))
-        .serve_with_shutdown(grpc_addr, shutdown_signal())
+        .serve_with_shutdown(grpc_addr, wait_for_shutdown())
         .await?;
 
-    tracing::info!("SFU Media Node shutdown completed gracefully.");
+    tracing::info!("gRPC server stopped. Cleaning up media node resources...");
+    if let Err(e) = media_node.shutdown(Duration::from_secs(5)).await {
+        tracing::error!("Media node shutdown completed with errors: {e}");
+    }
 
+    tracing::info!("SFU Media Node shutdown completed gracefully.");
     Ok(())
 }

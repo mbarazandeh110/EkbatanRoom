@@ -57,6 +57,14 @@ pub fn init_observability(config: &ObservabilityConfig) -> Result<(), Box<dyn Er
             .with(fmt_layer)
             .with(otel_layer)
             .try_init();
+    } else if config.log_format == "pretty" {
+        let otel_layer = build_otel_layer(config)?;
+        let fmt_layer = tracing_subscriber::fmt::layer().pretty();
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .with(otel_layer)
+            .try_init();
     } else {
         let otel_layer = build_otel_layer(config)?;
         let fmt_layer = tracing_subscriber::fmt::layer();

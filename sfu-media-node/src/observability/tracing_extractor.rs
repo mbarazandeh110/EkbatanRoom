@@ -59,6 +59,9 @@ pub fn attach_trace_context(span: &tracing::Span, metadata: &MetadataMap) -> Ext
     if let Some(ref trace_id) = extracted.trace_id {
         span.record("trace_id", trace_id.as_str());
     }
+    if let Some(ref parent_span_id) = extracted.parent_span_id {
+        span.record("span_id", parent_span_id.as_str());
+    }
     if let Some(ref request_id) = extracted.request_id {
         span.record("request_id", request_id.as_str());
     }

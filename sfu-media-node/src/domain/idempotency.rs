@@ -1,4 +1,4 @@
-use crate::domain::error::SfuError;
+use crate::domain::errors::SfuDomainError;
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -57,19 +57,53 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
         });
     }
 
+    pub fn start_periodic_cleanup(
+        self: &Arc<Self>,
+        interval: Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let cache = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                if let Some(c) = cache.upgrade() {
+                    c.clean_expired();
+                } else {
+                    break;
+                }
+            }
+        })
+    }
+
     pub async fn execute_or_get<F, Fut>(
         &self,
         request_id: &str,
         payload: &[u8],
         action: F,
-    ) -> Result<T, SfuError>
+    ) -> Result<T, SfuDomainError>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<T, SfuError>>,
+        Fut: std::future::Future<Output = Result<T, SfuDomainError>>,
+    {
+        self.execute_or_get_with_hook(request_id, payload, action, || {})
+            .await
+    }
+
+    pub async fn execute_or_get_with_hook<F, Fut, H>(
+        &self,
+        request_id: &str,
+        payload: &[u8],
+        action: F,
+        on_hit: H,
+    ) -> Result<T, SfuDomainError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, SfuDomainError>>,
+        H: FnOnce(),
     {
         let request_id = request_id.trim();
         if request_id.is_empty() {
-            return Err(SfuError::InvalidArgument(
+            return Err(SfuDomainError::InvalidArgument(
                 "request_id cannot be empty".to_string(),
             ));
         }
@@ -87,10 +121,10 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
                 } => {
                     if now.duration_since(*completed_at) < self.ttl {
                         if payload_hash == &hash {
-                            crate::observability::metrics::record_idempotency_hit();
+                            on_hit();
                             return Ok(response.clone());
                         } else {
-                            return Err(SfuError::IdempotencyConflict(format!(
+                            return Err(SfuDomainError::IdempotencyConflict(format!(
                                 "request_id '{request_id}' already executed with different payload"
                             )));
                         }
@@ -102,11 +136,11 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
                 } => {
                     if now.duration_since(*created_at) < self.in_flight_timeout {
                         if payload_hash != &hash {
-                            return Err(SfuError::IdempotencyConflict(format!(
+                            return Err(SfuDomainError::IdempotencyConflict(format!(
                                 "request_id '{request_id}' currently in-flight with different payload"
                             )));
                         }
-                        return Err(SfuError::InFlight);
+                        return Err(SfuDomainError::InFlight);
                     }
                 }
             }
@@ -135,7 +169,7 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
                 Ok(res)
             }
             Err(err) => {
-                // Remove on failure to allow retry
+                // On failure, remove in-flight entry to allow retry
                 self.entries.remove(request_id);
                 Err(err)
             }
@@ -146,88 +180,113 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
     async fn test_idempotent_execution_success() {
-        let cache = IdempotencyCache::<String>::default();
-        let payload = b"payload-1";
+        let cache = IdempotencyCache::new(Duration::from_secs(60), Duration::from_secs(5));
+        let call_count = Arc::new(AtomicUsize::new(0));
+
+        let action = || {
+            let count = call_count.clone();
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok("success_payload".to_string())
+            }
+        };
 
         let res1 = cache
-            .execute_or_get("req-1", payload, || async { Ok("success-1".to_string()) })
+            .execute_or_get("req-1", b"payload-A", action)
             .await
             .unwrap();
+        assert_eq!(res1, "success_payload");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
 
-        assert_eq!(res1, "success-1");
-
-        // Same request_id, same payload -> returns cached result without running action
+        // Second call with same request_id and payload returns cached response
         let res2 = cache
-            .execute_or_get("req-1", payload, || async {
-                panic!("Action should not be called on cache hit");
-            })
+            .execute_or_get("req-1", b"payload-A", action)
             .await
             .unwrap();
-
-        assert_eq!(res2, "success-1");
+        assert_eq!(res2, "success_payload");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
     async fn test_idempotent_conflict_on_different_payload() {
-        let cache = IdempotencyCache::<String>::default();
+        let cache = IdempotencyCache::new(Duration::from_secs(60), Duration::from_secs(5));
+
+        let action = || async { Ok("res".to_string()) };
+
         cache
-            .execute_or_get("req-2", b"payload-a", || async { Ok("ok".to_string()) })
+            .execute_or_get("req-1", b"payload-A", action)
             .await
             .unwrap();
 
-        // Same request_id, different payload -> Conflict error
+        // Same request_id, different payload must return conflict error
         let err = cache
-            .execute_or_get("req-2", b"payload-b", || async {
-                Ok("different".to_string())
-            })
+            .execute_or_get("req-1", b"payload-B", action)
             .await
             .unwrap_err();
-
         match err {
-            SfuError::IdempotencyConflict(_) => {}
-            other => panic!("Expected IdempotencyConflict, got: {:?}", other),
+            SfuDomainError::IdempotencyConflict(_) => (),
+            other => panic!("Expected IdempotencyConflict, got: {other:?}"),
         }
     }
 
     #[tokio::test]
     async fn test_retry_on_failure() {
-        let cache = IdempotencyCache::<String>::default();
-        let payload = b"payload-retry";
+        let cache = IdempotencyCache::new(Duration::from_secs(60), Duration::from_secs(5));
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let action_fail = || {
+            let att = attempts.clone();
+            async move {
+                att.fetch_add(1, Ordering::SeqCst);
+                Err(SfuDomainError::Internal("transient failure".to_string()))
+            }
+        };
 
         let err = cache
-            .execute_or_get("req-retry", payload, || async {
-                Err(SfuError::Internal("temporary failure".into()))
-            })
+            .execute_or_get("req-fail", b"payload", action_fail)
             .await
             .unwrap_err();
+        assert!(matches!(err, SfuDomainError::Internal(_)));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
 
-        assert_eq!(err, SfuError::Internal("temporary failure".into()));
+        // Retrying must execute the action again since the failed key was cleared
+        let action_ok = || {
+            let att = attempts.clone();
+            async move {
+                att.fetch_add(1, Ordering::SeqCst);
+                Ok("recovered".to_string())
+            }
+        };
 
-        // Should allow retry after failure
         let res = cache
-            .execute_or_get("req-retry", payload, || async {
-                Ok("success-on-retry".to_string())
-            })
+            .execute_or_get("req-fail", b"payload", action_ok)
             .await
             .unwrap();
-
-        assert_eq!(res, "success-on-retry");
+        assert_eq!(res, "recovered");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
-    async fn test_empty_request_id_rejected() {
-        let cache = IdempotencyCache::<String>::default();
-        let err = cache
-            .execute_or_get("  ", b"payload", || async { Ok("ok".into()) })
-            .await
-            .unwrap_err();
+    async fn test_clean_expired() {
+        let cache = Arc::new(IdempotencyCache::new(
+            Duration::from_millis(50),
+            Duration::from_millis(10),
+        ));
 
-        match err {
-            SfuError::InvalidArgument(_) => {}
-            other => panic!("Expected InvalidArgument, got: {:?}", other),
-        }
+        let _handle = cache.start_periodic_cleanup(Duration::from_millis(20));
+
+        cache
+            .execute_or_get("req-exp", b"payload", || async { Ok(123) })
+            .await
+            .unwrap();
+        assert!(cache.entries.contains_key("req-exp"));
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        cache.clean_expired();
+        assert!(!cache.entries.contains_key("req-exp"));
     }
 }

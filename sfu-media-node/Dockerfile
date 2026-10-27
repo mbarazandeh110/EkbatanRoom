@@ -57,10 +57,15 @@ ENV MEDIASOUP_LISTEN_IP=0.0.0.0 \
     RTC_MIN_PORT=40000 \
     RTC_MAX_PORT=49999 \
     GRPC_PORT=50051 \
+    OBS_LOG_LEVEL=info \
+    OBS_LOG_FORMAT=json \
+    OBS_METRICS_ENABLED=true \
+    OBS_METRICS_ADDR=0.0.0.0:9090 \
     RUST_LOG=info
 
-# Expose gRPC control plane port and RTC media UDP range
+# Expose gRPC control plane port, Prometheus metrics port, and RTC media UDP range
 EXPOSE 50051/tcp
+EXPOSE 9090/tcp
 EXPOSE 40000-49999/udp
 
 # Run as non-root user

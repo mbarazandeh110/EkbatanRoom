@@ -1,3 +1,4 @@
+use crate::ports::outbound::MetricsPort;
 use metrics::{counter, gauge, histogram};
 
 pub const METRIC_ACTIVE_ROUTERS: &str = "sfu_active_routers";
@@ -7,6 +8,42 @@ pub const METRIC_ACTIVE_CONSUMERS: &str = "sfu_active_consumers";
 pub const METRIC_GRPC_REQUESTS_TOTAL: &str = "sfu_grpc_requests_total";
 pub const METRIC_GRPC_REQUEST_DURATION: &str = "sfu_grpc_request_duration_seconds";
 pub const METRIC_IDEMPOTENCY_HITS_TOTAL: &str = "sfu_idempotency_hits_total";
+
+#[derive(Clone, Default)]
+pub struct PrometheusMetrics;
+
+impl MetricsPort for PrometheusMetrics {
+    fn inc_active_routers(&self) {
+        inc_active_routers();
+    }
+    fn dec_active_routers(&self) {
+        dec_active_routers();
+    }
+    fn inc_active_transports(&self, is_publisher: bool) {
+        inc_active_transports(is_publisher);
+    }
+    fn dec_active_transports(&self, is_publisher: bool) {
+        dec_active_transports(is_publisher);
+    }
+    fn inc_active_producers(&self, kind: &str) {
+        inc_active_producers(kind);
+    }
+    fn dec_active_producers(&self, kind: &str) {
+        dec_active_producers(kind);
+    }
+    fn inc_active_consumers(&self, kind: &str) {
+        inc_active_consumers(kind);
+    }
+    fn dec_active_consumers(&self, kind: &str) {
+        dec_active_consumers(kind);
+    }
+    fn record_idempotency_hit(&self) {
+        record_idempotency_hit();
+    }
+    fn record_grpc_request(&self, method: &'static str, status: &str, duration_secs: f64) {
+        record_grpc_request(method, status, duration_secs);
+    }
+}
 
 /// Increment active routers gauge
 pub fn inc_active_routers() {
@@ -100,21 +137,21 @@ mod tests {
 
     #[test]
     fn test_metric_helpers_cardinality_guards() {
-        // Ensure metric functions do not panic and accept standard labels
-        inc_active_routers();
-        dec_active_routers();
-        inc_active_transports(true);
-        dec_active_transports(true);
-        inc_active_transports(false);
-        dec_active_transports(false);
-        inc_active_producers("audio");
-        dec_active_producers("audio");
-        inc_active_producers("video");
-        dec_active_producers("video");
-        inc_active_consumers("audio");
-        dec_active_consumers("audio");
-        record_idempotency_hit();
-        record_grpc_request("CreateRouter", "ok", 0.012);
-        record_grpc_request("CreateRouter", "invalid_argument", 0.001);
+        let m = PrometheusMetrics;
+        m.inc_active_routers();
+        m.dec_active_routers();
+        m.inc_active_transports(true);
+        m.dec_active_transports(true);
+        m.inc_active_transports(false);
+        m.dec_active_transports(false);
+        m.inc_active_producers("audio");
+        m.dec_active_producers("audio");
+        m.inc_active_producers("video");
+        m.dec_active_producers("video");
+        m.inc_active_consumers("audio");
+        m.dec_active_consumers("audio");
+        m.record_idempotency_hit();
+        m.record_grpc_request("CreateRouter", "ok", 0.012);
+        m.record_grpc_request("CreateRouter", "invalid_argument", 0.001);
     }
 }
