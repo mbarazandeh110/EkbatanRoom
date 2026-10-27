@@ -68,9 +68,8 @@ impl RouterService {
                         // Cascade to consumers of this producer
                         if let Some((_, c_ids)) = self.state.producer_consumers.remove(&pid) {
                             for cid in c_ids {
-                                if let Some((_, c)) = self.state.consumers.remove(&cid) {
-                                    c.is_closed.store(true, Ordering::SeqCst);
-                                    self.metrics.dec_active_consumers(&format!("{:?}", c.kind));
+                                if let Some(c) = self.state.cascade_remove_consumer(&cid) {
+                                    self.metrics.dec_active_consumers(&c.kind.to_string());
                                     self.event_publisher.publish_resource_closed(
                                         router_id,
                                         "consumer",
@@ -87,9 +86,8 @@ impl RouterService {
             // Close consumers directly on this transport
             if let Some((_, c_ids)) = self.state.transport_consumers.remove(transport_id) {
                 for cid in c_ids {
-                    if let Some((_, c)) = self.state.consumers.remove(&cid) {
-                        c.is_closed.store(true, Ordering::SeqCst);
-                        self.metrics.dec_active_consumers(&format!("{:?}", c.kind));
+                    if let Some(c) = self.state.cascade_remove_consumer(&cid) {
+                        self.metrics.dec_active_consumers(&c.kind.to_string());
                         self.event_publisher.publish_resource_closed(
                             router_id,
                             "consumer",
@@ -154,6 +152,45 @@ impl RouterUseCase for RouterService {
                         })?;
 
                     let router_id = router.id().to_string();
+
+                    // Atomic registration in room_to_router to prevent concurrent race conditions
+                    use dashmap::mapref::entry::Entry;
+                    let winner = match self.state.room_to_router.entry(room_id.to_string()) {
+                        Entry::Occupied(mut occ) => {
+                            let existing_id = occ.get().clone();
+                            let is_active = self
+                                .state
+                                .routers
+                                .get(&existing_id)
+                                .map(|r| !r.is_closed.load(Ordering::SeqCst))
+                                .unwrap_or(false);
+
+                            if is_active {
+                                // Another concurrent request won the race; drop our newly created router
+                                let winner_item = self
+                                    .state
+                                    .routers
+                                    .get(&existing_id)
+                                    .map(|r| (r.router.clone(), r.worker_index));
+                                Some(winner_item)
+                            } else {
+                                // Previous router was closed; replace entry with our new router
+                                occ.insert(router_id.clone());
+                                None
+                            }
+                        }
+                        Entry::Vacant(vac) => {
+                            vac.insert(router_id.clone());
+                            None
+                        }
+                    };
+
+                    if let Some(Some((w_router, w_worker_index))) = winner {
+                        let caps_json = serde_json::to_string(&w_router.rtp_capabilities())
+                            .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
+                        return Ok((w_router.id().to_string(), w_worker_index as u32, caps_json));
+                    }
+
                     let caps_json = serde_json::to_string(&router.rtp_capabilities())
                         .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
 
@@ -166,9 +203,6 @@ impl RouterUseCase for RouterService {
 
                     self.worker_pool.increment_load(worker_index);
                     self.state.routers.insert(router_id.clone(), item);
-                    self.state
-                        .room_to_router
-                        .insert(room_id.to_string(), router_id.clone());
                     self.state
                         .router_transports
                         .insert(router_id.clone(), DashSet::new());

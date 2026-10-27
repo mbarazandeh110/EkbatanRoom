@@ -2,7 +2,7 @@
 # Makefile for sfu-media-node (Rust Media Plane)
 # ==============================================================================
 
-.PHONY: all help build release check test test-unit test-lifecycle test-media fmt fmt-check lint run docker-build docker-run clean
+.PHONY: all help build release check test test-unit test-lifecycle test-media test-observability test-refactoring fmt fmt-check lint run docker-build docker-run clean
 
 IMAGE_NAME ?= ekbatan/sfu-media-node
 IMAGE_TAG ?= latest
@@ -36,6 +36,9 @@ test-media: ## Run media produce and consume tests
 
 test-observability: ## Run observability and metrics tests
 	cargo test --test observability_tests
+
+test-refactoring: ## Run refactoring verification tests
+	cargo test --test refactoring_verification_tests
 
 fmt: ## Format Rust codebase using rustfmt
 	cargo fmt

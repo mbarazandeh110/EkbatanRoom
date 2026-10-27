@@ -75,6 +75,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::error!("Media node shutdown completed with errors: {e}");
     }
 
+    sfu_media_node::observability::shutdown_tracer_provider();
+
     tracing::info!("SFU Media Node shutdown completed gracefully.");
     Ok(())
 }

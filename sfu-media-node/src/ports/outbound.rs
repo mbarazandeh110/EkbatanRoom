@@ -32,6 +32,14 @@ pub trait EventPublisherPort: Send + Sync {
 
     fn publish_layer_change(&self, params: LayerChangeEventParams<'_>);
 
+    fn publish_active_speaker(
+        &self,
+        router_id: &str,
+        producer_id: &str,
+        peer_id: &str,
+        volume_dbfs: f32,
+    );
+
     fn publish_resource_closed(
         &self,
         router_id: &str,

@@ -5,4 +5,4 @@ pub mod redaction;
 pub mod tracing_extractor;
 
 pub use config::ObservabilityConfig;
-pub use init::init_observability;
+pub use init::{init_observability, shutdown_tracer_provider};

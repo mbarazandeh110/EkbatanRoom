@@ -111,49 +111,61 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
         let hash = Self::compute_payload_hash(payload);
         let now = Instant::now();
 
-        // 1. Check existing state
-        if let Some(entry) = self.entries.get(request_id) {
-            match entry.value() {
-                IdempotencyEntry::Completed {
-                    payload_hash,
-                    response,
-                    completed_at,
-                } => {
-                    if now.duration_since(*completed_at) < self.ttl {
-                        if payload_hash == &hash {
-                            on_hit();
-                            return Ok(response.clone());
-                        } else {
-                            return Err(SfuDomainError::IdempotencyConflict(format!(
-                                "request_id '{request_id}' already executed with different payload"
-                            )));
+        // 1. Atomic check and transition to InFlight in an isolated synchronous scope
+        {
+            use dashmap::mapref::entry::Entry;
+            match self.entries.entry(request_id.to_string()) {
+                Entry::Occupied(mut occupied) => {
+                    match occupied.get() {
+                        IdempotencyEntry::Completed {
+                            payload_hash,
+                            response,
+                            completed_at,
+                        } => {
+                            if now.duration_since(*completed_at) < self.ttl {
+                                if payload_hash == &hash {
+                                    on_hit();
+                                    return Ok(response.clone());
+                                } else {
+                                    return Err(SfuDomainError::IdempotencyConflict(format!(
+                                        "request_id '{request_id}' already executed with different payload"
+                                    )));
+                                }
+                            }
+                            // Expired completed entry: overwrite with InFlight
+                            occupied.insert(IdempotencyEntry::InFlight {
+                                payload_hash: hash.clone(),
+                                created_at: now,
+                            });
+                        }
+                        IdempotencyEntry::InFlight {
+                            payload_hash,
+                            created_at,
+                        } => {
+                            if now.duration_since(*created_at) < self.in_flight_timeout {
+                                if payload_hash != &hash {
+                                    return Err(SfuDomainError::IdempotencyConflict(format!(
+                                        "request_id '{request_id}' currently in-flight with different payload"
+                                    )));
+                                }
+                                return Err(SfuDomainError::InFlight);
+                            }
+                            // Timed out in-flight: overwrite with new InFlight
+                            occupied.insert(IdempotencyEntry::InFlight {
+                                payload_hash: hash.clone(),
+                                created_at: now,
+                            });
                         }
                     }
                 }
-                IdempotencyEntry::InFlight {
-                    payload_hash,
-                    created_at,
-                } => {
-                    if now.duration_since(*created_at) < self.in_flight_timeout {
-                        if payload_hash != &hash {
-                            return Err(SfuDomainError::IdempotencyConflict(format!(
-                                "request_id '{request_id}' currently in-flight with different payload"
-                            )));
-                        }
-                        return Err(SfuDomainError::InFlight);
-                    }
+                Entry::Vacant(vacant) => {
+                    vacant.insert(IdempotencyEntry::InFlight {
+                        payload_hash: hash.clone(),
+                        created_at: now,
+                    });
                 }
             }
-        }
-
-        // 2. Mark as InFlight
-        self.entries.insert(
-            request_id.to_string(),
-            IdempotencyEntry::InFlight {
-                payload_hash: hash.clone(),
-                created_at: now,
-            },
-        );
+        } // Shard entry lock is dropped immediately here before action().await
 
         // 3. Execute action
         match action().await {

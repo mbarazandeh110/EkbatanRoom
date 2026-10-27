@@ -1,8 +1,12 @@
+use sfu_media_node::ports::outbound::{EventPublisherPort, WorkerPoolPort};
 use sfu_media_node::proto::sfu::v1 as proto;
-use sfu_media_node::{Config, MediaNode};
+use sfu_media_node::proto::sfu::v1::sfu_media_engine_service_server::SfuMediaEngineService;
+use sfu_media_node::{Config, GrpcMediaEngineService, MediaNode};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
+use tokio_stream::StreamExt;
+use tonic::Request;
 
 fn test_config() -> Config {
     let mut config = Config::from_env();
@@ -13,26 +17,30 @@ fn test_config() -> Config {
 #[tokio::test]
 async fn test_router_close_event_emission() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
-    let mut rx = node.subscribe_events();
+    let service = GrpcMediaEngineService::new(node.clone());
+    let mut rx = node.event_hub.subscribe();
 
     // 1. Create Router
-    let r_resp = node
-        .create_router(proto::CreateRouterRequest {
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
             request_id: "req-router-ev-1".to_string(),
             room_id: "room-event-test".to_string(),
-        })
+        }))
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
 
     let router_id = r_resp.router_id;
 
     // 2. Close Router
-    node.close_resource(proto::CloseResourceRequest {
-        router_id: router_id.clone(),
-        resource_type: proto::ResourceType::Router as i32,
-        resource_id: router_id.clone(),
-    })
-    .unwrap();
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: router_id.clone(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: router_id.clone(),
+        }))
+        .await
+        .unwrap();
 
     // 3. Verify ResourceClosed event was emitted for the Router
     let received = timeout(Duration::from_secs(2), async {
@@ -57,31 +65,34 @@ async fn test_router_close_event_emission() {
 }
 
 #[tokio::test]
-async fn test_producer_close_cascades_to_consumers() {
+async fn test_producer_close_cascades_to_consumers_and_cleans_maps() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
-    let mut rx = node.subscribe_events();
+    let service = GrpcMediaEngineService::new(node.clone());
+    let mut rx = node.event_hub.subscribe();
 
     // 1. Create Router
-    let r_resp = node
-        .create_router(proto::CreateRouterRequest {
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
             request_id: "r-cascade".to_string(),
             room_id: "room-cascade".to_string(),
-        })
+        }))
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
     let router_id = r_resp.router_id;
 
     // 2. Publisher Transport & Audio Producer
-    let pub_tr = node
-        .create_transport(proto::CreateTransportRequest {
+    let pub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
             request_id: "tr-pub-casc".to_string(),
             router_id: router_id.clone(),
             peer_id: "peer-pub-casc".to_string(),
             is_publisher: true,
             enable_sctp: false,
-        })
+        }))
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
 
     let opus_rtp_params = r#"{
         "mid": "0",
@@ -100,8 +111,8 @@ async fn test_producer_close_cascades_to_consumers() {
         "rtcp": { "cname": "audio-casc", "reducedSize": true }
     }"#;
 
-    let prod = node
-        .produce(proto::ProduceRequest {
+    let prod = service
+        .produce(Request::new(proto::ProduceRequest {
             request_id: "prod-casc-1".to_string(),
             router_id: router_id.clone(),
             transport_id: pub_tr.transport_id.clone(),
@@ -109,21 +120,23 @@ async fn test_producer_close_cascades_to_consumers() {
             kind: "audio".to_string(),
             rtp_parameters_json: opus_rtp_params.to_string(),
             paused: false,
-        })
+        }))
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
 
     // 3. Subscriber Transport & Audio Consumer
-    let sub_tr = node
-        .create_transport(proto::CreateTransportRequest {
+    let sub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
             request_id: "tr-sub-casc".to_string(),
             router_id: router_id.clone(),
             peer_id: "peer-sub-casc".to_string(),
             is_publisher: false,
             enable_sctp: false,
-        })
+        }))
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
 
     let rtp_caps = r#"{
         "codecs": [
@@ -139,40 +152,71 @@ async fn test_producer_close_cascades_to_consumers() {
         "headerExtensions": []
     }"#;
 
-    let cons = node
-        .consume(proto::ConsumeRequest {
+    let cons = service
+        .consume(Request::new(proto::ConsumeRequest {
             request_id: "cons-casc-1".to_string(),
             router_id: router_id.clone(),
             subscriber_transport_id: sub_tr.transport_id.clone(),
             producer_id: prod.producer_id.clone(),
             rtp_capabilities_json: rtp_caps.to_string(),
             paused: false,
-        })
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Verify consumer exists in transport_consumers and producer_consumers
+    assert!(node
+        .state
+        .transport_consumers
+        .get(&sub_tr.transport_id)
+        .map(|set| set.contains(&cons.consumer_id))
+        .unwrap_or(false));
+    assert!(node
+        .state
+        .producer_consumers
+        .get(&prod.producer_id)
+        .map(|set| set.contains(&cons.consumer_id))
+        .unwrap_or(false));
+
+    // 4. Close Producer
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: router_id.clone(),
+            resource_type: proto::ResourceType::Producer as i32,
+            resource_id: prod.producer_id.clone(),
+        }))
         .await
         .unwrap();
 
-    // 4. Close Producer
-    node.close_resource(proto::CloseResourceRequest {
-        router_id: router_id.clone(),
-        resource_type: proto::ResourceType::Producer as i32,
-        resource_id: prod.producer_id.clone(),
-    })
-    .unwrap();
-
     // 5. Verify Consumer was cascade-closed and cannot be paused
-    let pause_res = node
-        .set_media_paused(proto::SetMediaPausedRequest {
+    let pause_res = service
+        .set_media_paused(Request::new(proto::SetMediaPausedRequest {
             router_id: router_id.clone(),
             resource_type: proto::ResourceType::Consumer as i32,
             resource_id: cons.consumer_id.clone(),
             paused: true,
-        })
+        }))
         .await;
 
     assert!(
         pause_res.is_err(),
         "Consumer must be cascade-closed and not found/active when producer is closed"
     );
+
+    // Verify NO orphaned ID in transport_consumers or producer_consumers!
+    assert!(!node
+        .state
+        .transport_consumers
+        .get(&sub_tr.transport_id)
+        .map(|set| set.contains(&cons.consumer_id))
+        .unwrap_or(false));
+    assert!(!node
+        .state
+        .producer_consumers
+        .get(&prod.producer_id)
+        .map(|set| set.contains(&cons.consumer_id))
+        .unwrap_or(false));
 
     // 6. Verify ResourceClosed event was emitted for the Consumer
     let received_consumer_close = timeout(Duration::from_secs(2), async {
@@ -199,25 +243,28 @@ async fn test_producer_close_cascades_to_consumers() {
 #[tokio::test]
 async fn test_produce_idempotency_includes_paused() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
 
-    let r_resp = node
-        .create_router(proto::CreateRouterRequest {
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
             request_id: "r-idem-p".to_string(),
             room_id: "room-idem-p".to_string(),
-        })
+        }))
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
 
-    let pub_tr = node
-        .create_transport(proto::CreateTransportRequest {
+    let pub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
             request_id: "tr-idem-p".to_string(),
             router_id: r_resp.router_id.clone(),
             peer_id: "peer-idem-p".to_string(),
             is_publisher: true,
             enable_sctp: false,
-        })
+        }))
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
 
     let opus_rtp_params = r#"{
         "mid": "0",
@@ -237,8 +284,8 @@ async fn test_produce_idempotency_includes_paused() {
     }"#;
 
     // Produce with paused: false
-    let prod1 = node
-        .produce(proto::ProduceRequest {
+    let prod1 = service
+        .produce(Request::new(proto::ProduceRequest {
             request_id: "req-prod-conflict".to_string(),
             router_id: r_resp.router_id.clone(),
             transport_id: pub_tr.transport_id.clone(),
@@ -246,15 +293,16 @@ async fn test_produce_idempotency_includes_paused() {
             kind: "audio".to_string(),
             rtp_parameters_json: opus_rtp_params.to_string(),
             paused: false,
-        })
+        }))
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
 
     assert!(!prod1.producer_id.is_empty());
 
     // Same request_id but paused: true => must trigger IdempotencyConflict
-    let conflict_res = node
-        .produce(proto::ProduceRequest {
+    let conflict_res = service
+        .produce(Request::new(proto::ProduceRequest {
             request_id: "req-prod-conflict".to_string(),
             router_id: r_resp.router_id.clone(),
             transport_id: pub_tr.transport_id.clone(),
@@ -262,11 +310,133 @@ async fn test_produce_idempotency_includes_paused() {
             kind: "audio".to_string(),
             rtp_parameters_json: opus_rtp_params.to_string(),
             paused: true,
-        })
+        }))
         .await;
 
     assert!(
         conflict_res.is_err(),
         "Changing paused state with identical request_id must trigger IdempotencyConflict"
     );
+}
+
+#[tokio::test]
+async fn test_zombie_events_filtered_for_closed_router() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-zombie".to_string(),
+            room_id: "room-zombie".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let router_id = r_resp.router_id;
+
+    // Subscribe via gRPC WatchNodeEvents stream
+    let stream_res = service
+        .watch_node_events(Request::new(proto::WatchNodeEventsRequest {
+            coordinator_id: "coord-1".to_string(),
+        }))
+        .await
+        .unwrap();
+
+    let mut event_stream = stream_res.into_inner();
+
+    // Close router (emits ResourceClosed event for router)
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: router_id.clone(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: router_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+    // Now publish a trailing score event for this already closed router
+    node.event_hub
+        .publish_score(&router_id, "p-trail", "peer-trail", true, 10, vec![10]);
+
+    // Also publish an active speaker event for an active router to verify stream is flowing
+    let active_r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-active-ev".to_string(),
+            room_id: "room-active-ev".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    node.event_hub.publish_active_speaker(
+        &active_r_resp.router_id,
+        "p-active",
+        "peer-active",
+        -18.5,
+    );
+
+    // Expect to receive:
+    // 1. ResourceClosed for the closed router (allowed through!)
+    // 2. ActiveSpeaker for the active router (allowed through!)
+    // But NOT the trailing MediaScore for the closed router (zombie filtered!)
+    let mut received_closed = false;
+    let mut received_active_speaker = false;
+    let mut received_zombie_score = false;
+
+    let test_fut = async {
+        while let Some(Ok(ev)) = event_stream.next().await {
+            match ev.payload {
+                Some(proto::node_event::Payload::ResourceClosed(rc))
+                    if rc.resource_id == router_id =>
+                {
+                    received_closed = true;
+                }
+                Some(proto::node_event::Payload::ActiveSpeaker(as_ev))
+                    if as_ev.producer_id == "p-active" =>
+                {
+                    received_active_speaker = true;
+                }
+                Some(proto::node_event::Payload::MediaScore(ms)) if ms.resource_id == "p-trail" => {
+                    received_zombie_score = true;
+                }
+                _ => {}
+            }
+            if received_closed && received_active_speaker {
+                break;
+            }
+        }
+    };
+
+    timeout(Duration::from_secs(2), test_fut)
+        .await
+        .expect("Stream should deliver events within timeout");
+
+    assert!(received_closed, "ResourceClosed event must be delivered");
+    assert!(
+        received_active_speaker,
+        "ActiveSpeaker for active router must be delivered"
+    );
+    assert!(
+        !received_zombie_score,
+        "Zombie score event for closed router must be filtered out"
+    );
+}
+
+#[tokio::test]
+async fn test_worker_load_decrement_underflow_protection() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+
+    // Worker pool index 0 starts with load 0. Decrementing should NOT underflow to usize::MAX
+    node.worker_pool.decrement_load(0);
+
+    let (index, _) = node.worker_pool.get_least_loaded();
+    assert_eq!(index, 0);
+
+    // Load should still be 0 (saturated), so incrementing once brings it to 1
+    node.worker_pool.increment_load(0);
+    node.worker_pool.decrement_load(0);
+
+    // Another decrement should saturate at 0
+    node.worker_pool.decrement_load(0);
 }

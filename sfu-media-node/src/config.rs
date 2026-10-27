@@ -140,7 +140,20 @@ impl Config {
     }
 
     pub fn from_env() -> Self {
-        Self::try_from_env().unwrap_or_else(|e| panic!("Configuration error: {e}"))
+        Self::try_from_env().unwrap_or_else(|e| {
+            eprintln!("Configuration warning: {e}. Falling back to default configuration.");
+            Self {
+                listen_ip: std::net::IpAddr::from([0, 0, 0, 0]),
+                announced_ip: Some("127.0.0.1".to_string()),
+                rtc_min_port: 40000,
+                rtc_max_port: 49999,
+                grpc_port: 50051,
+                worker_count: std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1),
+                observability: ObservabilityConfig::default(),
+            }
+        })
     }
 }
 

@@ -631,9 +631,8 @@ impl MediaUseCase for MediaService {
             // Cascade close all consumers connected to this producer (Fix orphaned consumers)
             if let Some((_, c_ids)) = self.state.producer_consumers.remove(producer_id) {
                 for cid in c_ids {
-                    if let Some((_, c)) = self.state.consumers.remove(&cid) {
-                        c.is_closed.store(true, Ordering::SeqCst);
-                        self.metrics.dec_active_consumers(&format!("{:?}", c.kind));
+                    if let Some(c) = self.state.cascade_remove_consumer(&cid) {
+                        self.metrics.dec_active_consumers(&c.kind.to_string());
                         self.event_publisher.publish_resource_closed(
                             router_id,
                             "consumer",
@@ -653,35 +652,30 @@ impl MediaUseCase for MediaService {
         validation::validate_not_empty("router_id", router_id)?;
         validation::validate_not_empty("consumer_id", consumer_id)?;
 
-        if let Some((_, item)) = self.state.consumers.remove(consumer_id) {
-            if item.router_id != router_id {
-                // Restore if router mismatch
-                self.state.consumers.insert(consumer_id.to_string(), item);
-                return Err(SfuDomainError::NotFound(format!(
-                    "Consumer '{consumer_id}' does not belong to router '{router_id}'"
-                )));
-            }
+        let router_matches = self
+            .state
+            .consumers
+            .get(consumer_id)
+            .map(|c| c.router_id == router_id);
 
-            item.is_closed.store(true, Ordering::SeqCst);
-            self.metrics
-                .dec_active_consumers(&format!("{:?}", item.kind));
-
-            if let Some(set) = self.state.transport_consumers.get(&item.transport_id) {
-                set.remove(consumer_id);
+        match router_matches {
+            Some(true) => {
+                if let Some(item) = self.state.cascade_remove_consumer(consumer_id) {
+                    self.metrics.dec_active_consumers(&item.kind.to_string());
+                    self.event_publisher.publish_resource_closed(
+                        router_id,
+                        "consumer",
+                        consumer_id,
+                        "consumer_closed",
+                    );
+                }
+                Ok(())
             }
-            if let Some(set) = self.state.producer_consumers.get(&item.producer_id) {
-                set.remove(consumer_id);
-            }
-
-            self.event_publisher.publish_resource_closed(
-                router_id,
-                "consumer",
-                consumer_id,
-                "consumer_closed",
-            );
+            Some(false) => Err(SfuDomainError::NotFound(format!(
+                "Consumer '{consumer_id}' does not belong to router '{router_id}'"
+            ))),
+            None => Ok(()),
         }
-
-        Ok(())
     }
 
     #[tracing::instrument(skip(self), fields(router_id = %router_id, resource_id = %resource_id))]

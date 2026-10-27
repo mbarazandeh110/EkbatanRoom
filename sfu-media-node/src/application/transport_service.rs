@@ -386,9 +386,8 @@ impl TransportUseCase for TransportService {
                         // Cascade close all consumers connected to this producer
                         if let Some((_, c_ids)) = self.state.producer_consumers.remove(&pid) {
                             for cid in c_ids {
-                                if let Some((_, c)) = self.state.consumers.remove(&cid) {
-                                    c.is_closed.store(true, Ordering::SeqCst);
-                                    self.metrics.dec_active_consumers(&format!("{:?}", c.kind));
+                                if let Some(c) = self.state.cascade_remove_consumer(&cid) {
+                                    self.metrics.dec_active_consumers(&c.kind.to_string());
                                     self.event_publisher.publish_resource_closed(
                                         router_id,
                                         "consumer",
@@ -405,9 +404,8 @@ impl TransportUseCase for TransportService {
             // Cascade close consumers directly on this transport
             if let Some((_, c_ids)) = self.state.transport_consumers.remove(transport_id) {
                 for cid in c_ids {
-                    if let Some((_, c)) = self.state.consumers.remove(&cid) {
-                        c.is_closed.store(true, Ordering::SeqCst);
-                        self.metrics.dec_active_consumers(&format!("{:?}", c.kind));
+                    if let Some(c) = self.state.cascade_remove_consumer(&cid) {
+                        self.metrics.dec_active_consumers(&c.kind.to_string());
                         self.event_publisher.publish_resource_closed(
                             router_id,
                             "consumer",

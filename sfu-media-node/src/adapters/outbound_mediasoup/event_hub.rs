@@ -10,7 +10,7 @@ pub struct EventHub {
 
 impl Default for EventHub {
     fn default() -> Self {
-        Self::new(1024)
+        Self::new(4096)
     }
 }
 
@@ -71,6 +71,27 @@ impl EventPublisherPort for EventHub {
                     current_spatial_layer: params.current_spatial,
                     preferred_temporal_layer: params.preferred_temporal,
                     current_temporal_layer: params.current_temporal,
+                },
+            )),
+        };
+        let _ = self.sender.send(event);
+    }
+
+    fn publish_active_speaker(
+        &self,
+        router_id: &str,
+        producer_id: &str,
+        peer_id: &str,
+        volume_dbfs: f32,
+    ) {
+        let event = proto::NodeEvent {
+            router_id: router_id.to_string(),
+            timestamp_ms: Self::now_ms(),
+            payload: Some(proto::node_event::Payload::ActiveSpeaker(
+                proto::ActiveSpeakerEvent {
+                    producer_id: producer_id.to_string(),
+                    peer_id: peer_id.to_string(),
+                    volume_dbfs,
                 },
             )),
         };

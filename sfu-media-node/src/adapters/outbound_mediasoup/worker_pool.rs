@@ -94,7 +94,18 @@ impl WorkerPoolPort for WorkerPool {
 
     fn decrement_load(&self, index: usize) {
         if let Some(counter) = self.load_counts.get(index) {
-            counter.fetch_sub(1, Ordering::Relaxed);
+            let mut current = counter.load(Ordering::Relaxed);
+            while current > 0 {
+                match counter.compare_exchange_weak(
+                    current,
+                    current - 1,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => current = actual,
+                }
+            }
         }
     }
 

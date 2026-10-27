@@ -23,8 +23,8 @@ pub fn parse_media_kind(kind: &str) -> Result<MediaKind, SfuDomainError> {
 }
 
 pub fn parse_dtls_role(role: &str) -> Result<DtlsRole, SfuDomainError> {
-    match role.to_lowercase().as_str() {
-        "auto" => Ok(DtlsRole::Auto),
+    match role.trim().to_lowercase().as_str() {
+        "auto" | "" => Ok(DtlsRole::Auto),
         "client" => Ok(DtlsRole::Client),
         "server" => Ok(DtlsRole::Server),
         other => Err(SfuDomainError::InvalidArgument(format!(

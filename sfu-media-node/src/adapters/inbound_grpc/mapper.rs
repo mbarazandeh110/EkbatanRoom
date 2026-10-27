@@ -1,11 +1,11 @@
 use crate::domain::entities::*;
 use crate::domain::errors::SfuDomainError;
+use crate::domain::validation;
 use crate::ports::inbound::{
     ConnectTransportParams, ConsumeParams, ConsumeResult, CreateTransportParams,
     CreateTransportResult, ProduceParams, ProduceResult, RestartIceResult,
 };
 use crate::proto::sfu::v1 as proto;
-use mediasoup::prelude::{RtpCapabilities, RtpParameters};
 
 impl From<SfuDomainError> for tonic::Status {
     fn from(err: SfuDomainError) -> Self {
@@ -82,15 +82,13 @@ pub fn to_create_transport_response(res: CreateTransportResult) -> proto::Create
 pub fn from_connect_transport_request(
     req: proto::ConnectTransportRequest,
 ) -> Result<ConnectTransportParams, SfuDomainError> {
-    let dtls_role = match req.dtls_role.to_lowercase().as_str() {
-        "auto" | "" => DtlsRole::Auto,
-        "client" => DtlsRole::Client,
-        "server" => DtlsRole::Server,
-        other => {
-            return Err(SfuDomainError::InvalidArgument(format!(
-                "Invalid dtls_role: {other}"
-            )))
-        }
+    validation::validate_not_empty("router_id", &req.router_id)?;
+    validation::validate_not_empty("transport_id", &req.transport_id)?;
+
+    let dtls_role = match validation::parse_dtls_role(&req.dtls_role)? {
+        mediasoup::types::data_structures::DtlsRole::Auto => DtlsRole::Auto,
+        mediasoup::types::data_structures::DtlsRole::Client => DtlsRole::Client,
+        mediasoup::types::data_structures::DtlsRole::Server => DtlsRole::Server,
     };
     let remote_fingerprints = req
         .remote_fingerprints
@@ -118,20 +116,13 @@ pub fn to_restart_ice_response(res: RestartIceResult) -> proto::RestartIceRespon
 }
 
 pub fn from_produce_request(req: proto::ProduceRequest) -> Result<ProduceParams, SfuDomainError> {
-    let kind = match req.kind.to_lowercase().as_str() {
-        "audio" => MediaKind::Audio,
-        "video" => MediaKind::Video,
-        other => {
-            return Err(SfuDomainError::InvalidArgument(format!(
-                "Invalid media kind: {other}"
-            )))
-        }
-    };
+    validation::validate_not_empty("request_id", &req.request_id)?;
+    validation::validate_not_empty("router_id", &req.router_id)?;
+    validation::validate_not_empty("transport_id", &req.transport_id)?;
+    validation::validate_not_empty("peer_id", &req.peer_id)?;
 
-    let rtp_parameters: RtpParameters =
-        serde_json::from_str(&req.rtp_parameters_json).map_err(|e| {
-            SfuDomainError::InvalidArgument(format!("Invalid rtp_parameters_json: {e}"))
-        })?;
+    let kind: MediaKind = validation::parse_media_kind(&req.kind)?.into();
+    let rtp_parameters = validation::parse_rtp_parameters(&req.rtp_parameters_json)?;
 
     Ok(ProduceParams {
         request_id: req.request_id,
@@ -164,10 +155,12 @@ pub fn to_produce_response(res: ProduceResult) -> proto::ProduceResponse {
 }
 
 pub fn from_consume_request(req: proto::ConsumeRequest) -> Result<ConsumeParams, SfuDomainError> {
-    let rtp_capabilities: RtpCapabilities = serde_json::from_str(&req.rtp_capabilities_json)
-        .map_err(|e| {
-            SfuDomainError::InvalidArgument(format!("Invalid rtp_capabilities_json: {e}"))
-        })?;
+    validation::validate_not_empty("request_id", &req.request_id)?;
+    validation::validate_not_empty("router_id", &req.router_id)?;
+    validation::validate_not_empty("subscriber_transport_id", &req.subscriber_transport_id)?;
+    validation::validate_not_empty("producer_id", &req.producer_id)?;
+
+    let rtp_capabilities = validation::parse_rtp_capabilities(&req.rtp_capabilities_json)?;
 
     Ok(ConsumeParams {
         request_id: req.request_id,

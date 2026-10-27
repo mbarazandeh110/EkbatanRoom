@@ -78,4 +78,20 @@ impl EngineState {
             .map(|r| !r.is_closed.load(std::sync::atomic::Ordering::SeqCst))
             .unwrap_or(false)
     }
+
+    pub fn cascade_remove_consumer(&self, consumer_id: &str) -> Option<ConsumerItem> {
+        if let Some((_, item)) = self.consumers.remove(consumer_id) {
+            item.is_closed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(set) = self.transport_consumers.get(&item.transport_id) {
+                set.remove(consumer_id);
+            }
+            if let Some(set) = self.producer_consumers.get(&item.producer_id) {
+                set.remove(consumer_id);
+            }
+            Some(item)
+        } else {
+            None
+        }
+    }
 }

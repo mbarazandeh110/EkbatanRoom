@@ -37,11 +37,16 @@ where
             .with_span_processor(processor)
             .build();
 
+        global::set_tracer_provider(provider.clone());
         let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "sfu-media-node");
         Ok(Some(tracing_opentelemetry::layer().with_tracer(tracer)))
     } else {
         Ok(None)
     }
+}
+
+pub fn shutdown_tracer_provider() {
+    global::shutdown_tracer_provider();
 }
 
 /// Initializes structured logging, optional OpenTelemetry distributed tracing, and Prometheus metrics

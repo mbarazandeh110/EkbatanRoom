@@ -55,8 +55,8 @@
 | `OBS_LOG_LEVEL` | `info` | سطح فیلتر لاگ‌های ساختاریافته (`trace`, `debug`, `info`, `warn`, `error`) |
 | `OBS_LOG_FORMAT` | `json` | قالب خروجی لاگ‌ها (`json` برای لاگ سرورها، `text` برای توسعه محلی) |
 | `OBS_TRACING_ENABLED` | `false` | فعال‌سازی ردیابی توزیع‌شده OpenTelemetry OTLP |
-| `OBS_TRACING_ENDPOINT` | `http://localhost:4317` | آدرس کالکتور OpenTelemetry OTLP gRPC |
-| `OBS_TRACING_SAMPLE_RATE` | `1.0` | نرخ نمونه‌برداری تریسینگ توزیع‌شده (بین 0.0 تا 1.0) |
+| `OBS_OTLP_ENDPOINT` | `http://localhost:4317` | آدرس کالکتور OpenTelemetry OTLP gRPC (پشتیبانی ثانویه از `OBS_TRACING_ENDPOINT`) |
+| `OBS_TRACE_SAMPLE_RATE` | `0.1` | نرخ نمونه‌برداری تریسینگ توزیع‌شده (پشتیبانی ثانویه از `OBS_TRACING_SAMPLE_RATE`) |
 | `OBS_METRICS_ENABLED` | `true` | فعال‌سازی سرور HTTP سبک پرومتئوس برای اندپوینت `/metrics` |
 | `OBS_METRICS_ADDR` | `0.0.0.0:9090` | آدرس و پورت شنود سرور متریک‌های پرومتئوس/ویکتوریا‌متریکس |
 | `OBS_LOG_RAW_SDP` | `false` | ثبت خطوط خام کاندیدهای SDP فقط در سطح دیباگ (برای مانیتورینگ امن) |
@@ -110,6 +110,9 @@ make test-media
 # اجرای تست‌های اعتبارسنجی مشاهده‌پذیری، استخراج W3C TraceContext و متریک‌ها
 make test-observability
 
+# اجرای تست‌های اعتبارسنجی ریفکتورینگ و پاکسازی آبشاری
+make test-refactoring
+
 # اجرای سرور به صورت محلی
 make run
 ```
@@ -123,7 +126,7 @@ make run
 1. **پیکربندی ۱۰۰٪ پویا با `OBS_*`:**
    - فیلتر سطوح لاگ از طریق `OBS_LOG_LEVEL`.
    - قالب‌بندی ساختاریافته JSON با `OBS_LOG_FORMAT=json` برای محیط سرور.
-   - ردیابی توزیع‌شده با صادرکننده استاندارد OTLP gRPC (`OBS_TRACING_ENABLED=true` و `OBS_TRACING_ENDPOINT`). در حالت غیرفعال، لایه تریسینگ به رجیستری متصل نمی‌شود تا سربار پردازشی صفر باشد.
+   - ردیابی توزیع‌شده با صادرکننده استاندارد OTLP gRPC (`OBS_TRACING_ENABLED=true` و `OBS_OTLP_ENDPOINT`). در حالت غیرفعال، لایه تریسینگ به رجیستری متصل نمی‌شود تا سربار پردازشی صفر باشد.
    - اندپوینت مستقل پرومتئوس `/metrics` روی `OBS_METRICS_ADDR` (پیش‌فرض `0.0.0.0:9090`).
 2. **محافظت از مسیر پرتکرار رسانه (Media Hot-Path Protection):**
    - هیچ‌گونه لاگ یا Span به ازای هر بسته RTP یا کال‌بک‌های سطح صدا تولید نمی‌شود.
@@ -175,7 +178,7 @@ docker run --rm -it \
 
 ---
 
-## ۸. ساختار درختی پروژه
+## ۸. ساختار درختی پروژه (Hexagonal Architecture)
 
 ```text
 .
@@ -187,31 +190,51 @@ docker run --rm -it \
 │   └── sfu/v1/
 │       └── media_engine.proto  # قرارداد اصلی سرویس gRPC رسانه
 ├── src/
-│   ├── config.rs               # تنظیمات شبکه، پورت‌ها، ورکرها و مشاهده‌پذیری
-│   ├── domain/
-│   │   ├── error.rs            # خطاهای تایپ‌شده دامنه و نگاشت به tonic::Status
-│   │   ├── idempotency.rs      # ماشین وضعیت کش Idempotency با هش SHA-256
-│   │   └── validation.rs       # اعتبارسنجی مرزی پارامترهای RTP و DTLS
-│   ├── engine/
+│   ├── adapters/               # آداپتورهای ورودی و خروجی (Hexagonal Adapters)
+│   │   ├── inbound_grpc/
+│   │   │   ├── mapper.rs       # نگاشت و اعتبارسنجی DTO مرز Protobuf به Domain
+│   │   │   ├── mod.rs
+│   │   │   └── server.rs       # پیاده‌سازی سرویس gRPC و توزیع Use-Caseها
+│   │   ├── outbound_mediasoup/
+│   │   │   ├── event_hub.rs    # آداپتور انتشار برادکست رویدادها (ActiveSpeaker, Score, etc.)
+│   │   │   ├── mod.rs
+│   │   │   └── worker_pool.rs  # استخر پروسه‌های mediasoup-worker و بالانس بار
+│   │   └── mod.rs
+│   ├── application/            # لایه هماهنگ‌کننده یوزکیس‌ها (Application Layer)
+│   │   ├── media_node.rs       # Facade و Composition Root سرور مدیا
+│   │   ├── media_service.rs    # منطق تولید، مصرف و لایه‌بندی مدیا
+│   │   ├── router_service.rs   # مدیریت روترها و پیشگیری از شرایط مسابقه
+│   │   ├── state.rs            # نگهداری ایزوله و بدون ددلاک وضعیت نود
+│   │   ├── transport_service.rs# مدیریت انتقال WebRTC و تجدید ICE
+│   │   └── mod.rs
+│   ├── config.rs               # تنظیمات شبکه، پورت‌ها، ورکرها و مقادیر پیش‌فرض امن
+│   ├── domain/                 # موجودیت‌ها، خطاها و منطق محض دامنه
 │   │   ├── codecs.rs           # پیکربندی کدک‌های استاندارد Opus, VP8, H.264
-│   │   ├── media_node.rs       # هسته رسانه، پاکسازی آبشاری و پخش رویدادها
-│   │   └── worker_pool.rs      # استخر ورکرها و تخصیص با کم‌ترین بار
-│   ├── observability/
+│   │   ├── entities.rs         # مدل‌ها و تایپ‌های مستقل دامنه
+│   │   ├── error.rs            # تعریف خطاهای دامنه
+│   │   ├── errors.rs           # خطاهای تایپ‌شده SfuDomainError
+│   │   ├── idempotency.rs      # ماشین وضعیت کش Idempotency اتمیک با هش SHA-256
+│   │   ├── mod.rs
+│   │   └── validation.rs       # اعتبارسنجی مرزی پارامترهای RTP و DTLS
+│   ├── lib.rs                  # اکسپورت کتابخانه هسته SFU
+│   ├── main.rs                 # نقطه ورودی باینری و Graceful Shutdown
+│   ├── observability/          # ماژول مشاهده‌پذیری، تریسینگ توزیع‌شده و لاگ
 │   │   ├── config.rs           # تنظیمات OBS_* مشاهده‌پذیری
 │   │   ├── init.rs             # راه‌اندازی Tracing، OpenTelemetry OTLP و سرور /metrics
 │   │   ├── metrics.rs          # توابع ثبت متریک با رعایت کامل گارد کاردینالیتی
 │   │   ├── redaction.rs        # ماسک‌سازی گذرواژه‌های ICE و داده‌های حساس
 │   │   ├── tracing_extractor.rs# استخراج W3C traceparent و x-request-id
-│   │   └── mod.rs              # ماژول مشاهده‌پذیری
-│   ├── proto.rs                # ماژول تولیدشده از protobuf
-│   ├── transport/
-│   │   └── grpc/
-│   │       └── service.rs      # پیاده‌سازی اینترفیس gRPC با Instrumentation و متریک
-│   ├── lib.rs                  # اکسپورت کتابخانه هسته SFU
-│   └── main.rs                 # نقطه ورودی باینری و Graceful Shutdown
+│   │   └── mod.rs
+│   ├── ports/                  # اینترفیس‌های مرزی هگزاگونال (Ports)
+│   │   ├── inbound.rs          # Use-Case Traitها (RouterUseCase, TransportUseCase, MediaUseCase)
+│   │   ├── mod.rs
+│   │   └── outbound.rs         # اینترفیس‌های آداپتورهای خروجی (WorkerPoolPort, EventPublisherPort, MetricsPort)
+│   └── proto.rs                # ماژول تولیدشده از protobuf
 └── tests/
     ├── api_verification.rs     # راستی‌آزمایی API هسته mediasoup
     ├── lifecycle_tests.rs      # آزمون‌های چرخه حیات Router و Transport و ICE Restart
     ├── media_tests.rs          # آزمون‌های Produce/Consume، لایه‌ها، آمار و رویدادها
-    └── observability_tests.rs  # آزمون‌های استخراج W3C TraceContext و متریک‌های پرومتئوس
+    ├── observability_tests.rs  # آزمون‌های استخراج W3C TraceContext و متریک‌های پرومتئوس
+    └── refactoring_verification_tests.rs # آزمون‌های حذف آبشاری، رویدادهای زامبی و ایمنی ورکر
 ```
+

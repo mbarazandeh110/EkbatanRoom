@@ -1,6 +1,8 @@
 use sfu_media_node::proto::sfu::v1 as proto;
-use sfu_media_node::{Config, MediaNode};
+use sfu_media_node::proto::sfu::v1::sfu_media_engine_service_server::SfuMediaEngineService;
+use sfu_media_node::{Config, GrpcMediaEngineService, MediaNode};
 use std::sync::Arc;
+use tonic::Request;
 
 fn test_config() -> Config {
     let mut config = Config::from_env();
@@ -11,6 +13,7 @@ fn test_config() -> Config {
 #[tokio::test]
 async fn test_router_lifecycle_and_idempotency() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
 
     // 1. CreateRouter
     let req = proto::CreateRouterRequest {
@@ -18,12 +21,20 @@ async fn test_router_lifecycle_and_idempotency() {
         room_id: "room-1".to_string(),
     };
 
-    let resp1 = node.create_router(req.clone()).await.unwrap();
+    let resp1 = service
+        .create_router(Request::new(req.clone()))
+        .await
+        .unwrap()
+        .into_inner();
     assert!(!resp1.router_id.is_empty());
     assert!(!resp1.router_rtp_capabilities_json.is_empty());
 
     // 2. Idempotent call with same request_id and payload returns identical result
-    let resp2 = node.create_router(req).await.unwrap();
+    let resp2 = service
+        .create_router(Request::new(req))
+        .await
+        .unwrap()
+        .into_inner();
     assert_eq!(resp1.router_id, resp2.router_id);
     assert_eq!(resp1.worker_index, resp2.worker_index);
 
@@ -32,7 +43,11 @@ async fn test_router_lifecycle_and_idempotency() {
         request_id: "req-router-2".to_string(),
         room_id: "room-2".to_string(),
     };
-    let resp3 = node.create_router(req2).await.unwrap();
+    let resp3 = service
+        .create_router(Request::new(req2))
+        .await
+        .unwrap()
+        .into_inner();
     assert_ne!(resp1.router_id, resp3.router_id);
 
     // 4. Close router
@@ -41,7 +56,10 @@ async fn test_router_lifecycle_and_idempotency() {
         resource_type: proto::ResourceType::Router as i32,
         resource_id: resp1.router_id.clone(),
     };
-    node.close_resource(close_req).unwrap();
+    service
+        .close_resource(Request::new(close_req))
+        .await
+        .unwrap();
 
     assert!(!node.is_router_active(&resp1.router_id));
 }
@@ -49,15 +67,17 @@ async fn test_router_lifecycle_and_idempotency() {
 #[tokio::test]
 async fn test_transport_lifecycle_and_ice_restart() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
 
     // 1. Create router
-    let r_resp = node
-        .create_router(proto::CreateRouterRequest {
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
             request_id: "r-tr-1".to_string(),
             room_id: "room-tr-1".to_string(),
-        })
+        }))
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
 
     // 2. Create transport
     let tr_req = proto::CreateTransportRequest {
@@ -68,7 +88,11 @@ async fn test_transport_lifecycle_and_ice_restart() {
         enable_sctp: true,
     };
 
-    let tr_resp = node.create_transport(tr_req.clone()).await.unwrap();
+    let tr_resp = service
+        .create_transport(Request::new(tr_req.clone()))
+        .await
+        .unwrap()
+        .into_inner();
     assert!(!tr_resp.transport_id.is_empty());
     assert!(!tr_resp.ice_ufrag.is_empty());
     assert!(!tr_resp.ice_pwd.is_empty());
@@ -77,7 +101,11 @@ async fn test_transport_lifecycle_and_ice_restart() {
     assert!(tr_resp.sctp_port > 0);
 
     // 3. Idempotent transport creation
-    let tr_resp_dup = node.create_transport(tr_req).await.unwrap();
+    let tr_resp_dup = service
+        .create_transport(Request::new(tr_req))
+        .await
+        .unwrap()
+        .into_inner();
     assert_eq!(tr_resp.transport_id, tr_resp_dup.transport_id);
 
     // 4. Connect transport
@@ -86,41 +114,44 @@ async fn test_transport_lifecycle_and_ice_restart() {
         value: "E4:87:72:DE:DE:D6:75:A5:C0:5E:2B:A3:8F:69:B8:31:84:87:C7:E2:03:7E:63:F6:FD:E5:5D:84:1F:B5:1D:93".to_string(),
     };
 
-    let connect_resp = node
-        .connect_transport(proto::ConnectTransportRequest {
+    let connect_resp = service
+        .connect_transport(Request::new(proto::ConnectTransportRequest {
             router_id: r_resp.router_id.clone(),
             transport_id: tr_resp.transport_id.clone(),
             dtls_role: "client".to_string(),
             remote_fingerprints: vec![remote_fp],
-        })
+        }))
         .await;
     assert!(connect_resp.is_ok());
 
     // 5. Restart ICE
-    let restart_resp = node
-        .restart_ice(proto::RestartIceRequest {
+    let restart_resp = service
+        .restart_ice(Request::new(proto::RestartIceRequest {
             router_id: r_resp.router_id.clone(),
             transport_id: tr_resp.transport_id.clone(),
-        })
+        }))
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
 
     assert_ne!(restart_resp.ice_ufrag, tr_resp.ice_ufrag);
 
     // 6. Cascading close router closes transport too
-    node.close_resource(proto::CloseResourceRequest {
-        router_id: r_resp.router_id.clone(),
-        resource_type: proto::ResourceType::Router as i32,
-        resource_id: r_resp.router_id.clone(),
-    })
-    .unwrap();
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r_resp.router_id.clone(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: r_resp.router_id.clone(),
+        }))
+        .await
+        .unwrap();
 
     // Trying to restart ICE on closed transport fails
-    let err = node
-        .restart_ice(proto::RestartIceRequest {
+    let err = service
+        .restart_ice(Request::new(proto::RestartIceRequest {
             router_id: r_resp.router_id.clone(),
             transport_id: tr_resp.transport_id.clone(),
-        })
+        }))
         .await;
     assert!(err.is_err());
 }

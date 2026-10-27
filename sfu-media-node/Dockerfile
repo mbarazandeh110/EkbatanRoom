@@ -33,7 +33,7 @@ COPY proto ./proto
 COPY src ./src
 
 # Build release binary
-RUN cargo build --release
+RUN cargo build --release --locked
 
 # --- Stage 2: Minimal Runtime ---
 FROM debian:bookworm-slim
