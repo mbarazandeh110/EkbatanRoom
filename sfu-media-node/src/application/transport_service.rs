@@ -1,24 +1,19 @@
-use crate::application::state::{EngineState, PipeTransportItem, TransportItem};
+use crate::application::state::{EngineState, TransportItem};
 use crate::config::Config;
 use crate::domain::errors::SfuDomainError;
 use crate::domain::idempotency::IdempotencyCache;
 use crate::domain::validation;
 use crate::observability::redaction::{log_raw_sdp_if_enabled, redact_ice_pwd};
 use crate::ports::inbound::{
-    ConnectPipeTransportParams, ConnectTransportParams, CreatePipeTransportParams,
-    CreatePipeTransportResult, CreateTransportParams, CreateTransportResult, RestartIceResult,
+    ConnectTransportParams, CreateTransportParams, CreateTransportResult, RestartIceResult,
     TransportUseCase,
 };
 use crate::ports::outbound::{EventPublisherPort, MetricsPort};
 use async_trait::async_trait;
 use dashmap::DashSet;
-use mediasoup::pipe_transport::{PipeTransportOptions, PipeTransportRemoteParameters};
 use mediasoup::prelude::*;
 use mediasoup::types::data_structures::{DtlsFingerprint, DtlsParameters};
-use mediasoup::types::srtp_parameters::SrtpParameters;
 use mediasoup::webrtc_transport::WebRtcTransportRemoteParameters;
-use std::net::IpAddr;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,7 +27,6 @@ pub struct TransportService {
     event_publisher: Arc<dyn EventPublisherPort>,
     metrics: Arc<dyn MetricsPort>,
     create_transport_cache: Arc<IdempotencyCache<CreateTransportResult>>,
-    create_pipe_transport_cache: Arc<IdempotencyCache<CreatePipeTransportResult>>,
 }
 
 impl TransportService {
@@ -46,10 +40,6 @@ impl TransportService {
         let create_transport_cache = Arc::new(IdempotencyCache::default());
         let _cleanup_task = create_transport_cache.start_periodic_cleanup(Duration::from_secs(30));
 
-        let create_pipe_transport_cache = Arc::new(IdempotencyCache::default());
-        let _cleanup_pipe =
-            create_pipe_transport_cache.start_periodic_cleanup(Duration::from_secs(30));
-
         Self {
             config,
             state,
@@ -57,7 +47,6 @@ impl TransportService {
             event_publisher,
             metrics,
             create_transport_cache,
-            create_pipe_transport_cache,
         }
     }
 }
@@ -544,182 +533,6 @@ impl TransportUseCase for TransportService {
             ice_pwd: new_ice.password,
             raw_ice_parameters_json: raw_ice_json,
         })
-    }
-
-    #[tracing::instrument(skip(self, params), fields(router_id = %params.router_id, request_id = %params.request_id))]
-    async fn create_pipe_transport(
-        &self,
-        params: CreatePipeTransportParams,
-    ) -> Result<CreatePipeTransportResult, SfuDomainError> {
-        if self.state.is_draining.load(Ordering::SeqCst) {
-            return Err(SfuDomainError::SystemDraining(
-                "Node is draining; rejecting new pipe transport".to_string(),
-            ));
-        }
-
-        validation::validate_not_empty("request_id", &params.request_id)?;
-        validation::validate_not_empty("router_id", &params.router_id)?;
-
-        let payload_bytes = format!(
-            "{}:{}:{}:{}",
-            params.request_id, params.router_id, params.enable_srtp, params.enable_rtx
-        )
-        .into_bytes();
-
-        let metrics_ref = self.metrics.clone();
-
-        self.create_pipe_transport_cache
-            .execute_or_get_with_hook(
-                &params.request_id,
-                &payload_bytes,
-                || async {
-                    let router = {
-                        let r_item =
-                            self.state.routers.get(&params.router_id).ok_or_else(|| {
-                                SfuDomainError::NotFound(format!(
-                                    "Router '{}' not found",
-                                    params.router_id
-                                ))
-                            })?;
-
-                        if r_item.is_closed.load(Ordering::SeqCst) {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Router '{}' is closed",
-                                params.router_id
-                            )));
-                        }
-
-                        r_item.router.clone()
-                    };
-
-                    let listen_info = ListenInfo {
-                        protocol: Protocol::Udp,
-                        ip: self.config.listen_ip,
-                        announced_address: self.config.announced_ip.clone(),
-                        expose_internal_ip: false,
-                        port: None,
-                        port_range: Some(self.config.rtc_min_port..=self.config.rtc_max_port),
-                        flags: None,
-                        send_buffer_size: self.config.webrtc_transport.send_buffer_size,
-                        recv_buffer_size: self.config.webrtc_transport.recv_buffer_size,
-                    };
-
-                    let mut options = PipeTransportOptions::new(listen_info);
-                    options.enable_srtp = params.enable_srtp;
-                    options.enable_rtx = params.enable_rtx;
-
-                    let transport = router.create_pipe_transport(options).await.map_err(|e| {
-                        SfuDomainError::Mediasoup(format!("Failed to create PipeTransport: {e}"))
-                    })?;
-
-                    let pipe_transport_id = transport.id().to_string();
-                    let tuple = transport.tuple();
-                    let ip = tuple.local_address().to_string();
-                    let port = tuple.local_port() as u32;
-                    let srtp_parameters_json = transport
-                        .srtp_parameters()
-                        .and_then(|s| serde_json::to_string(&s).ok())
-                        .unwrap_or_default();
-
-                    let item = PipeTransportItem {
-                        transport,
-                        router_id: params.router_id.clone(),
-                        is_closed: Arc::new(AtomicBool::new(false)),
-                    };
-
-                    self.state
-                        .pipe_transports
-                        .insert(pipe_transport_id.clone(), item);
-                    self.state
-                        .router_pipe_transports
-                        .entry(params.router_id.clone())
-                        .or_default()
-                        .insert(pipe_transport_id.clone());
-
-                    Ok(CreatePipeTransportResult {
-                        pipe_transport_id,
-                        ip,
-                        port,
-                        srtp_parameters_json,
-                    })
-                },
-                move || {
-                    metrics_ref.record_idempotency_hit();
-                },
-            )
-            .await
-    }
-
-    #[tracing::instrument(skip(self, params), fields(router_id = %params.router_id, transport_id = %params.pipe_transport_id))]
-    async fn connect_pipe_transport(
-        &self,
-        params: ConnectPipeTransportParams,
-    ) -> Result<(), SfuDomainError> {
-        validation::validate_not_empty("router_id", &params.router_id)?;
-        validation::validate_not_empty("pipe_transport_id", &params.pipe_transport_id)?;
-        validation::validate_not_empty("remote_ip", &params.remote_ip)?;
-
-        let transport = {
-            let t_item = self
-                .state
-                .pipe_transports
-                .get(&params.pipe_transport_id)
-                .ok_or_else(|| {
-                    SfuDomainError::NotFound(format!(
-                        "PipeTransport '{}' not found",
-                        params.pipe_transport_id
-                    ))
-                })?;
-
-            if t_item.is_closed.load(Ordering::SeqCst) {
-                return Err(SfuDomainError::NotFound(format!(
-                    "PipeTransport '{}' is closed",
-                    params.pipe_transport_id
-                )));
-            }
-
-            if t_item.router_id != params.router_id {
-                return Err(SfuDomainError::NotFound(format!(
-                    "PipeTransport '{}' does not belong to router '{}'",
-                    params.pipe_transport_id, params.router_id
-                )));
-            }
-
-            t_item.transport.clone()
-        };
-
-        let remote_ip = IpAddr::from_str(&params.remote_ip).map_err(|e| {
-            SfuDomainError::InvalidArgument(format!(
-                "Invalid remote_ip '{}': {e}",
-                params.remote_ip
-            ))
-        })?;
-
-        let srtp_parameters = if !params.remote_srtp_parameters_json.trim().is_empty() {
-            Some(
-                serde_json::from_str::<SrtpParameters>(&params.remote_srtp_parameters_json)
-                    .map_err(|e| {
-                        SfuDomainError::InvalidArgument(format!(
-                            "Invalid remote_srtp_parameters_json: {e}"
-                        ))
-                    })?,
-            )
-        } else {
-            None
-        };
-
-        transport
-            .connect(PipeTransportRemoteParameters {
-                ip: remote_ip,
-                port: params.remote_port as u16,
-                srtp_parameters,
-            })
-            .await
-            .map_err(|e| {
-                SfuDomainError::Mediasoup(format!("Failed to connect PipeTransport: {e}"))
-            })?;
-
-        Ok(())
     }
 
     #[tracing::instrument(skip(self), fields(router_id = %router_id, transport_id = %transport_id))]

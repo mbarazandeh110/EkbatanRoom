@@ -66,3 +66,8 @@
 1. **شفافیت کامل روتر منطقی:** سرویس `signaling-coordinator` نباید درگیر تعداد ورکرهای داخلی نود شود. توزیع کاربران یک اتاق بزرگ بین ورکرهای داخلی نود و اجرای `pipe_to_router` باید کاملاً در لایه `application` داخل `sfu-media-node` مدیریت شود.
 2. **عدم فیلتر شدن `NodeCapacityMetrics` در `WatchNodeEvents`:** در استریم `WatchNodeEvents`، رویدادهای از نوع `NodeCapacity` سطح نود هستند (`router_id == ""`) و هرگز نباید توسط گارد Zombie Events فیلتر شوند.
 3. **متریک‌های پرومتئوس ظرفیت:** مقادیر `sfu_node_capacity_weight`، `sfu_node_logical_load_percent`، `sfu_node_cpu_usage_percent` و `sfu_node_effective_load_percent` را به عنوان Gauge بدون لیبل‌های کاردینالیتی بالا در `/metrics` ثبت کن.
+
+## ۶. قوانین معماری Open-Core (تفکیک Community و Enterprise)
+1. **ممنوعیت شرط‌های پراکنده تجاری:** استفاده از `#[cfg(feature = "enterprise")]` در وسط توابع منطق دامنه یا هندلرهای gRPC ممنوع است. تفکیک نسخه Community و Enterprise باید منحصراً از طریق Trait (`InterNodePipeUseCase`) و تزریق وابستگی در Composition Root (`MediaNode::new`) انجام شود.
+2. **توزیع چند-ورکری در نسخه متن‌باز:** قابلیت توزیع شفاف یک اتاق روی تمام ورکرهای داخل یک نود (`LogicalRouter` و `pipe_to_router` داخلی) و محاسبه `NodeCapacityMetrics` بخشی از هسته متن‌باز (Community) است و باید بدون هیچ فیچر فلگی کار کند.
+3. **تست هر دو نسخه:** تمام تست‌های واحد و یکپارچگی باید هم در حالت پیش‌فرض (`cargo test`) و هم در حالت تجاری (`cargo test --all-features`) بدون خطا اجرا شوند.

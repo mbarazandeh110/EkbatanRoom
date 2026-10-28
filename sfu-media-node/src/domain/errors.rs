@@ -28,4 +28,7 @@ pub enum SfuDomainError {
 
     #[error("Node is draining: {0}")]
     SystemDraining(String),
+
+    #[error("Enterprise feature required: {0}")]
+    EnterpriseFeatureRequired(String),
 }

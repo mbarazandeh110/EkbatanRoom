@@ -1,0 +1,321 @@
+use sfu_media_node::proto::sfu::v1 as proto;
+use sfu_media_node::proto::sfu::v1::sfu_media_engine_service_server::SfuMediaEngineService;
+use sfu_media_node::{Config, GrpcMediaEngineService, MediaNode};
+use std::sync::Arc;
+use tonic::Request;
+
+fn test_config() -> Config {
+    let mut config = Config::from_env();
+    config.worker_count = 2;
+    config.worker_capacity_weight = 10;
+    config.worker_spillover_threshold_percent = 50.0;
+    config
+}
+
+#[tokio::test]
+async fn test_open_core_node_capacity_and_feature_matrix() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let cap = service
+        .get_node_capacity(Request::new(proto::GetNodeCapacityRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(cap.total_workers, 2);
+    assert_eq!(cap.alive_workers, 2);
+    assert_eq!(cap.total_capacity_weight, 20);
+
+    let is_enterprise = cfg!(feature = "enterprise");
+    assert_eq!(
+        cap.enterprise_cascading_enabled, is_enterprise,
+        "enterprise_cascading_enabled must reflect cargo feature"
+    );
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}
+
+#[cfg(not(feature = "enterprise"))]
+#[tokio::test]
+async fn test_community_edition_pipe_rpcs_return_unimplemented() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-comm".to_string(),
+            room_id: "room-comm".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 1. CreatePipeTransport -> Unimplemented
+    let err1 = service
+        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+            request_id: "req-pt-comm-1".to_string(),
+            router_id: r_resp.router_id.clone(),
+            enable_srtp: false,
+            enable_rtx: false,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err1.code(), tonic::Code::Unimplemented);
+    assert!(err1.message().contains("Enterprise feature"));
+
+    // 2. ConnectPipeTransport -> Unimplemented
+    let err2 = service
+        .connect_pipe_transport(Request::new(proto::ConnectPipeTransportRequest {
+            router_id: r_resp.router_id.clone(),
+            pipe_transport_id: "pipe-any".to_string(),
+            remote_ip: "127.0.0.1".to_string(),
+            remote_port: 40002,
+            remote_srtp_parameters_json: String::new(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err2.code(), tonic::Code::Unimplemented);
+    assert!(err2.message().contains("Enterprise feature"));
+
+    // 3. PipeProduce -> Unimplemented
+    let opus_params = r#"{
+        "mid": "0",
+        "codecs": [{
+            "mimeType": "audio/opus",
+            "payloadType": 111,
+            "clockRate": 48000,
+            "channels": 2,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 11111 }],
+        "rtcp": { "cname": "test-audio", "reducedSize": true }
+    }"#;
+
+    let err3 = service
+        .pipe_produce(Request::new(proto::PipeProduceRequest {
+            request_id: "req-pp-comm".to_string(),
+            router_id: r_resp.router_id.clone(),
+            pipe_transport_id: "pipe-any".to_string(),
+            source_producer_id: "prod-any".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err3.code(), tonic::Code::Unimplemented);
+    assert!(err3.message().contains("Enterprise feature"));
+
+    // 4. PipeConsume -> Unimplemented
+    let err4 = service
+        .pipe_consume(Request::new(proto::PipeConsumeRequest {
+            request_id: "req-pc-comm".to_string(),
+            router_id: r_resp.router_id.clone(),
+            pipe_transport_id: "pipe-any".to_string(),
+            producer_id: "prod-any".to_string(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err4.code(), tonic::Code::Unimplemented);
+    assert!(err4.message().contains("Enterprise feature"));
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}
+
+#[cfg(feature = "enterprise")]
+#[tokio::test]
+async fn test_enterprise_edition_pipe_cascade_e2e() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create two routers representing two cascaded instances
+    let r1 = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r1-cascade".to_string(),
+            room_id: "room-cascade-1".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let r2 = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r2-cascade".to_string(),
+            room_id: "room-cascade-2".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 2. Create publisher transport on Router 1
+    let t1_pub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-t1-pub".to_string(),
+            router_id: r1.router_id.clone(),
+            peer_id: "publisher-node-1".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Produce audio on Router 1
+    let opus_params = r#"{
+        "mid": "0",
+        "codecs": [{
+            "mimeType": "audio/opus",
+            "payloadType": 111,
+            "clockRate": 48000,
+            "channels": 2,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 11111 }],
+        "rtcp": { "cname": "test-audio", "reducedSize": true }
+    }"#;
+
+    let p1_prod = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-p1-prod".to_string(),
+            router_id: r1.router_id.clone(),
+            transport_id: t1_pub.transport_id.clone(),
+            peer_id: "publisher-node-1".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 3. Create PipeTransport on Router 1
+    let pt1 = service
+        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+            request_id: "req-pt1".to_string(),
+            router_id: r1.router_id.clone(),
+            enable_srtp: true,
+            enable_rtx: true,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 4. Create PipeTransport on Router 2
+    let pt2 = service
+        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+            request_id: "req-pt2".to_string(),
+            router_id: r2.router_id.clone(),
+            enable_srtp: true,
+            enable_rtx: true,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 5. Connect PipeTransport 1 to 2, and 2 to 1
+    service
+        .connect_pipe_transport(Request::new(proto::ConnectPipeTransportRequest {
+            router_id: r1.router_id.clone(),
+            pipe_transport_id: pt1.pipe_transport_id.clone(),
+            remote_ip: pt2.ip.clone(),
+            remote_port: pt2.port,
+            remote_srtp_parameters_json: pt2.srtp_parameters_json.clone(),
+        }))
+        .await
+        .unwrap();
+
+    service
+        .connect_pipe_transport(Request::new(proto::ConnectPipeTransportRequest {
+            router_id: r2.router_id.clone(),
+            pipe_transport_id: pt2.pipe_transport_id.clone(),
+            remote_ip: pt1.ip.clone(),
+            remote_port: pt1.port,
+            remote_srtp_parameters_json: pt1.srtp_parameters_json.clone(),
+        }))
+        .await
+        .unwrap();
+
+    // 6. PipeConsume from Router 1's PipeTransport (consumes local producer to send over pipe)
+    let pipe_consume_resp = service
+        .pipe_consume(Request::new(proto::PipeConsumeRequest {
+            request_id: "req-pipe-cons-1".to_string(),
+            router_id: r1.router_id.clone(),
+            pipe_transport_id: pt1.pipe_transport_id.clone(),
+            producer_id: p1_prod.producer_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!pipe_consume_resp.consumer_id.is_empty());
+    assert_eq!(pipe_consume_resp.kind, "audio");
+
+    // 7. PipeProduce on Router 2's PipeTransport (injects piped stream into router 2)
+    let pipe_prod_resp = service
+        .pipe_produce(Request::new(proto::PipeProduceRequest {
+            request_id: "req-pipe-prod-2".to_string(),
+            router_id: r2.router_id.clone(),
+            pipe_transport_id: pt2.pipe_transport_id.clone(),
+            source_producer_id: p1_prod.producer_id.clone(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: pipe_consume_resp.rtp_parameters_json.clone(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(pipe_prod_resp.producer_id, p1_prod.producer_id);
+    assert_eq!(pipe_prod_resp.kind, "audio");
+
+    // 8. Now a consumer on Router 2 can consume this cascaded producer!
+    let t2_sub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-t2-sub".to_string(),
+            router_id: r2.router_id.clone(),
+            peer_id: "subscriber-node-2".to_string(),
+            is_publisher: false,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let opus_caps = r#"{
+        "codecs": [
+            {
+                "mimeType": "audio/opus",
+                "kind": "audio",
+                "preferredPayloadType": 111,
+                "clockRate": 48000,
+                "channels": 2,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": []
+    }"#;
+
+    let sub_consume_resp = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-sub2-consume".to_string(),
+            router_id: r2.router_id.clone(),
+            subscriber_transport_id: t2_sub.transport_id.clone(),
+            producer_id: pipe_prod_resp.producer_id.clone(),
+            rtp_capabilities_json: opus_caps.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!sub_consume_resp.consumer_id.is_empty());
+    assert_eq!(sub_consume_resp.kind, "audio");
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}

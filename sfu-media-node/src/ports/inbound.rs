@@ -59,6 +59,26 @@ pub struct ConnectPipeTransportParams {
 }
 
 #[derive(Debug, Clone)]
+pub struct PipeProduceParams {
+    pub request_id: String,
+    pub router_id: String,
+    pub pipe_transport_id: String,
+    pub producer_id: String,
+    pub kind: MediaKind,
+    pub rtp_parameters: RtpParameters,
+    pub paused: bool,
+    pub raw_rtp_parameters_json: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PipeConsumeParams {
+    pub request_id: String,
+    pub router_id: String,
+    pub pipe_transport_id: String,
+    pub producer_id: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ProduceParams {
     pub request_id: String,
     pub router_id: String,
@@ -139,16 +159,6 @@ pub trait TransportUseCase: Send + Sync {
         transport_id: &str,
     ) -> Result<RestartIceResult, SfuDomainError>;
 
-    async fn create_pipe_transport(
-        &self,
-        params: CreatePipeTransportParams,
-    ) -> Result<CreatePipeTransportResult, SfuDomainError>;
-
-    async fn connect_pipe_transport(
-        &self,
-        params: ConnectPipeTransportParams,
-    ) -> Result<(), SfuDomainError>;
-
     fn close_transport(&self, router_id: &str, transport_id: &str) -> Result<(), SfuDomainError>;
 }
 
@@ -183,4 +193,29 @@ pub trait MediaUseCase: Send + Sync {
         resource_id: &str,
         resource_type: &str,
     ) -> Result<ResourceStatsInfo, SfuDomainError>;
+}
+
+#[async_trait]
+pub trait InterNodePipeUseCase: Send + Sync {
+    async fn create_pipe_transport(
+        &self,
+        params: CreatePipeTransportParams,
+    ) -> Result<CreatePipeTransportResult, SfuDomainError>;
+
+    async fn connect_pipe_transport(
+        &self,
+        params: ConnectPipeTransportParams,
+    ) -> Result<(), SfuDomainError>;
+
+    async fn pipe_produce(
+        &self,
+        params: PipeProduceParams,
+    ) -> Result<ProduceResult, SfuDomainError>;
+
+    async fn pipe_consume(
+        &self,
+        params: PipeConsumeParams,
+    ) -> Result<ConsumeResult, SfuDomainError>;
+
+    fn is_enterprise_enabled(&self) -> bool;
 }

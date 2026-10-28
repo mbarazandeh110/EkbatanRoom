@@ -81,6 +81,7 @@ where
             tonic::Code::FailedPrecondition => "failed_precondition",
             tonic::Code::Aborted => "aborted",
             tonic::Code::Unavailable => "unavailable",
+            tonic::Code::Unimplemented => "unimplemented",
             tonic::Code::Internal => "internal",
             _ => "error",
         },
@@ -540,7 +541,7 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                 }
                 let params = mapper::from_create_pipe_transport_request(req);
                 let res = node
-                    .transport_service
+                    .pipe_service
                     .create_pipe_transport(params)
                     .await
                     .map_err(Status::from)?;
@@ -565,11 +566,63 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                 }
                 let params =
                     mapper::from_connect_pipe_transport_request(req).map_err(Status::from)?;
-                node.transport_service
+                node.pipe_service
                     .connect_pipe_transport(params)
                     .await
                     .map_err(Status::from)?;
                 Ok(proto::ConnectPipeTransportResponse {})
+            },
+        )
+        .await
+    }
+
+    async fn pipe_produce(
+        &self,
+        request: Request<proto::PipeProduceRequest>,
+    ) -> Result<Response<proto::ProduceResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc(
+            "PipeProduce",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::Span::current().record("request_id", &req.request_id);
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params = mapper::from_pipe_produce_request(req).map_err(Status::from)?;
+                let res = node
+                    .pipe_service
+                    .pipe_produce(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_produce_response(res))
+            },
+        )
+        .await
+    }
+
+    async fn pipe_consume(
+        &self,
+        request: Request<proto::PipeConsumeRequest>,
+    ) -> Result<Response<proto::ConsumeResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc(
+            "PipeConsume",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::Span::current().record("request_id", &req.request_id);
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params = mapper::from_pipe_consume_request(req).map_err(Status::from)?;
+                let res = node
+                    .pipe_service
+                    .pipe_consume(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_consume_response(res))
             },
         )
         .await

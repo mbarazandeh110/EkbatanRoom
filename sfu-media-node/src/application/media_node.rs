@@ -25,6 +25,7 @@ pub struct MediaNode {
     pub router_service: Arc<RouterService>,
     pub transport_service: Arc<TransportService>,
     pub media_service: Arc<MediaService>,
+    pub pipe_service: Arc<dyn crate::ports::inbound::InterNodePipeUseCase>,
     system_sampler: Arc<SystemSampler>,
     capacity_task_abort: Option<tokio::task::AbortHandle>,
 }
@@ -70,7 +71,22 @@ impl MediaNode {
             metrics.clone(),
         ));
 
+        #[cfg(not(feature = "enterprise"))]
+        let pipe_service: Arc<dyn crate::ports::inbound::InterNodePipeUseCase> =
+            Arc::new(crate::application::pipe_service::CommunityDisabledPipeService);
+
+        #[cfg(feature = "enterprise")]
+        let pipe_service: Arc<dyn crate::ports::inbound::InterNodePipeUseCase> = Arc::new(
+            crate::application::pipe_service::EnterprisePipeService::new(
+                config.clone(),
+                state.clone(),
+                metrics.clone(),
+            ),
+        );
+
         let system_sampler = Arc::new(SystemSampler::new());
+
+        let is_enterprise = pipe_service.is_enterprise_enabled();
 
         // Spawn periodic capacity publishing background task (every 1s, with >=3% hysteresis or 5s heartbeat)
         let sampler_clone = system_sampler.clone();
@@ -93,6 +109,7 @@ impl MediaNode {
                     &config_clone,
                     &sampler_clone,
                     &state_clone,
+                    is_enterprise,
                 );
 
                 // Update Prometheus metrics every tick
@@ -124,6 +141,7 @@ impl MediaNode {
             router_service,
             transport_service,
             media_service,
+            pipe_service,
             system_sampler,
             capacity_task_abort: Some(capacity_task.abort_handle()),
         })
@@ -139,6 +157,7 @@ impl MediaNode {
             &self.config,
             &self.system_sampler,
             &self.state,
+            self.pipe_service.is_enterprise_enabled(),
         )
     }
 
@@ -178,6 +197,7 @@ pub fn compute_node_capacity(
     config: &Config,
     system_sampler: &SystemSampler,
     state: &EngineState,
+    enterprise_cascading_enabled: bool,
 ) -> NodeCapacityInfo {
     let alive_workers = worker_pool.alive_workers() as u32;
     let total_workers = worker_pool.total_workers() as u32;
@@ -225,5 +245,6 @@ pub fn compute_node_capacity(
         active_consumers: state.consumers.len() as u32,
         is_draining: state.is_draining.load(std::sync::atomic::Ordering::SeqCst)
             || alive_workers == 0,
+        enterprise_cascading_enabled,
     }
 }

@@ -6,15 +6,15 @@ package rtc.sfu.v1;
 option go_package = "ekbatan-room/signaling-coordinator/gen/proto/sfu/v1;sfuv1";
 
 service SfuMediaEngineService {
-  // ۱. مدیریت چرخه حیات Router (تک‌واحد در گام اول، قابل گسترش به چند Worker)
+  // ۱. مدیریت چرخه حیات Router (در نسخه متن‌باز به صورت خودکار روی چند Worker داخلی مقیاس‌پذیر می‌شود)
   rpc CreateRouter(CreateRouterRequest) returns (CreateRouterResponse);
   
-  // ۲. مدیریت WebRtcTransport (شامل پشتیبانی از SCTP و تنظیمات شبکه/NAT)
+  // ۲. مدیریت WebRtcTransport
   rpc CreateTransport(CreateTransportRequest) returns (CreateTransportResponse);
   rpc ConnectTransport(ConnectTransportRequest) returns (ConnectTransportResponse);
   rpc RestartIce(RestartIceRequest) returns (RestartIceResponse);
 
-  // ۳. مدیریت Producer و Consumer (با اعتبارسنجی JSON در مرز RPC و بررسی canConsume)
+  // ۳. مدیریت Producer و Consumer
   rpc Produce(ProduceRequest) returns (ProduceResponse);
   rpc Consume(ConsumeRequest) returns (ConsumeResponse);
   rpc SetMediaPaused(SetMediaPausedRequest) returns (SetMediaPausedResponse);
@@ -25,13 +25,15 @@ service SfuMediaEngineService {
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
   rpc WatchNodeEvents(WatchNodeEventsRequest) returns (stream NodeEvent);
 
-  // ۵. استعلام مستقیم ظرفیت و وزن نود (در بدو اتصال Coordinator یا Health Check)
+  // ۵. استعلام ظرفیت، وزن و بار ترکیبی نود (موجود در هر دو نسخه Community و Enterprise)
   rpc GetNodeCapacity(GetNodeCapacityRequest) returns (NodeCapacityMetrics);
 
-  // ۶. مدیریت PipeTransport بین‌نودی (فقط برای زمانی که نود به Hard Threshold می‌رسد و اتاق بین دو سرور Cascade می‌شود)
-  // توجه: Pipe بین ورکرهای داخل یک نود کاملاً خودکار و پنهان در داخل sfu-media-node انجام می‌شود و نیازی به RPC ندارد.
+  // ۶. [ENTERPRISE EDITION ONLY] مدیریت PipeTransport بین‌نودی برای توزیع یک اتاق روی چند سرور
+  // در نسخه Community این متدها کد خطای UNIMPLEMENTED برمی‌گردانند.
   rpc CreatePipeTransport(CreatePipeTransportRequest) returns (CreatePipeTransportResponse);
   rpc ConnectPipeTransport(ConnectPipeTransportRequest) returns (ConnectPipeTransportResponse);
+  rpc PipeProduce(PipeProduceRequest) returns (ProduceResponse);
+  rpc PipeConsume(PipeConsumeRequest) returns (ConsumeResponse);
 }
 
 enum ResourceType {
@@ -77,6 +79,8 @@ message NodeCapacityMetrics {
 
   // آیا نود در حال خاموش شدن نرم (Graceful Draining) است؟
   bool is_draining = 13;
+
+  bool enterprise_cascading_enabled = 14; // مشخص می‌کند آیا این نود با قابلیت Enterprise بالا آمده است یا خیر
 }
 
 // پیام‌های مربوط به PipeTransport بین دو نود مجزا (Inter-Node Cascading)
@@ -296,4 +300,21 @@ message ResourceClosedEvent {
   ResourceType resource_type = 1;
   string resource_id = 2;
   string reason = 3;
+}
+
+message PipeProduceRequest {
+  string request_id = 1;
+  string router_id = 2;
+  string pipe_transport_id = 3;
+  string source_producer_id = 4; // شناسه Producer در نود مبدا
+  string kind = 5;
+  string rtp_parameters_json = 6;
+  bool paused = 7;
+}
+
+message PipeConsumeRequest {
+  string request_id = 1;
+  string router_id = 2;
+  string pipe_transport_id = 3;
+  string producer_id = 4;
 }

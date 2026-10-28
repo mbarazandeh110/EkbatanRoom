@@ -156,6 +156,7 @@ async fn test_transport_lifecycle_and_ice_restart() {
     assert!(err.is_err());
 }
 
+#[cfg(feature = "enterprise")]
 #[tokio::test]
 async fn test_pipe_transport_lifecycle_and_connect() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
@@ -267,6 +268,90 @@ async fn test_pipe_transport_lifecycle_and_connect() {
             .contains_key(&pt1_resp.pipe_transport_id),
         "Closed PipeTransport must be removed from state.pipe_transports"
     );
+}
+
+#[cfg(not(feature = "enterprise"))]
+#[tokio::test]
+async fn test_pipe_transport_community_unimplemented() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r1 = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-pipe-comm".to_string(),
+            room_id: "room-pipe-comm".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let pt_err = service
+        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+            request_id: "req-pt-comm".to_string(),
+            router_id: r1.router_id.clone(),
+            enable_srtp: true,
+            enable_rtx: true,
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(pt_err.code(), tonic::Code::Unimplemented);
+    assert!(pt_err.message().contains("Enterprise feature"));
+
+    let conn_err = service
+        .connect_pipe_transport(Request::new(proto::ConnectPipeTransportRequest {
+            router_id: r1.router_id.clone(),
+            pipe_transport_id: "pt-123".to_string(),
+            remote_ip: "127.0.0.1".to_string(),
+            remote_port: 40000,
+            remote_srtp_parameters_json: String::new(),
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(conn_err.code(), tonic::Code::Unimplemented);
+
+    let opus_params = r#"{
+        "mid": "0",
+        "codecs": [{
+            "mimeType": "audio/opus",
+            "payloadType": 111,
+            "clockRate": 48000,
+            "channels": 2,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 11111 }],
+        "rtcp": { "cname": "test-audio", "reducedSize": true }
+    }"#;
+
+    let prod_err = service
+        .pipe_produce(Request::new(proto::PipeProduceRequest {
+            request_id: "req-prod-comm".to_string(),
+            router_id: r1.router_id.clone(),
+            pipe_transport_id: "pt-123".to_string(),
+            source_producer_id: "prod-123".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(prod_err.code(), tonic::Code::Unimplemented);
+
+    let cons_err = service
+        .pipe_consume(Request::new(proto::PipeConsumeRequest {
+            request_id: "req-cons-comm".to_string(),
+            router_id: r1.router_id.clone(),
+            pipe_transport_id: "pt-123".to_string(),
+            producer_id: "prod-123".to_string(),
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(cons_err.code(), tonic::Code::Unimplemented);
 }
 
 #[tokio::test]

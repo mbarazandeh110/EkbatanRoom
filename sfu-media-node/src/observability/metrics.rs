@@ -141,6 +141,7 @@ pub fn record_grpc_request(method: &'static str, status: &str, duration_secs: f6
         "aborted" => "aborted",
         "internal" => "internal",
         "unavailable" => "unavailable",
+        "unimplemented" => "unimplemented",
         _ => "other",
     };
 

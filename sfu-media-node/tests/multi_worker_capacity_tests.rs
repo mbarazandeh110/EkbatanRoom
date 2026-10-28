@@ -342,6 +342,10 @@ async fn test_node_capacity_metrics_and_events() {
     assert_eq!(cap.total_capacity_weight, 20); // 2 workers * weight 10
     assert_eq!(cap.active_routers, 0);
     assert_eq!(cap.active_transports, 0);
+    assert_eq!(
+        cap.enterprise_cascading_enabled,
+        cfg!(feature = "enterprise")
+    );
 
     // 2. Subscribe to WatchNodeEvents and verify NodeCapacity event arrives
     let mut stream = service
@@ -366,6 +370,7 @@ async fn test_node_capacity_metrics_and_events() {
         Some(proto::node_event::Payload::NodeCapacity(c)) => {
             assert_eq!(c.total_workers, 2);
             assert_eq!(c.total_capacity_weight, 20);
+            assert_eq!(c.enterprise_cascading_enabled, cfg!(feature = "enterprise"));
         }
         other => panic!("Expected NodeCapacity event, got {:?}", other),
     }
@@ -452,19 +457,58 @@ async fn test_sub_router_audio_observer_and_pipe_transport_cleanup() {
     assert!(!p2_prod.producer_id.is_empty());
 
     // 5. Create a PipeTransport and ensure it is tracked in state.pipe_transports
-    let pipe_resp = service
-        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
-            request_id: "req-pipe-cleanup".to_string(),
-            router_id: router_id.clone(),
-            enable_srtp: false,
-            enable_rtx: false,
-        }))
-        .await
-        .unwrap()
-        .into_inner();
+    #[cfg(feature = "enterprise")]
+    {
+        let pipe_resp = service
+            .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+                request_id: "req-pipe-cleanup".to_string(),
+                router_id: router_id.clone(),
+                enable_srtp: false,
+                enable_rtx: false,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
 
-    assert!(!pipe_resp.pipe_transport_id.is_empty());
-    assert_eq!(node.state.pipe_transports.len(), 1);
+        assert!(!pipe_resp.pipe_transport_id.is_empty());
+        assert_eq!(node.state.pipe_transports.len(), 1);
+    }
+    #[cfg(not(feature = "enterprise"))]
+    {
+        use mediasoup::prelude::*;
+        let router = node.state.routers.get(&router_id).unwrap().router.clone();
+        let pt = router
+            .create_pipe_transport(mediasoup::pipe_transport::PipeTransportOptions::new(
+                ListenInfo {
+                    protocol: Protocol::Udp,
+                    ip: "127.0.0.1".parse().unwrap(),
+                    announced_address: None,
+                    expose_internal_ip: false,
+                    port: None,
+                    port_range: None,
+                    flags: None,
+                    send_buffer_size: None,
+                    recv_buffer_size: None,
+                },
+            ))
+            .await
+            .unwrap();
+        let pt_id = pt.id().to_string();
+        node.state.pipe_transports.insert(
+            pt_id.clone(),
+            sfu_media_node::application::state::PipeTransportItem {
+                transport: pt,
+                router_id: router_id.clone(),
+                is_closed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
+        );
+        node.state
+            .router_pipe_transports
+            .entry(router_id.clone())
+            .or_default()
+            .insert(pt_id);
+        assert_eq!(node.state.pipe_transports.len(), 1);
+    }
 
     // 6. Close the router -> MUST cascade and clean up PipeTransport (preventing memory leak!)
     service
@@ -580,7 +624,10 @@ async fn test_draining_rejects_new_resources() {
         }))
         .await
         .unwrap_err();
+    #[cfg(feature = "enterprise")]
     assert_eq!(p_err.code(), tonic::Code::Unavailable);
+    #[cfg(not(feature = "enterprise"))]
+    assert_eq!(p_err.code(), tonic::Code::Unimplemented);
 
     // 4. Produce should be rejected with Unavailable
     let opus_params = r#"{

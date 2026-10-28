@@ -142,6 +142,7 @@ impl EventPublisherPort for EventHub {
             active_producers: info.active_producers,
             active_consumers: info.active_consumers,
             is_draining: info.is_draining,
+            enterprise_cascading_enabled: info.enterprise_cascading_enabled,
         };
         let event = proto::NodeEvent {
             router_id: String::new(),

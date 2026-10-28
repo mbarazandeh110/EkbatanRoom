@@ -62,3 +62,6 @@
 1. **عدم دخالت در توپولوژی ورکرهای داخلی Rust:** سرویس `signaling-coordinator` هر نود `sfu-media-node` را به عنوان یک واحد یکپارچه می‌بیند و هرگز نباید سعی کند ورکرهای داخلی یک نود را مدیریت یا Pipe کند.
 2. **تصمیم‌گیری متمرکز Soft/Hard Threshold:** اعمال مرزهای `SFU_SOFT_THRESHOLD_PERCENT` (پیش‌فرض ۷۰٪ برای اتاق‌های جدید) و `SFU_HARD_THRESHOLD_PERCENT` (پیش‌فرض ۹۰٪ برای سرریز اتاق موجود به نود دیگر) منحصراً بر عهده `signaling-coordinator` و بر پایه فیلد `effective_load_percent` و `total_capacity_weight` دریافتی از نودهای مدیا است.
 3. **اولویت مطلق هم‌جواری اتاق (Room Locality):** تا زمانی که نود میزبان فعلی یک اتاق به مرز Hard Threshold نرسیده است، تمام کاربران جدید همان اتاق باید به همان نود هدایت شوند.
+## قوانین معماری Open-Core و زمان‌بندی ناوگان SFU
+1. **تفکیک تمیز با Go Build Tags و Strategy Port:** منطق نسخه متن‌باز (`!enterprise`) و نسخه تجاری (`enterprise`) باید از طریق اینترفیس `RoomPlacementStrategy` جداسازی شود. قرار دادن شرط‌های پراکنده در لایه کنترلر یا هندلرهای WebSocket ممنوع است.
+2. **مقیاس‌پذیری داخل نود در برابر بین نود:** توزیع اتاق روی ورکرهای یک نود بر عهده `sfu-media-node` است و در نسخه متن‌باز فعال است. توزیع یک اتاق واحد روی چند نود (`PipeTransport` بین‌نودی و مدیریت Soft/Hard Threshold) منحصراً در نسخه Enterprise از `signaling-coordinator` فعال می‌شود.

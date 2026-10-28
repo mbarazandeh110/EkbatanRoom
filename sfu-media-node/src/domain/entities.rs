@@ -81,4 +81,5 @@ pub struct NodeCapacityInfo {
     pub active_producers: u32,
     pub active_consumers: u32,
     pub is_draining: bool,
+    pub enterprise_cascading_enabled: bool,
 }

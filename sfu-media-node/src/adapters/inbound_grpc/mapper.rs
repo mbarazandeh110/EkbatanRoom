@@ -4,7 +4,8 @@ use crate::domain::validation;
 use crate::ports::inbound::{
     ConnectPipeTransportParams, ConnectTransportParams, ConsumeParams, ConsumeResult,
     CreatePipeTransportParams, CreatePipeTransportResult, CreateTransportParams,
-    CreateTransportResult, ProduceParams, ProduceResult, RestartIceResult,
+    CreateTransportResult, PipeConsumeParams, PipeProduceParams, ProduceParams, ProduceResult,
+    RestartIceResult,
 };
 use crate::proto::sfu::v1 as proto;
 use mediasoup::prelude::{RtpCapabilities, RtpParameters};
@@ -24,6 +25,7 @@ impl From<SfuDomainError> for tonic::Status {
             }
             SfuDomainError::Internal(msg) => tonic::Status::internal(msg),
             SfuDomainError::SystemDraining(msg) => tonic::Status::unavailable(msg),
+            SfuDomainError::EnterpriseFeatureRequired(msg) => tonic::Status::unimplemented(msg),
         }
     }
 }
@@ -363,5 +365,45 @@ pub fn to_node_capacity_metrics(info: NodeCapacityInfo) -> proto::NodeCapacityMe
         active_producers: info.active_producers,
         active_consumers: info.active_consumers,
         is_draining: info.is_draining,
+        enterprise_cascading_enabled: info.enterprise_cascading_enabled,
     }
+}
+
+pub fn from_pipe_produce_request(
+    req: proto::PipeProduceRequest,
+) -> Result<PipeProduceParams, SfuDomainError> {
+    validation::validate_not_empty("request_id", &req.request_id)?;
+    validation::validate_not_empty("router_id", &req.router_id)?;
+    validation::validate_not_empty("pipe_transport_id", &req.pipe_transport_id)?;
+    validation::validate_not_empty("source_producer_id", &req.source_producer_id)?;
+
+    let kind = validation::parse_media_kind(&req.kind)?;
+    let rtp_parameters = parse_rtp_parameters(&req.rtp_parameters_json)?;
+
+    Ok(PipeProduceParams {
+        request_id: req.request_id,
+        router_id: req.router_id,
+        pipe_transport_id: req.pipe_transport_id,
+        producer_id: req.source_producer_id,
+        kind,
+        rtp_parameters,
+        paused: req.paused,
+        raw_rtp_parameters_json: req.rtp_parameters_json,
+    })
+}
+
+pub fn from_pipe_consume_request(
+    req: proto::PipeConsumeRequest,
+) -> Result<PipeConsumeParams, SfuDomainError> {
+    validation::validate_not_empty("request_id", &req.request_id)?;
+    validation::validate_not_empty("router_id", &req.router_id)?;
+    validation::validate_not_empty("pipe_transport_id", &req.pipe_transport_id)?;
+    validation::validate_not_empty("producer_id", &req.producer_id)?;
+
+    Ok(PipeConsumeParams {
+        request_id: req.request_id,
+        router_id: req.router_id,
+        pipe_transport_id: req.pipe_transport_id,
+        producer_id: req.producer_id,
+    })
 }
