@@ -43,6 +43,9 @@ test-refactoring: ## Run refactoring verification tests
 test-capacity: ## Run multi-worker spillover and capacity metrics tests
 	cargo test --test multi_worker_capacity_tests
 
+test-config: ## Run configuration and mediasoup tuning tests
+	cargo test --test config_and_mediasoup_tuning_tests
+
 fmt: ## Format Rust codebase using rustfmt
 	cargo fmt
 

@@ -38,6 +38,7 @@ impl MediaNode {
                 config.worker_count,
                 config.rtc_min_port,
                 config.rtc_max_port,
+                &config.worker_settings,
             )
             .await?,
         );
@@ -51,6 +52,7 @@ impl MediaNode {
             worker_pool.clone(),
             event_hub.clone(),
             metrics.clone(),
+            config.clone(),
         ));
 
         let transport_service = Arc::new(TransportService::new(

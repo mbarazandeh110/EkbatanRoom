@@ -1,5 +1,4 @@
 use crate::application::state::{EngineState, RouterItem};
-use crate::domain::codecs::standard_media_codecs;
 use crate::domain::errors::SfuDomainError;
 use crate::domain::idempotency::IdempotencyCache;
 use crate::domain::validation;
@@ -17,6 +16,7 @@ pub struct RouterService {
     worker_pool: Arc<dyn WorkerPoolPort>,
     event_publisher: Arc<dyn EventPublisherPort>,
     metrics: Arc<dyn MetricsPort>,
+    config: crate::Config,
     cache: Arc<IdempotencyCache<(String, u32, String)>>,
 }
 
@@ -26,6 +26,7 @@ impl RouterService {
         worker_pool: Arc<dyn WorkerPoolPort>,
         event_publisher: Arc<dyn EventPublisherPort>,
         metrics: Arc<dyn MetricsPort>,
+        config: crate::Config,
     ) -> Self {
         let cache = Arc::new(IdempotencyCache::default());
         let _cleanup_task = cache.start_periodic_cleanup(Duration::from_secs(30));
@@ -35,6 +36,7 @@ impl RouterService {
             worker_pool,
             event_publisher,
             metrics,
+            config,
             cache,
         }
     }
@@ -112,7 +114,9 @@ impl RouterUseCase for RouterService {
 
                     // Obtain least loaded worker and spawn router without holding any DashMap lock
                     let (worker_index, worker) = self.worker_pool.get_least_loaded();
-                    let router_codecs = standard_media_codecs();
+                    let router_codecs = crate::domain::codecs::router_codecs_from_config(
+                        &self.config.router_codecs,
+                    );
                     let router = worker
                         .create_router(RouterOptions::new(router_codecs))
                         .await
@@ -165,7 +169,8 @@ impl RouterUseCase for RouterService {
 
                     let mut observer_options =
                         mediasoup::audio_level_observer::AudioLevelObserverOptions::default();
-                    observer_options.interval = 500;
+                    observer_options.interval = self.config.audio_level_observer.interval_ms;
+                    observer_options.threshold = self.config.audio_level_observer.threshold_dbov;
                     let audio_level_observer = router
                         .create_audio_level_observer(observer_options)
                         .await

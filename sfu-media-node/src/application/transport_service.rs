@@ -1,6 +1,5 @@
 use crate::application::state::{EngineState, PipeTransportItem, TransportItem};
 use crate::config::Config;
-use crate::domain::codecs::standard_media_codecs;
 use crate::domain::errors::SfuDomainError;
 use crate::domain::idempotency::IdempotencyCache;
 use crate::domain::validation;
@@ -193,7 +192,10 @@ impl TransportUseCase for TransportService {
                                         })?;
 
                                     let mut router_options = RouterOptions::default();
-                                    router_options.media_codecs = standard_media_codecs();
+                                    router_options.media_codecs =
+                                        crate::domain::codecs::router_codecs_from_config(
+                                            &self.config.router_codecs,
+                                        );
                                     let new_sub = worker.create_router(router_options).await.map_err(|e| {
                                         SfuDomainError::Mediasoup(format!(
                                             "Failed to create sub-router on worker {target_worker}: {e}"
@@ -202,7 +204,10 @@ impl TransportUseCase for TransportService {
 
                                     let mut observer_options =
                                         mediasoup::audio_level_observer::AudioLevelObserverOptions::default();
-                                    observer_options.interval = 500;
+                                    observer_options.interval =
+                                        self.config.audio_level_observer.interval_ms;
+                                    observer_options.threshold =
+                                        self.config.audio_level_observer.threshold_dbov;
                                     let audio_level_observer = new_sub
                                         .create_audio_level_observer(observer_options)
                                         .await
@@ -273,18 +278,46 @@ impl TransportUseCase for TransportService {
                         port: None,
                         port_range: Some(self.config.rtc_min_port..=self.config.rtc_max_port),
                         flags: None,
-                        send_buffer_size: None,
-                        recv_buffer_size: None,
+                        send_buffer_size: self.config.webrtc_transport.send_buffer_size,
+                        recv_buffer_size: self.config.webrtc_transport.recv_buffer_size,
                     };
 
                     let mut options =
                         WebRtcTransportOptions::new(WebRtcTransportListenInfos::new(listen_info));
                     options.enable_sctp = params.enable_sctp;
+                    options.initial_available_outgoing_bitrate =
+                        self.config.webrtc_transport.initial_available_outgoing_bitrate;
+                    options.max_send_message_size =
+                        self.config.webrtc_transport.max_send_message_size;
+                    options.max_receive_message_size =
+                        self.config.webrtc_transport.max_receive_message_size;
+                    options.sctp_send_buffer_size =
+                        self.config.webrtc_transport.sctp_send_buffer_size;
+                    options.sctp_per_stream_send_queue_limit =
+                        self.config.webrtc_transport.sctp_per_stream_send_queue_limit;
+                    options.sctp_max_receiver_window_buffer_size =
+                        self.config.webrtc_transport.sctp_max_receiver_window_buffer_size;
 
                     // Await on WebRtcTransport creation without holding any DashMap guard
                     let transport = router.create_webrtc_transport(options).await.map_err(|e| {
                         SfuDomainError::Mediasoup(format!("Failed to create WebRtcTransport: {e}"))
                     })?;
+
+                    if let Some(bitrate) = self.config.webrtc_transport.max_incoming_bitrate {
+                        if let Err(e) = transport.set_max_incoming_bitrate(bitrate).await {
+                            tracing::warn!(transport_id = %transport.id(), "Failed to set max_incoming_bitrate: {e}");
+                        }
+                    }
+                    if let Some(bitrate) = self.config.webrtc_transport.min_outgoing_bitrate {
+                        if let Err(e) = transport.set_min_outgoing_bitrate(bitrate).await {
+                            tracing::warn!(transport_id = %transport.id(), "Failed to set min_outgoing_bitrate: {e}");
+                        }
+                    }
+                    if let Some(bitrate) = self.config.webrtc_transport.max_outgoing_bitrate {
+                        if let Err(e) = transport.set_max_outgoing_bitrate(bitrate).await {
+                            tracing::warn!(transport_id = %transport.id(), "Failed to set max_outgoing_bitrate: {e}");
+                        }
+                    }
 
                     let transport_id = transport.id().to_string();
                     let ice_ufrag = transport.ice_parameters().username_fragment.clone();
@@ -565,8 +598,8 @@ impl TransportUseCase for TransportService {
                         port: None,
                         port_range: Some(self.config.rtc_min_port..=self.config.rtc_max_port),
                         flags: None,
-                        send_buffer_size: None,
-                        recv_buffer_size: None,
+                        send_buffer_size: self.config.webrtc_transport.send_buffer_size,
+                        recv_buffer_size: self.config.webrtc_transport.recv_buffer_size,
                     };
 
                     let mut options = PipeTransportOptions::new(listen_info);

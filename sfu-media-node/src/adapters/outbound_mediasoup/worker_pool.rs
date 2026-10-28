@@ -1,7 +1,6 @@
 use crate::domain::errors::SfuDomainError;
 use crate::ports::outbound::WorkerPoolPort;
 use mediasoup::prelude::*;
-use mediasoup::worker::WorkerLogLevel;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -18,6 +17,7 @@ impl WorkerPool {
         count: usize,
         min_port: u16,
         max_port: u16,
+        worker_config: &crate::config::MediasoupWorkerConfig,
     ) -> Result<Self, SfuDomainError> {
         let count = count.max(1);
         let mut workers = Vec::with_capacity(count);
@@ -28,7 +28,11 @@ impl WorkerPool {
         for i in 0..count {
             let mut settings = WorkerSettings::default();
             settings.rtc_port_range = min_port..=max_port;
-            settings.log_level = WorkerLogLevel::Warn;
+            settings.log_level = worker_config.to_mediasoup_log_level();
+            settings.log_tags = worker_config.to_mediasoup_log_tags();
+            if let Some(files) = worker_config.to_mediasoup_dtls_files() {
+                settings.dtls_files = Some(files);
+            }
 
             let worker = worker_manager
                 .create_worker(settings)

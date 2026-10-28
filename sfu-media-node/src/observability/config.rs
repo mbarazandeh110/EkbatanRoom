@@ -1,7 +1,8 @@
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObservabilityConfig {
     pub log_level: String,
     pub log_format: String,
