@@ -76,6 +76,442 @@ func (ResourceType) EnumDescriptor() ([]byte, []int) {
 	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{0}
 }
 
+type GetNodeCapacityRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNodeCapacityRequest) Reset() {
+	*x = GetNodeCapacityRequest{}
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNodeCapacityRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNodeCapacityRequest) ProtoMessage() {}
+
+func (x *GetNodeCapacityRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNodeCapacityRequest.ProtoReflect.Descriptor instead.
+func (*GetNodeCapacityRequest) Descriptor() ([]byte, []int) {
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{0}
+}
+
+// پیام جامع وضعیت ظرفیت، وزن و بار ترکیبی نود (Hybrid Predictive-Reactive Load)
+type NodeCapacityMetrics struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// کل وزن پردازشی نود (مثلاً alive_workers * 1000) برای مقایسه سرورهای ناهمگن (۸ هسته‌ای در برابر ۳۲ هسته‌ای)
+	TotalCapacityWeight uint32 `protobuf:"varint,1,opt,name=total_capacity_weight,json=totalCapacityWeight,proto3" json:"total_capacity_weight,omitempty"`
+	// تعداد کل ورکرها و ورکرهای سالم فعال در این نود
+	TotalWorkers uint32 `protobuf:"varint,2,opt,name=total_workers,json=totalWorkers,proto3" json:"total_workers,omitempty"`
+	AliveWorkers uint32 `protobuf:"varint,3,opt,name=alive_workers,json=aliveWorkers,proto3" json:"alive_workers,omitempty"`
+	// ۱. بار منطقی رزروشده (Predictive): مجموع امتیاز منابع فعال تقسیم بر وزن کل (۰.۰ تا ۱۰۰.۰)
+	LogicalLoadPercent float32 `protobuf:"fixed32,4,opt,name=logical_load_percent,json=logicalLoadPercent,proto3" json:"logical_load_percent,omitempty"`
+	// ۲. بار واقعی سخت‌افزاری (Reactive): میانگین مصرف CPU پروسه‌های mediasoup-worker (۰.۰ تا ۱۰۰.۰)
+	CpuUsagePercent float32 `protobuf:"fixed32,5,opt,name=cpu_usage_percent,json=cpuUsagePercent,proto3" json:"cpu_usage_percent,omitempty"`
+	// ۳. درصد مصرف حافظه RAM کل نود (صرفاً جهت Circuit Breaker اضطراری)
+	MemoryUsagePercent float32 `protobuf:"fixed32,6,opt,name=memory_usage_percent,json=memoryUsagePercent,proto3" json:"memory_usage_percent,omitempty"`
+	// ۴. بار پرترین ورکر فعلی نود (برای تشخیص اشباع تک‌هسته‌ای)
+	MaxWorkerLoadPercent float32 `protobuf:"fixed32,7,opt,name=max_worker_load_percent,json=maxWorkerLoadPercent,proto3" json:"max_worker_load_percent,omitempty"`
+	// ۵. درصد پر بودن نهایی و موثر نود: max(logical_load_percent, cpu_usage_percent)
+	// سرویس signaling-coordinator تصمیمات Soft/Hard Threshold را روی این عدد اعمال می‌کند
+	EffectiveLoadPercent float32 `protobuf:"fixed32,8,opt,name=effective_load_percent,json=effectiveLoadPercent,proto3" json:"effective_load_percent,omitempty"`
+	// آمار شمارشی منابع فعال روی نود (برای Observability و دیباگ زمان‌بند)
+	ActiveRouters    uint32 `protobuf:"varint,9,opt,name=active_routers,json=activeRouters,proto3" json:"active_routers,omitempty"`
+	ActiveTransports uint32 `protobuf:"varint,10,opt,name=active_transports,json=activeTransports,proto3" json:"active_transports,omitempty"`
+	ActiveProducers  uint32 `protobuf:"varint,11,opt,name=active_producers,json=activeProducers,proto3" json:"active_producers,omitempty"`
+	ActiveConsumers  uint32 `protobuf:"varint,12,opt,name=active_consumers,json=activeConsumers,proto3" json:"active_consumers,omitempty"`
+	// آیا نود در حال خاموش شدن نرم (Graceful Draining) است؟
+	IsDraining    bool `protobuf:"varint,13,opt,name=is_draining,json=isDraining,proto3" json:"is_draining,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeCapacityMetrics) Reset() {
+	*x = NodeCapacityMetrics{}
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeCapacityMetrics) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeCapacityMetrics) ProtoMessage() {}
+
+func (x *NodeCapacityMetrics) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeCapacityMetrics.ProtoReflect.Descriptor instead.
+func (*NodeCapacityMetrics) Descriptor() ([]byte, []int) {
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *NodeCapacityMetrics) GetTotalCapacityWeight() uint32 {
+	if x != nil {
+		return x.TotalCapacityWeight
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetTotalWorkers() uint32 {
+	if x != nil {
+		return x.TotalWorkers
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetAliveWorkers() uint32 {
+	if x != nil {
+		return x.AliveWorkers
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetLogicalLoadPercent() float32 {
+	if x != nil {
+		return x.LogicalLoadPercent
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetCpuUsagePercent() float32 {
+	if x != nil {
+		return x.CpuUsagePercent
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetMemoryUsagePercent() float32 {
+	if x != nil {
+		return x.MemoryUsagePercent
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetMaxWorkerLoadPercent() float32 {
+	if x != nil {
+		return x.MaxWorkerLoadPercent
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetEffectiveLoadPercent() float32 {
+	if x != nil {
+		return x.EffectiveLoadPercent
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetActiveRouters() uint32 {
+	if x != nil {
+		return x.ActiveRouters
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetActiveTransports() uint32 {
+	if x != nil {
+		return x.ActiveTransports
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetActiveProducers() uint32 {
+	if x != nil {
+		return x.ActiveProducers
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetActiveConsumers() uint32 {
+	if x != nil {
+		return x.ActiveConsumers
+	}
+	return 0
+}
+
+func (x *NodeCapacityMetrics) GetIsDraining() bool {
+	if x != nil {
+		return x.IsDraining
+	}
+	return false
+}
+
+// پیام‌های مربوط به PipeTransport بین دو نود مجزا (Inter-Node Cascading)
+type CreatePipeTransportRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	RouterId      string                 `protobuf:"bytes,2,opt,name=router_id,json=routerId,proto3" json:"router_id,omitempty"`
+	EnableSrtp    bool                   `protobuf:"varint,3,opt,name=enable_srtp,json=enableSrtp,proto3" json:"enable_srtp,omitempty"`
+	EnableRtx     bool                   `protobuf:"varint,4,opt,name=enable_rtx,json=enableRtx,proto3" json:"enable_rtx,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreatePipeTransportRequest) Reset() {
+	*x = CreatePipeTransportRequest{}
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreatePipeTransportRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreatePipeTransportRequest) ProtoMessage() {}
+
+func (x *CreatePipeTransportRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreatePipeTransportRequest.ProtoReflect.Descriptor instead.
+func (*CreatePipeTransportRequest) Descriptor() ([]byte, []int) {
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *CreatePipeTransportRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *CreatePipeTransportRequest) GetRouterId() string {
+	if x != nil {
+		return x.RouterId
+	}
+	return ""
+}
+
+func (x *CreatePipeTransportRequest) GetEnableSrtp() bool {
+	if x != nil {
+		return x.EnableSrtp
+	}
+	return false
+}
+
+func (x *CreatePipeTransportRequest) GetEnableRtx() bool {
+	if x != nil {
+		return x.EnableRtx
+	}
+	return false
+}
+
+type CreatePipeTransportResponse struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	PipeTransportId    string                 `protobuf:"bytes,1,opt,name=pipe_transport_id,json=pipeTransportId,proto3" json:"pipe_transport_id,omitempty"`
+	Ip                 string                 `protobuf:"bytes,2,opt,name=ip,proto3" json:"ip,omitempty"`
+	Port               uint32                 `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
+	SrtpParametersJson string                 `protobuf:"bytes,4,opt,name=srtp_parameters_json,json=srtpParametersJson,proto3" json:"srtp_parameters_json,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *CreatePipeTransportResponse) Reset() {
+	*x = CreatePipeTransportResponse{}
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreatePipeTransportResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreatePipeTransportResponse) ProtoMessage() {}
+
+func (x *CreatePipeTransportResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreatePipeTransportResponse.ProtoReflect.Descriptor instead.
+func (*CreatePipeTransportResponse) Descriptor() ([]byte, []int) {
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CreatePipeTransportResponse) GetPipeTransportId() string {
+	if x != nil {
+		return x.PipeTransportId
+	}
+	return ""
+}
+
+func (x *CreatePipeTransportResponse) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+func (x *CreatePipeTransportResponse) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *CreatePipeTransportResponse) GetSrtpParametersJson() string {
+	if x != nil {
+		return x.SrtpParametersJson
+	}
+	return ""
+}
+
+type ConnectPipeTransportRequest struct {
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	RouterId                 string                 `protobuf:"bytes,1,opt,name=router_id,json=routerId,proto3" json:"router_id,omitempty"`
+	PipeTransportId          string                 `protobuf:"bytes,2,opt,name=pipe_transport_id,json=pipeTransportId,proto3" json:"pipe_transport_id,omitempty"`
+	RemoteIp                 string                 `protobuf:"bytes,3,opt,name=remote_ip,json=remoteIp,proto3" json:"remote_ip,omitempty"`
+	RemotePort               uint32                 `protobuf:"varint,4,opt,name=remote_port,json=remotePort,proto3" json:"remote_port,omitempty"`
+	RemoteSrtpParametersJson string                 `protobuf:"bytes,5,opt,name=remote_srtp_parameters_json,json=remoteSrtpParametersJson,proto3" json:"remote_srtp_parameters_json,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
+}
+
+func (x *ConnectPipeTransportRequest) Reset() {
+	*x = ConnectPipeTransportRequest{}
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectPipeTransportRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectPipeTransportRequest) ProtoMessage() {}
+
+func (x *ConnectPipeTransportRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectPipeTransportRequest.ProtoReflect.Descriptor instead.
+func (*ConnectPipeTransportRequest) Descriptor() ([]byte, []int) {
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ConnectPipeTransportRequest) GetRouterId() string {
+	if x != nil {
+		return x.RouterId
+	}
+	return ""
+}
+
+func (x *ConnectPipeTransportRequest) GetPipeTransportId() string {
+	if x != nil {
+		return x.PipeTransportId
+	}
+	return ""
+}
+
+func (x *ConnectPipeTransportRequest) GetRemoteIp() string {
+	if x != nil {
+		return x.RemoteIp
+	}
+	return ""
+}
+
+func (x *ConnectPipeTransportRequest) GetRemotePort() uint32 {
+	if x != nil {
+		return x.RemotePort
+	}
+	return 0
+}
+
+func (x *ConnectPipeTransportRequest) GetRemoteSrtpParametersJson() string {
+	if x != nil {
+		return x.RemoteSrtpParametersJson
+	}
+	return ""
+}
+
+type ConnectPipeTransportResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectPipeTransportResponse) Reset() {
+	*x = ConnectPipeTransportResponse{}
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectPipeTransportResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectPipeTransportResponse) ProtoMessage() {}
+
+func (x *ConnectPipeTransportResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectPipeTransportResponse.ProtoReflect.Descriptor instead.
+func (*ConnectPipeTransportResponse) Descriptor() ([]byte, []int) {
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{5}
+}
+
 type CreateRouterRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // کلید Idempotency (الزامی)
@@ -86,7 +522,7 @@ type CreateRouterRequest struct {
 
 func (x *CreateRouterRequest) Reset() {
 	*x = CreateRouterRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[0]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -98,7 +534,7 @@ func (x *CreateRouterRequest) String() string {
 func (*CreateRouterRequest) ProtoMessage() {}
 
 func (x *CreateRouterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[0]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -111,7 +547,7 @@ func (x *CreateRouterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRouterRequest.ProtoReflect.Descriptor instead.
 func (*CreateRouterRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{0}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CreateRouterRequest) GetRequestId() string {
@@ -139,7 +575,7 @@ type CreateRouterResponse struct {
 
 func (x *CreateRouterResponse) Reset() {
 	*x = CreateRouterResponse{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[1]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -151,7 +587,7 @@ func (x *CreateRouterResponse) String() string {
 func (*CreateRouterResponse) ProtoMessage() {}
 
 func (x *CreateRouterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[1]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -164,7 +600,7 @@ func (x *CreateRouterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRouterResponse.ProtoReflect.Descriptor instead.
 func (*CreateRouterResponse) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{1}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CreateRouterResponse) GetRouterId() string {
@@ -201,7 +637,7 @@ type CreateTransportRequest struct {
 
 func (x *CreateTransportRequest) Reset() {
 	*x = CreateTransportRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[2]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -213,7 +649,7 @@ func (x *CreateTransportRequest) String() string {
 func (*CreateTransportRequest) ProtoMessage() {}
 
 func (x *CreateTransportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[2]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -226,7 +662,7 @@ func (x *CreateTransportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTransportRequest.ProtoReflect.Descriptor instead.
 func (*CreateTransportRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{2}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *CreateTransportRequest) GetRequestId() string {
@@ -280,7 +716,7 @@ type IceCandidateInfo struct {
 
 func (x *IceCandidateInfo) Reset() {
 	*x = IceCandidateInfo{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[3]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -292,7 +728,7 @@ func (x *IceCandidateInfo) String() string {
 func (*IceCandidateInfo) ProtoMessage() {}
 
 func (x *IceCandidateInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[3]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -305,7 +741,7 @@ func (x *IceCandidateInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IceCandidateInfo.ProtoReflect.Descriptor instead.
 func (*IceCandidateInfo) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{3}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *IceCandidateInfo) GetFoundation() string {
@@ -374,7 +810,7 @@ type DtlsFingerprintInfo struct {
 
 func (x *DtlsFingerprintInfo) Reset() {
 	*x = DtlsFingerprintInfo{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[4]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -386,7 +822,7 @@ func (x *DtlsFingerprintInfo) String() string {
 func (*DtlsFingerprintInfo) ProtoMessage() {}
 
 func (x *DtlsFingerprintInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[4]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -399,7 +835,7 @@ func (x *DtlsFingerprintInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DtlsFingerprintInfo.ProtoReflect.Descriptor instead.
 func (*DtlsFingerprintInfo) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{4}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DtlsFingerprintInfo) GetAlgorithm() string {
@@ -432,7 +868,7 @@ type CreateTransportResponse struct {
 
 func (x *CreateTransportResponse) Reset() {
 	*x = CreateTransportResponse{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[5]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -444,7 +880,7 @@ func (x *CreateTransportResponse) String() string {
 func (*CreateTransportResponse) ProtoMessage() {}
 
 func (x *CreateTransportResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[5]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -457,7 +893,7 @@ func (x *CreateTransportResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTransportResponse.ProtoReflect.Descriptor instead.
 func (*CreateTransportResponse) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{5}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CreateTransportResponse) GetTransportId() string {
@@ -528,7 +964,7 @@ type ConnectTransportRequest struct {
 
 func (x *ConnectTransportRequest) Reset() {
 	*x = ConnectTransportRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[6]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -540,7 +976,7 @@ func (x *ConnectTransportRequest) String() string {
 func (*ConnectTransportRequest) ProtoMessage() {}
 
 func (x *ConnectTransportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[6]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -553,7 +989,7 @@ func (x *ConnectTransportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectTransportRequest.ProtoReflect.Descriptor instead.
 func (*ConnectTransportRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{6}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ConnectTransportRequest) GetRouterId() string {
@@ -592,7 +1028,7 @@ type ConnectTransportResponse struct {
 
 func (x *ConnectTransportResponse) Reset() {
 	*x = ConnectTransportResponse{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[7]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -604,7 +1040,7 @@ func (x *ConnectTransportResponse) String() string {
 func (*ConnectTransportResponse) ProtoMessage() {}
 
 func (x *ConnectTransportResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[7]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -617,7 +1053,7 @@ func (x *ConnectTransportResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectTransportResponse.ProtoReflect.Descriptor instead.
 func (*ConnectTransportResponse) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{7}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{13}
 }
 
 type RestartIceRequest struct {
@@ -630,7 +1066,7 @@ type RestartIceRequest struct {
 
 func (x *RestartIceRequest) Reset() {
 	*x = RestartIceRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[8]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -642,7 +1078,7 @@ func (x *RestartIceRequest) String() string {
 func (*RestartIceRequest) ProtoMessage() {}
 
 func (x *RestartIceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[8]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -655,7 +1091,7 @@ func (x *RestartIceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartIceRequest.ProtoReflect.Descriptor instead.
 func (*RestartIceRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{8}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RestartIceRequest) GetRouterId() string {
@@ -683,7 +1119,7 @@ type RestartIceResponse struct {
 
 func (x *RestartIceResponse) Reset() {
 	*x = RestartIceResponse{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[9]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -695,7 +1131,7 @@ func (x *RestartIceResponse) String() string {
 func (*RestartIceResponse) ProtoMessage() {}
 
 func (x *RestartIceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[9]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -708,7 +1144,7 @@ func (x *RestartIceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartIceResponse.ProtoReflect.Descriptor instead.
 func (*RestartIceResponse) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{9}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *RestartIceResponse) GetIceUfrag() string {
@@ -747,7 +1183,7 @@ type ProduceRequest struct {
 
 func (x *ProduceRequest) Reset() {
 	*x = ProduceRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[10]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -759,7 +1195,7 @@ func (x *ProduceRequest) String() string {
 func (*ProduceRequest) ProtoMessage() {}
 
 func (x *ProduceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[10]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -772,7 +1208,7 @@ func (x *ProduceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProduceRequest.ProtoReflect.Descriptor instead.
 func (*ProduceRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{10}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ProduceRequest) GetRequestId() string {
@@ -837,7 +1273,7 @@ type SimulcastEncodingInfo struct {
 
 func (x *SimulcastEncodingInfo) Reset() {
 	*x = SimulcastEncodingInfo{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[11]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -849,7 +1285,7 @@ func (x *SimulcastEncodingInfo) String() string {
 func (*SimulcastEncodingInfo) ProtoMessage() {}
 
 func (x *SimulcastEncodingInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[11]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -862,7 +1298,7 @@ func (x *SimulcastEncodingInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SimulcastEncodingInfo.ProtoReflect.Descriptor instead.
 func (*SimulcastEncodingInfo) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{11}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SimulcastEncodingInfo) GetRid() string {
@@ -911,7 +1347,7 @@ type ProduceResponse struct {
 
 func (x *ProduceResponse) Reset() {
 	*x = ProduceResponse{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[12]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -923,7 +1359,7 @@ func (x *ProduceResponse) String() string {
 func (*ProduceResponse) ProtoMessage() {}
 
 func (x *ProduceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[12]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -936,7 +1372,7 @@ func (x *ProduceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProduceResponse.ProtoReflect.Descriptor instead.
 func (*ProduceResponse) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{12}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ProduceResponse) GetProducerId() string {
@@ -974,7 +1410,7 @@ type ConsumeRequest struct {
 
 func (x *ConsumeRequest) Reset() {
 	*x = ConsumeRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[13]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -986,7 +1422,7 @@ func (x *ConsumeRequest) String() string {
 func (*ConsumeRequest) ProtoMessage() {}
 
 func (x *ConsumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[13]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -999,7 +1435,7 @@ func (x *ConsumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumeRequest.ProtoReflect.Descriptor instead.
 func (*ConsumeRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{13}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ConsumeRequest) GetRequestId() string {
@@ -1065,7 +1501,7 @@ type ConsumeResponse struct {
 
 func (x *ConsumeResponse) Reset() {
 	*x = ConsumeResponse{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[14]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1077,7 +1513,7 @@ func (x *ConsumeResponse) String() string {
 func (*ConsumeResponse) ProtoMessage() {}
 
 func (x *ConsumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[14]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1090,7 +1526,7 @@ func (x *ConsumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumeResponse.ProtoReflect.Descriptor instead.
 func (*ConsumeResponse) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{14}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ConsumeResponse) GetConsumerId() string {
@@ -1196,7 +1632,7 @@ type SetMediaPausedRequest struct {
 
 func (x *SetMediaPausedRequest) Reset() {
 	*x = SetMediaPausedRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[15]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1208,7 +1644,7 @@ func (x *SetMediaPausedRequest) String() string {
 func (*SetMediaPausedRequest) ProtoMessage() {}
 
 func (x *SetMediaPausedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[15]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1221,7 +1657,7 @@ func (x *SetMediaPausedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMediaPausedRequest.ProtoReflect.Descriptor instead.
 func (*SetMediaPausedRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{15}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *SetMediaPausedRequest) GetRouterId() string {
@@ -1260,7 +1696,7 @@ type SetMediaPausedResponse struct {
 
 func (x *SetMediaPausedResponse) Reset() {
 	*x = SetMediaPausedResponse{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[16]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1272,7 +1708,7 @@ func (x *SetMediaPausedResponse) String() string {
 func (*SetMediaPausedResponse) ProtoMessage() {}
 
 func (x *SetMediaPausedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[16]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1285,7 +1721,7 @@ func (x *SetMediaPausedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMediaPausedResponse.ProtoReflect.Descriptor instead.
 func (*SetMediaPausedResponse) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{16}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{22}
 }
 
 type SetConsumerPreferredLayersRequest struct {
@@ -1300,7 +1736,7 @@ type SetConsumerPreferredLayersRequest struct {
 
 func (x *SetConsumerPreferredLayersRequest) Reset() {
 	*x = SetConsumerPreferredLayersRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[17]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1312,7 +1748,7 @@ func (x *SetConsumerPreferredLayersRequest) String() string {
 func (*SetConsumerPreferredLayersRequest) ProtoMessage() {}
 
 func (x *SetConsumerPreferredLayersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[17]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1325,7 +1761,7 @@ func (x *SetConsumerPreferredLayersRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use SetConsumerPreferredLayersRequest.ProtoReflect.Descriptor instead.
 func (*SetConsumerPreferredLayersRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{17}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SetConsumerPreferredLayersRequest) GetRouterId() string {
@@ -1364,7 +1800,7 @@ type SetConsumerPreferredLayersResponse struct {
 
 func (x *SetConsumerPreferredLayersResponse) Reset() {
 	*x = SetConsumerPreferredLayersResponse{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[18]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1376,7 +1812,7 @@ func (x *SetConsumerPreferredLayersResponse) String() string {
 func (*SetConsumerPreferredLayersResponse) ProtoMessage() {}
 
 func (x *SetConsumerPreferredLayersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[18]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1389,7 +1825,7 @@ func (x *SetConsumerPreferredLayersResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use SetConsumerPreferredLayersResponse.ProtoReflect.Descriptor instead.
 func (*SetConsumerPreferredLayersResponse) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{18}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{24}
 }
 
 type CloseResourceRequest struct {
@@ -1403,7 +1839,7 @@ type CloseResourceRequest struct {
 
 func (x *CloseResourceRequest) Reset() {
 	*x = CloseResourceRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[19]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1415,7 +1851,7 @@ func (x *CloseResourceRequest) String() string {
 func (*CloseResourceRequest) ProtoMessage() {}
 
 func (x *CloseResourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[19]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1428,7 +1864,7 @@ func (x *CloseResourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseResourceRequest.ProtoReflect.Descriptor instead.
 func (*CloseResourceRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{19}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CloseResourceRequest) GetRouterId() string {
@@ -1460,7 +1896,7 @@ type CloseResourceResponse struct {
 
 func (x *CloseResourceResponse) Reset() {
 	*x = CloseResourceResponse{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[20]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1472,7 +1908,7 @@ func (x *CloseResourceResponse) String() string {
 func (*CloseResourceResponse) ProtoMessage() {}
 
 func (x *CloseResourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[20]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1485,7 +1921,7 @@ func (x *CloseResourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseResourceResponse.ProtoReflect.Descriptor instead.
 func (*CloseResourceResponse) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{20}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{26}
 }
 
 type GetStatsRequest struct {
@@ -1499,7 +1935,7 @@ type GetStatsRequest struct {
 
 func (x *GetStatsRequest) Reset() {
 	*x = GetStatsRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[21]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1511,7 +1947,7 @@ func (x *GetStatsRequest) String() string {
 func (*GetStatsRequest) ProtoMessage() {}
 
 func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[21]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1524,7 +1960,7 @@ func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetStatsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{21}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetStatsRequest) GetRouterId() string {
@@ -1563,7 +1999,7 @@ type GetStatsResponse struct {
 
 func (x *GetStatsResponse) Reset() {
 	*x = GetStatsResponse{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[22]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1575,7 +2011,7 @@ func (x *GetStatsResponse) String() string {
 func (*GetStatsResponse) ProtoMessage() {}
 
 func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[22]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1588,7 +2024,7 @@ func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetStatsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{22}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetStatsResponse) GetStatsJson() string {
@@ -1649,7 +2085,7 @@ type WatchNodeEventsRequest struct {
 
 func (x *WatchNodeEventsRequest) Reset() {
 	*x = WatchNodeEventsRequest{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[23]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1661,7 +2097,7 @@ func (x *WatchNodeEventsRequest) String() string {
 func (*WatchNodeEventsRequest) ProtoMessage() {}
 
 func (x *WatchNodeEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[23]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1674,7 +2110,7 @@ func (x *WatchNodeEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchNodeEventsRequest.ProtoReflect.Descriptor instead.
 func (*WatchNodeEventsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{23}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *WatchNodeEventsRequest) GetCoordinatorId() string {
@@ -1694,6 +2130,7 @@ type NodeEvent struct {
 	//	*NodeEvent_MediaScore
 	//	*NodeEvent_LayerChanged
 	//	*NodeEvent_ResourceClosed
+	//	*NodeEvent_NodeCapacity
 	Payload       isNodeEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1701,7 +2138,7 @@ type NodeEvent struct {
 
 func (x *NodeEvent) Reset() {
 	*x = NodeEvent{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[24]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1713,7 +2150,7 @@ func (x *NodeEvent) String() string {
 func (*NodeEvent) ProtoMessage() {}
 
 func (x *NodeEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[24]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1726,7 +2163,7 @@ func (x *NodeEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeEvent.ProtoReflect.Descriptor instead.
 func (*NodeEvent) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{24}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *NodeEvent) GetRouterId() string {
@@ -1786,6 +2223,15 @@ func (x *NodeEvent) GetResourceClosed() *ResourceClosedEvent {
 	return nil
 }
 
+func (x *NodeEvent) GetNodeCapacity() *NodeCapacityMetrics {
+	if x != nil {
+		if x, ok := x.Payload.(*NodeEvent_NodeCapacity); ok {
+			return x.NodeCapacity
+		}
+	}
+	return nil
+}
+
 type isNodeEvent_Payload interface {
 	isNodeEvent_Payload()
 }
@@ -1806,6 +2252,10 @@ type NodeEvent_ResourceClosed struct {
 	ResourceClosed *ResourceClosedEvent `protobuf:"bytes,6,opt,name=resource_closed,json=resourceClosed,proto3,oneof"`
 }
 
+type NodeEvent_NodeCapacity struct {
+	NodeCapacity *NodeCapacityMetrics `protobuf:"bytes,7,opt,name=node_capacity,json=nodeCapacity,proto3,oneof"` // اضافه شده برای گزارش بلادرنگ بار و وزن نود
+}
+
 func (*NodeEvent_ActiveSpeaker) isNodeEvent_Payload() {}
 
 func (*NodeEvent_MediaScore) isNodeEvent_Payload() {}
@@ -1813,6 +2263,8 @@ func (*NodeEvent_MediaScore) isNodeEvent_Payload() {}
 func (*NodeEvent_LayerChanged) isNodeEvent_Payload() {}
 
 func (*NodeEvent_ResourceClosed) isNodeEvent_Payload() {}
+
+func (*NodeEvent_NodeCapacity) isNodeEvent_Payload() {}
 
 type ActiveSpeakerEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1825,7 +2277,7 @@ type ActiveSpeakerEvent struct {
 
 func (x *ActiveSpeakerEvent) Reset() {
 	*x = ActiveSpeakerEvent{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[25]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1837,7 +2289,7 @@ func (x *ActiveSpeakerEvent) String() string {
 func (*ActiveSpeakerEvent) ProtoMessage() {}
 
 func (x *ActiveSpeakerEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[25]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1850,7 +2302,7 @@ func (x *ActiveSpeakerEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActiveSpeakerEvent.ProtoReflect.Descriptor instead.
 func (*ActiveSpeakerEvent) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{25}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ActiveSpeakerEvent) GetProducerId() string {
@@ -1887,7 +2339,7 @@ type MediaScoreEvent struct {
 
 func (x *MediaScoreEvent) Reset() {
 	*x = MediaScoreEvent{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[26]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1899,7 +2351,7 @@ func (x *MediaScoreEvent) String() string {
 func (*MediaScoreEvent) ProtoMessage() {}
 
 func (x *MediaScoreEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[26]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1912,7 +2364,7 @@ func (x *MediaScoreEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MediaScoreEvent.ProtoReflect.Descriptor instead.
 func (*MediaScoreEvent) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{26}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *MediaScoreEvent) GetResourceId() string {
@@ -1965,7 +2417,7 @@ type LayerChangedEvent struct {
 
 func (x *LayerChangedEvent) Reset() {
 	*x = LayerChangedEvent{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[27]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1977,7 +2429,7 @@ func (x *LayerChangedEvent) String() string {
 func (*LayerChangedEvent) ProtoMessage() {}
 
 func (x *LayerChangedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[27]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1990,7 +2442,7 @@ func (x *LayerChangedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LayerChangedEvent.ProtoReflect.Descriptor instead.
 func (*LayerChangedEvent) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{27}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *LayerChangedEvent) GetConsumerId() string {
@@ -2053,7 +2505,7 @@ type ResourceClosedEvent struct {
 
 func (x *ResourceClosedEvent) Reset() {
 	*x = ResourceClosedEvent{}
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[28]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2065,7 +2517,7 @@ func (x *ResourceClosedEvent) String() string {
 func (*ResourceClosedEvent) ProtoMessage() {}
 
 func (x *ResourceClosedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[28]
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2078,7 +2530,7 @@ func (x *ResourceClosedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceClosedEvent.ProtoReflect.Descriptor instead.
 func (*ResourceClosedEvent) Descriptor() ([]byte, []int) {
-	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{28}
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ResourceClosedEvent) GetResourceType() ResourceType {
@@ -2107,7 +2559,45 @@ var File_proto_sfu_v1_media_engine_proto protoreflect.FileDescriptor
 const file_proto_sfu_v1_media_engine_proto_rawDesc = "" +
 	"\n" +
 	"\x1fproto/sfu/v1/media_engine.proto\x12\n" +
-	"rtc.sfu.v1\"M\n" +
+	"rtc.sfu.v1\"\x18\n" +
+	"\x16GetNodeCapacityRequest\"\xdb\x04\n" +
+	"\x13NodeCapacityMetrics\x122\n" +
+	"\x15total_capacity_weight\x18\x01 \x01(\rR\x13totalCapacityWeight\x12#\n" +
+	"\rtotal_workers\x18\x02 \x01(\rR\ftotalWorkers\x12#\n" +
+	"\ralive_workers\x18\x03 \x01(\rR\faliveWorkers\x120\n" +
+	"\x14logical_load_percent\x18\x04 \x01(\x02R\x12logicalLoadPercent\x12*\n" +
+	"\x11cpu_usage_percent\x18\x05 \x01(\x02R\x0fcpuUsagePercent\x120\n" +
+	"\x14memory_usage_percent\x18\x06 \x01(\x02R\x12memoryUsagePercent\x125\n" +
+	"\x17max_worker_load_percent\x18\a \x01(\x02R\x14maxWorkerLoadPercent\x124\n" +
+	"\x16effective_load_percent\x18\b \x01(\x02R\x14effectiveLoadPercent\x12%\n" +
+	"\x0eactive_routers\x18\t \x01(\rR\ractiveRouters\x12+\n" +
+	"\x11active_transports\x18\n" +
+	" \x01(\rR\x10activeTransports\x12)\n" +
+	"\x10active_producers\x18\v \x01(\rR\x0factiveProducers\x12)\n" +
+	"\x10active_consumers\x18\f \x01(\rR\x0factiveConsumers\x12\x1f\n" +
+	"\vis_draining\x18\r \x01(\bR\n" +
+	"isDraining\"\x98\x01\n" +
+	"\x1aCreatePipeTransportRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1b\n" +
+	"\trouter_id\x18\x02 \x01(\tR\brouterId\x12\x1f\n" +
+	"\venable_srtp\x18\x03 \x01(\bR\n" +
+	"enableSrtp\x12\x1d\n" +
+	"\n" +
+	"enable_rtx\x18\x04 \x01(\bR\tenableRtx\"\x9f\x01\n" +
+	"\x1bCreatePipeTransportResponse\x12*\n" +
+	"\x11pipe_transport_id\x18\x01 \x01(\tR\x0fpipeTransportId\x12\x0e\n" +
+	"\x02ip\x18\x02 \x01(\tR\x02ip\x12\x12\n" +
+	"\x04port\x18\x03 \x01(\rR\x04port\x120\n" +
+	"\x14srtp_parameters_json\x18\x04 \x01(\tR\x12srtpParametersJson\"\xe3\x01\n" +
+	"\x1bConnectPipeTransportRequest\x12\x1b\n" +
+	"\trouter_id\x18\x01 \x01(\tR\brouterId\x12*\n" +
+	"\x11pipe_transport_id\x18\x02 \x01(\tR\x0fpipeTransportId\x12\x1b\n" +
+	"\tremote_ip\x18\x03 \x01(\tR\bremoteIp\x12\x1f\n" +
+	"\vremote_port\x18\x04 \x01(\rR\n" +
+	"remotePort\x12=\n" +
+	"\x1bremote_srtp_parameters_json\x18\x05 \x01(\tR\x18remoteSrtpParametersJson\"\x1e\n" +
+	"\x1cConnectPipeTransportResponse\"M\n" +
 	"\x13CreateRouterRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x17\n" +
@@ -2244,7 +2734,7 @@ const file_proto_sfu_v1_media_engine_proto_rawDesc = "" +
 	"\x15current_spatial_layer\x18\x06 \x01(\x05R\x13currentSpatialLayer\x124\n" +
 	"\x16current_temporal_layer\x18\a \x01(\x05R\x14currentTemporalLayer\"?\n" +
 	"\x16WatchNodeEventsRequest\x12%\n" +
-	"\x0ecoordinator_id\x18\x01 \x01(\tR\rcoordinatorId\"\xf1\x02\n" +
+	"\x0ecoordinator_id\x18\x01 \x01(\tR\rcoordinatorId\"\xb9\x03\n" +
 	"\tNodeEvent\x12\x1b\n" +
 	"\trouter_id\x18\x01 \x01(\tR\brouterId\x12!\n" +
 	"\ftimestamp_ms\x18\x02 \x01(\x03R\vtimestampMs\x12G\n" +
@@ -2252,7 +2742,8 @@ const file_proto_sfu_v1_media_engine_proto_rawDesc = "" +
 	"\vmedia_score\x18\x04 \x01(\v2\x1b.rtc.sfu.v1.MediaScoreEventH\x00R\n" +
 	"mediaScore\x12D\n" +
 	"\rlayer_changed\x18\x05 \x01(\v2\x1d.rtc.sfu.v1.LayerChangedEventH\x00R\flayerChanged\x12J\n" +
-	"\x0fresource_closed\x18\x06 \x01(\v2\x1f.rtc.sfu.v1.ResourceClosedEventH\x00R\x0eresourceClosedB\t\n" +
+	"\x0fresource_closed\x18\x06 \x01(\v2\x1f.rtc.sfu.v1.ResourceClosedEventH\x00R\x0eresourceClosed\x12F\n" +
+	"\rnode_capacity\x18\a \x01(\v2\x1f.rtc.sfu.v1.NodeCapacityMetricsH\x00R\fnodeCapacityB\t\n" +
 	"\apayload\"o\n" +
 	"\x12ActiveSpeakerEvent\x12\x1f\n" +
 	"\vproducer_id\x18\x01 \x01(\tR\n" +
@@ -2288,7 +2779,7 @@ const file_proto_sfu_v1_media_engine_proto_rawDesc = "" +
 	"\x14RESOURCE_TYPE_ROUTER\x10\x01\x12\x1b\n" +
 	"\x17RESOURCE_TYPE_TRANSPORT\x10\x02\x12\x1a\n" +
 	"\x16RESOURCE_TYPE_PRODUCER\x10\x03\x12\x1a\n" +
-	"\x16RESOURCE_TYPE_CONSUMER\x10\x042\xbd\a\n" +
+	"\x16RESOURCE_TYPE_CONSUMER\x10\x042\xe8\t\n" +
 	"\x15SfuMediaEngineService\x12Q\n" +
 	"\fCreateRouter\x12\x1f.rtc.sfu.v1.CreateRouterRequest\x1a .rtc.sfu.v1.CreateRouterResponse\x12Z\n" +
 	"\x0fCreateTransport\x12\".rtc.sfu.v1.CreateTransportRequest\x1a#.rtc.sfu.v1.CreateTransportResponse\x12]\n" +
@@ -2301,7 +2792,10 @@ const file_proto_sfu_v1_media_engine_proto_rawDesc = "" +
 	"\x1aSetConsumerPreferredLayers\x12-.rtc.sfu.v1.SetConsumerPreferredLayersRequest\x1a..rtc.sfu.v1.SetConsumerPreferredLayersResponse\x12T\n" +
 	"\rCloseResource\x12 .rtc.sfu.v1.CloseResourceRequest\x1a!.rtc.sfu.v1.CloseResourceResponse\x12E\n" +
 	"\bGetStats\x12\x1b.rtc.sfu.v1.GetStatsRequest\x1a\x1c.rtc.sfu.v1.GetStatsResponse\x12N\n" +
-	"\x0fWatchNodeEvents\x12\".rtc.sfu.v1.WatchNodeEventsRequest\x1a\x15.rtc.sfu.v1.NodeEvent0\x01B;Z9ekbatan-room/signaling-coordinator/gen/proto/sfu/v1;sfuv1b\x06proto3"
+	"\x0fWatchNodeEvents\x12\".rtc.sfu.v1.WatchNodeEventsRequest\x1a\x15.rtc.sfu.v1.NodeEvent0\x01\x12V\n" +
+	"\x0fGetNodeCapacity\x12\".rtc.sfu.v1.GetNodeCapacityRequest\x1a\x1f.rtc.sfu.v1.NodeCapacityMetrics\x12f\n" +
+	"\x13CreatePipeTransport\x12&.rtc.sfu.v1.CreatePipeTransportRequest\x1a'.rtc.sfu.v1.CreatePipeTransportResponse\x12i\n" +
+	"\x14ConnectPipeTransport\x12'.rtc.sfu.v1.ConnectPipeTransportRequest\x1a(.rtc.sfu.v1.ConnectPipeTransportResponseB;Z9ekbatan-room/signaling-coordinator/gen/proto/sfu/v1;sfuv1b\x06proto3"
 
 var (
 	file_proto_sfu_v1_media_engine_proto_rawDescOnce sync.Once
@@ -2316,80 +2810,93 @@ func file_proto_sfu_v1_media_engine_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_sfu_v1_media_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_sfu_v1_media_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_proto_sfu_v1_media_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_proto_sfu_v1_media_engine_proto_goTypes = []any{
 	(ResourceType)(0),                          // 0: rtc.sfu.v1.ResourceType
-	(*CreateRouterRequest)(nil),                // 1: rtc.sfu.v1.CreateRouterRequest
-	(*CreateRouterResponse)(nil),               // 2: rtc.sfu.v1.CreateRouterResponse
-	(*CreateTransportRequest)(nil),             // 3: rtc.sfu.v1.CreateTransportRequest
-	(*IceCandidateInfo)(nil),                   // 4: rtc.sfu.v1.IceCandidateInfo
-	(*DtlsFingerprintInfo)(nil),                // 5: rtc.sfu.v1.DtlsFingerprintInfo
-	(*CreateTransportResponse)(nil),            // 6: rtc.sfu.v1.CreateTransportResponse
-	(*ConnectTransportRequest)(nil),            // 7: rtc.sfu.v1.ConnectTransportRequest
-	(*ConnectTransportResponse)(nil),           // 8: rtc.sfu.v1.ConnectTransportResponse
-	(*RestartIceRequest)(nil),                  // 9: rtc.sfu.v1.RestartIceRequest
-	(*RestartIceResponse)(nil),                 // 10: rtc.sfu.v1.RestartIceResponse
-	(*ProduceRequest)(nil),                     // 11: rtc.sfu.v1.ProduceRequest
-	(*SimulcastEncodingInfo)(nil),              // 12: rtc.sfu.v1.SimulcastEncodingInfo
-	(*ProduceResponse)(nil),                    // 13: rtc.sfu.v1.ProduceResponse
-	(*ConsumeRequest)(nil),                     // 14: rtc.sfu.v1.ConsumeRequest
-	(*ConsumeResponse)(nil),                    // 15: rtc.sfu.v1.ConsumeResponse
-	(*SetMediaPausedRequest)(nil),              // 16: rtc.sfu.v1.SetMediaPausedRequest
-	(*SetMediaPausedResponse)(nil),             // 17: rtc.sfu.v1.SetMediaPausedResponse
-	(*SetConsumerPreferredLayersRequest)(nil),  // 18: rtc.sfu.v1.SetConsumerPreferredLayersRequest
-	(*SetConsumerPreferredLayersResponse)(nil), // 19: rtc.sfu.v1.SetConsumerPreferredLayersResponse
-	(*CloseResourceRequest)(nil),               // 20: rtc.sfu.v1.CloseResourceRequest
-	(*CloseResourceResponse)(nil),              // 21: rtc.sfu.v1.CloseResourceResponse
-	(*GetStatsRequest)(nil),                    // 22: rtc.sfu.v1.GetStatsRequest
-	(*GetStatsResponse)(nil),                   // 23: rtc.sfu.v1.GetStatsResponse
-	(*WatchNodeEventsRequest)(nil),             // 24: rtc.sfu.v1.WatchNodeEventsRequest
-	(*NodeEvent)(nil),                          // 25: rtc.sfu.v1.NodeEvent
-	(*ActiveSpeakerEvent)(nil),                 // 26: rtc.sfu.v1.ActiveSpeakerEvent
-	(*MediaScoreEvent)(nil),                    // 27: rtc.sfu.v1.MediaScoreEvent
-	(*LayerChangedEvent)(nil),                  // 28: rtc.sfu.v1.LayerChangedEvent
-	(*ResourceClosedEvent)(nil),                // 29: rtc.sfu.v1.ResourceClosedEvent
+	(*GetNodeCapacityRequest)(nil),             // 1: rtc.sfu.v1.GetNodeCapacityRequest
+	(*NodeCapacityMetrics)(nil),                // 2: rtc.sfu.v1.NodeCapacityMetrics
+	(*CreatePipeTransportRequest)(nil),         // 3: rtc.sfu.v1.CreatePipeTransportRequest
+	(*CreatePipeTransportResponse)(nil),        // 4: rtc.sfu.v1.CreatePipeTransportResponse
+	(*ConnectPipeTransportRequest)(nil),        // 5: rtc.sfu.v1.ConnectPipeTransportRequest
+	(*ConnectPipeTransportResponse)(nil),       // 6: rtc.sfu.v1.ConnectPipeTransportResponse
+	(*CreateRouterRequest)(nil),                // 7: rtc.sfu.v1.CreateRouterRequest
+	(*CreateRouterResponse)(nil),               // 8: rtc.sfu.v1.CreateRouterResponse
+	(*CreateTransportRequest)(nil),             // 9: rtc.sfu.v1.CreateTransportRequest
+	(*IceCandidateInfo)(nil),                   // 10: rtc.sfu.v1.IceCandidateInfo
+	(*DtlsFingerprintInfo)(nil),                // 11: rtc.sfu.v1.DtlsFingerprintInfo
+	(*CreateTransportResponse)(nil),            // 12: rtc.sfu.v1.CreateTransportResponse
+	(*ConnectTransportRequest)(nil),            // 13: rtc.sfu.v1.ConnectTransportRequest
+	(*ConnectTransportResponse)(nil),           // 14: rtc.sfu.v1.ConnectTransportResponse
+	(*RestartIceRequest)(nil),                  // 15: rtc.sfu.v1.RestartIceRequest
+	(*RestartIceResponse)(nil),                 // 16: rtc.sfu.v1.RestartIceResponse
+	(*ProduceRequest)(nil),                     // 17: rtc.sfu.v1.ProduceRequest
+	(*SimulcastEncodingInfo)(nil),              // 18: rtc.sfu.v1.SimulcastEncodingInfo
+	(*ProduceResponse)(nil),                    // 19: rtc.sfu.v1.ProduceResponse
+	(*ConsumeRequest)(nil),                     // 20: rtc.sfu.v1.ConsumeRequest
+	(*ConsumeResponse)(nil),                    // 21: rtc.sfu.v1.ConsumeResponse
+	(*SetMediaPausedRequest)(nil),              // 22: rtc.sfu.v1.SetMediaPausedRequest
+	(*SetMediaPausedResponse)(nil),             // 23: rtc.sfu.v1.SetMediaPausedResponse
+	(*SetConsumerPreferredLayersRequest)(nil),  // 24: rtc.sfu.v1.SetConsumerPreferredLayersRequest
+	(*SetConsumerPreferredLayersResponse)(nil), // 25: rtc.sfu.v1.SetConsumerPreferredLayersResponse
+	(*CloseResourceRequest)(nil),               // 26: rtc.sfu.v1.CloseResourceRequest
+	(*CloseResourceResponse)(nil),              // 27: rtc.sfu.v1.CloseResourceResponse
+	(*GetStatsRequest)(nil),                    // 28: rtc.sfu.v1.GetStatsRequest
+	(*GetStatsResponse)(nil),                   // 29: rtc.sfu.v1.GetStatsResponse
+	(*WatchNodeEventsRequest)(nil),             // 30: rtc.sfu.v1.WatchNodeEventsRequest
+	(*NodeEvent)(nil),                          // 31: rtc.sfu.v1.NodeEvent
+	(*ActiveSpeakerEvent)(nil),                 // 32: rtc.sfu.v1.ActiveSpeakerEvent
+	(*MediaScoreEvent)(nil),                    // 33: rtc.sfu.v1.MediaScoreEvent
+	(*LayerChangedEvent)(nil),                  // 34: rtc.sfu.v1.LayerChangedEvent
+	(*ResourceClosedEvent)(nil),                // 35: rtc.sfu.v1.ResourceClosedEvent
 }
 var file_proto_sfu_v1_media_engine_proto_depIdxs = []int32{
-	4,  // 0: rtc.sfu.v1.CreateTransportResponse.ice_candidates:type_name -> rtc.sfu.v1.IceCandidateInfo
-	5,  // 1: rtc.sfu.v1.CreateTransportResponse.dtls_fingerprints:type_name -> rtc.sfu.v1.DtlsFingerprintInfo
-	5,  // 2: rtc.sfu.v1.ConnectTransportRequest.remote_fingerprints:type_name -> rtc.sfu.v1.DtlsFingerprintInfo
-	12, // 3: rtc.sfu.v1.ProduceResponse.encodings:type_name -> rtc.sfu.v1.SimulcastEncodingInfo
-	12, // 4: rtc.sfu.v1.ConsumeResponse.encodings:type_name -> rtc.sfu.v1.SimulcastEncodingInfo
+	10, // 0: rtc.sfu.v1.CreateTransportResponse.ice_candidates:type_name -> rtc.sfu.v1.IceCandidateInfo
+	11, // 1: rtc.sfu.v1.CreateTransportResponse.dtls_fingerprints:type_name -> rtc.sfu.v1.DtlsFingerprintInfo
+	11, // 2: rtc.sfu.v1.ConnectTransportRequest.remote_fingerprints:type_name -> rtc.sfu.v1.DtlsFingerprintInfo
+	18, // 3: rtc.sfu.v1.ProduceResponse.encodings:type_name -> rtc.sfu.v1.SimulcastEncodingInfo
+	18, // 4: rtc.sfu.v1.ConsumeResponse.encodings:type_name -> rtc.sfu.v1.SimulcastEncodingInfo
 	0,  // 5: rtc.sfu.v1.SetMediaPausedRequest.resource_type:type_name -> rtc.sfu.v1.ResourceType
 	0,  // 6: rtc.sfu.v1.CloseResourceRequest.resource_type:type_name -> rtc.sfu.v1.ResourceType
 	0,  // 7: rtc.sfu.v1.GetStatsRequest.resource_type:type_name -> rtc.sfu.v1.ResourceType
-	26, // 8: rtc.sfu.v1.NodeEvent.active_speaker:type_name -> rtc.sfu.v1.ActiveSpeakerEvent
-	27, // 9: rtc.sfu.v1.NodeEvent.media_score:type_name -> rtc.sfu.v1.MediaScoreEvent
-	28, // 10: rtc.sfu.v1.NodeEvent.layer_changed:type_name -> rtc.sfu.v1.LayerChangedEvent
-	29, // 11: rtc.sfu.v1.NodeEvent.resource_closed:type_name -> rtc.sfu.v1.ResourceClosedEvent
-	0,  // 12: rtc.sfu.v1.ResourceClosedEvent.resource_type:type_name -> rtc.sfu.v1.ResourceType
-	1,  // 13: rtc.sfu.v1.SfuMediaEngineService.CreateRouter:input_type -> rtc.sfu.v1.CreateRouterRequest
-	3,  // 14: rtc.sfu.v1.SfuMediaEngineService.CreateTransport:input_type -> rtc.sfu.v1.CreateTransportRequest
-	7,  // 15: rtc.sfu.v1.SfuMediaEngineService.ConnectTransport:input_type -> rtc.sfu.v1.ConnectTransportRequest
-	9,  // 16: rtc.sfu.v1.SfuMediaEngineService.RestartIce:input_type -> rtc.sfu.v1.RestartIceRequest
-	11, // 17: rtc.sfu.v1.SfuMediaEngineService.Produce:input_type -> rtc.sfu.v1.ProduceRequest
-	14, // 18: rtc.sfu.v1.SfuMediaEngineService.Consume:input_type -> rtc.sfu.v1.ConsumeRequest
-	16, // 19: rtc.sfu.v1.SfuMediaEngineService.SetMediaPaused:input_type -> rtc.sfu.v1.SetMediaPausedRequest
-	18, // 20: rtc.sfu.v1.SfuMediaEngineService.SetConsumerPreferredLayers:input_type -> rtc.sfu.v1.SetConsumerPreferredLayersRequest
-	20, // 21: rtc.sfu.v1.SfuMediaEngineService.CloseResource:input_type -> rtc.sfu.v1.CloseResourceRequest
-	22, // 22: rtc.sfu.v1.SfuMediaEngineService.GetStats:input_type -> rtc.sfu.v1.GetStatsRequest
-	24, // 23: rtc.sfu.v1.SfuMediaEngineService.WatchNodeEvents:input_type -> rtc.sfu.v1.WatchNodeEventsRequest
-	2,  // 24: rtc.sfu.v1.SfuMediaEngineService.CreateRouter:output_type -> rtc.sfu.v1.CreateRouterResponse
-	6,  // 25: rtc.sfu.v1.SfuMediaEngineService.CreateTransport:output_type -> rtc.sfu.v1.CreateTransportResponse
-	8,  // 26: rtc.sfu.v1.SfuMediaEngineService.ConnectTransport:output_type -> rtc.sfu.v1.ConnectTransportResponse
-	10, // 27: rtc.sfu.v1.SfuMediaEngineService.RestartIce:output_type -> rtc.sfu.v1.RestartIceResponse
-	13, // 28: rtc.sfu.v1.SfuMediaEngineService.Produce:output_type -> rtc.sfu.v1.ProduceResponse
-	15, // 29: rtc.sfu.v1.SfuMediaEngineService.Consume:output_type -> rtc.sfu.v1.ConsumeResponse
-	17, // 30: rtc.sfu.v1.SfuMediaEngineService.SetMediaPaused:output_type -> rtc.sfu.v1.SetMediaPausedResponse
-	19, // 31: rtc.sfu.v1.SfuMediaEngineService.SetConsumerPreferredLayers:output_type -> rtc.sfu.v1.SetConsumerPreferredLayersResponse
-	21, // 32: rtc.sfu.v1.SfuMediaEngineService.CloseResource:output_type -> rtc.sfu.v1.CloseResourceResponse
-	23, // 33: rtc.sfu.v1.SfuMediaEngineService.GetStats:output_type -> rtc.sfu.v1.GetStatsResponse
-	25, // 34: rtc.sfu.v1.SfuMediaEngineService.WatchNodeEvents:output_type -> rtc.sfu.v1.NodeEvent
-	24, // [24:35] is the sub-list for method output_type
-	13, // [13:24] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	32, // 8: rtc.sfu.v1.NodeEvent.active_speaker:type_name -> rtc.sfu.v1.ActiveSpeakerEvent
+	33, // 9: rtc.sfu.v1.NodeEvent.media_score:type_name -> rtc.sfu.v1.MediaScoreEvent
+	34, // 10: rtc.sfu.v1.NodeEvent.layer_changed:type_name -> rtc.sfu.v1.LayerChangedEvent
+	35, // 11: rtc.sfu.v1.NodeEvent.resource_closed:type_name -> rtc.sfu.v1.ResourceClosedEvent
+	2,  // 12: rtc.sfu.v1.NodeEvent.node_capacity:type_name -> rtc.sfu.v1.NodeCapacityMetrics
+	0,  // 13: rtc.sfu.v1.ResourceClosedEvent.resource_type:type_name -> rtc.sfu.v1.ResourceType
+	7,  // 14: rtc.sfu.v1.SfuMediaEngineService.CreateRouter:input_type -> rtc.sfu.v1.CreateRouterRequest
+	9,  // 15: rtc.sfu.v1.SfuMediaEngineService.CreateTransport:input_type -> rtc.sfu.v1.CreateTransportRequest
+	13, // 16: rtc.sfu.v1.SfuMediaEngineService.ConnectTransport:input_type -> rtc.sfu.v1.ConnectTransportRequest
+	15, // 17: rtc.sfu.v1.SfuMediaEngineService.RestartIce:input_type -> rtc.sfu.v1.RestartIceRequest
+	17, // 18: rtc.sfu.v1.SfuMediaEngineService.Produce:input_type -> rtc.sfu.v1.ProduceRequest
+	20, // 19: rtc.sfu.v1.SfuMediaEngineService.Consume:input_type -> rtc.sfu.v1.ConsumeRequest
+	22, // 20: rtc.sfu.v1.SfuMediaEngineService.SetMediaPaused:input_type -> rtc.sfu.v1.SetMediaPausedRequest
+	24, // 21: rtc.sfu.v1.SfuMediaEngineService.SetConsumerPreferredLayers:input_type -> rtc.sfu.v1.SetConsumerPreferredLayersRequest
+	26, // 22: rtc.sfu.v1.SfuMediaEngineService.CloseResource:input_type -> rtc.sfu.v1.CloseResourceRequest
+	28, // 23: rtc.sfu.v1.SfuMediaEngineService.GetStats:input_type -> rtc.sfu.v1.GetStatsRequest
+	30, // 24: rtc.sfu.v1.SfuMediaEngineService.WatchNodeEvents:input_type -> rtc.sfu.v1.WatchNodeEventsRequest
+	1,  // 25: rtc.sfu.v1.SfuMediaEngineService.GetNodeCapacity:input_type -> rtc.sfu.v1.GetNodeCapacityRequest
+	3,  // 26: rtc.sfu.v1.SfuMediaEngineService.CreatePipeTransport:input_type -> rtc.sfu.v1.CreatePipeTransportRequest
+	5,  // 27: rtc.sfu.v1.SfuMediaEngineService.ConnectPipeTransport:input_type -> rtc.sfu.v1.ConnectPipeTransportRequest
+	8,  // 28: rtc.sfu.v1.SfuMediaEngineService.CreateRouter:output_type -> rtc.sfu.v1.CreateRouterResponse
+	12, // 29: rtc.sfu.v1.SfuMediaEngineService.CreateTransport:output_type -> rtc.sfu.v1.CreateTransportResponse
+	14, // 30: rtc.sfu.v1.SfuMediaEngineService.ConnectTransport:output_type -> rtc.sfu.v1.ConnectTransportResponse
+	16, // 31: rtc.sfu.v1.SfuMediaEngineService.RestartIce:output_type -> rtc.sfu.v1.RestartIceResponse
+	19, // 32: rtc.sfu.v1.SfuMediaEngineService.Produce:output_type -> rtc.sfu.v1.ProduceResponse
+	21, // 33: rtc.sfu.v1.SfuMediaEngineService.Consume:output_type -> rtc.sfu.v1.ConsumeResponse
+	23, // 34: rtc.sfu.v1.SfuMediaEngineService.SetMediaPaused:output_type -> rtc.sfu.v1.SetMediaPausedResponse
+	25, // 35: rtc.sfu.v1.SfuMediaEngineService.SetConsumerPreferredLayers:output_type -> rtc.sfu.v1.SetConsumerPreferredLayersResponse
+	27, // 36: rtc.sfu.v1.SfuMediaEngineService.CloseResource:output_type -> rtc.sfu.v1.CloseResourceResponse
+	29, // 37: rtc.sfu.v1.SfuMediaEngineService.GetStats:output_type -> rtc.sfu.v1.GetStatsResponse
+	31, // 38: rtc.sfu.v1.SfuMediaEngineService.WatchNodeEvents:output_type -> rtc.sfu.v1.NodeEvent
+	2,  // 39: rtc.sfu.v1.SfuMediaEngineService.GetNodeCapacity:output_type -> rtc.sfu.v1.NodeCapacityMetrics
+	4,  // 40: rtc.sfu.v1.SfuMediaEngineService.CreatePipeTransport:output_type -> rtc.sfu.v1.CreatePipeTransportResponse
+	6,  // 41: rtc.sfu.v1.SfuMediaEngineService.ConnectPipeTransport:output_type -> rtc.sfu.v1.ConnectPipeTransportResponse
+	28, // [28:42] is the sub-list for method output_type
+	14, // [14:28] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_proto_sfu_v1_media_engine_proto_init() }
@@ -2397,11 +2904,12 @@ func file_proto_sfu_v1_media_engine_proto_init() {
 	if File_proto_sfu_v1_media_engine_proto != nil {
 		return
 	}
-	file_proto_sfu_v1_media_engine_proto_msgTypes[24].OneofWrappers = []any{
+	file_proto_sfu_v1_media_engine_proto_msgTypes[30].OneofWrappers = []any{
 		(*NodeEvent_ActiveSpeaker)(nil),
 		(*NodeEvent_MediaScore)(nil),
 		(*NodeEvent_LayerChanged)(nil),
 		(*NodeEvent_ResourceClosed)(nil),
+		(*NodeEvent_NodeCapacity)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -2409,7 +2917,7 @@ func file_proto_sfu_v1_media_engine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_sfu_v1_media_engine_proto_rawDesc), len(file_proto_sfu_v1_media_engine_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   29,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

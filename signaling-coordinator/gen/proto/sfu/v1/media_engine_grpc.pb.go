@@ -30,6 +30,9 @@ const (
 	SfuMediaEngineService_CloseResource_FullMethodName              = "/rtc.sfu.v1.SfuMediaEngineService/CloseResource"
 	SfuMediaEngineService_GetStats_FullMethodName                   = "/rtc.sfu.v1.SfuMediaEngineService/GetStats"
 	SfuMediaEngineService_WatchNodeEvents_FullMethodName            = "/rtc.sfu.v1.SfuMediaEngineService/WatchNodeEvents"
+	SfuMediaEngineService_GetNodeCapacity_FullMethodName            = "/rtc.sfu.v1.SfuMediaEngineService/GetNodeCapacity"
+	SfuMediaEngineService_CreatePipeTransport_FullMethodName        = "/rtc.sfu.v1.SfuMediaEngineService/CreatePipeTransport"
+	SfuMediaEngineService_ConnectPipeTransport_FullMethodName       = "/rtc.sfu.v1.SfuMediaEngineService/ConnectPipeTransport"
 )
 
 // SfuMediaEngineServiceClient is the client API for SfuMediaEngineService service.
@@ -51,6 +54,12 @@ type SfuMediaEngineServiceClient interface {
 	CloseResource(ctx context.Context, in *CloseResourceRequest, opts ...grpc.CallOption) (*CloseResourceResponse, error)
 	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error)
 	WatchNodeEvents(ctx context.Context, in *WatchNodeEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[NodeEvent], error)
+	// ۵. استعلام مستقیم ظرفیت و وزن نود (در بدو اتصال Coordinator یا Health Check)
+	GetNodeCapacity(ctx context.Context, in *GetNodeCapacityRequest, opts ...grpc.CallOption) (*NodeCapacityMetrics, error)
+	// ۶. مدیریت PipeTransport بین‌نودی (فقط برای زمانی که نود به Hard Threshold می‌رسد و اتاق بین دو سرور Cascade می‌شود)
+	// توجه: Pipe بین ورکرهای داخل یک نود کاملاً خودکار و پنهان در داخل sfu-media-node انجام می‌شود و نیازی به RPC ندارد.
+	CreatePipeTransport(ctx context.Context, in *CreatePipeTransportRequest, opts ...grpc.CallOption) (*CreatePipeTransportResponse, error)
+	ConnectPipeTransport(ctx context.Context, in *ConnectPipeTransportRequest, opts ...grpc.CallOption) (*ConnectPipeTransportResponse, error)
 }
 
 type sfuMediaEngineServiceClient struct {
@@ -180,6 +189,36 @@ func (c *sfuMediaEngineServiceClient) WatchNodeEvents(ctx context.Context, in *W
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type SfuMediaEngineService_WatchNodeEventsClient = grpc.ServerStreamingClient[NodeEvent]
 
+func (c *sfuMediaEngineServiceClient) GetNodeCapacity(ctx context.Context, in *GetNodeCapacityRequest, opts ...grpc.CallOption) (*NodeCapacityMetrics, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NodeCapacityMetrics)
+	err := c.cc.Invoke(ctx, SfuMediaEngineService_GetNodeCapacity_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sfuMediaEngineServiceClient) CreatePipeTransport(ctx context.Context, in *CreatePipeTransportRequest, opts ...grpc.CallOption) (*CreatePipeTransportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreatePipeTransportResponse)
+	err := c.cc.Invoke(ctx, SfuMediaEngineService_CreatePipeTransport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sfuMediaEngineServiceClient) ConnectPipeTransport(ctx context.Context, in *ConnectPipeTransportRequest, opts ...grpc.CallOption) (*ConnectPipeTransportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConnectPipeTransportResponse)
+	err := c.cc.Invoke(ctx, SfuMediaEngineService_ConnectPipeTransport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SfuMediaEngineServiceServer is the server API for SfuMediaEngineService service.
 // All implementations must embed UnimplementedSfuMediaEngineServiceServer
 // for forward compatibility.
@@ -199,6 +238,12 @@ type SfuMediaEngineServiceServer interface {
 	CloseResource(context.Context, *CloseResourceRequest) (*CloseResourceResponse, error)
 	GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error)
 	WatchNodeEvents(*WatchNodeEventsRequest, grpc.ServerStreamingServer[NodeEvent]) error
+	// ۵. استعلام مستقیم ظرفیت و وزن نود (در بدو اتصال Coordinator یا Health Check)
+	GetNodeCapacity(context.Context, *GetNodeCapacityRequest) (*NodeCapacityMetrics, error)
+	// ۶. مدیریت PipeTransport بین‌نودی (فقط برای زمانی که نود به Hard Threshold می‌رسد و اتاق بین دو سرور Cascade می‌شود)
+	// توجه: Pipe بین ورکرهای داخل یک نود کاملاً خودکار و پنهان در داخل sfu-media-node انجام می‌شود و نیازی به RPC ندارد.
+	CreatePipeTransport(context.Context, *CreatePipeTransportRequest) (*CreatePipeTransportResponse, error)
+	ConnectPipeTransport(context.Context, *ConnectPipeTransportRequest) (*ConnectPipeTransportResponse, error)
 	mustEmbedUnimplementedSfuMediaEngineServiceServer()
 }
 
@@ -241,6 +286,15 @@ func (UnimplementedSfuMediaEngineServiceServer) GetStats(context.Context, *GetSt
 }
 func (UnimplementedSfuMediaEngineServiceServer) WatchNodeEvents(*WatchNodeEventsRequest, grpc.ServerStreamingServer[NodeEvent]) error {
 	return status.Error(codes.Unimplemented, "method WatchNodeEvents not implemented")
+}
+func (UnimplementedSfuMediaEngineServiceServer) GetNodeCapacity(context.Context, *GetNodeCapacityRequest) (*NodeCapacityMetrics, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNodeCapacity not implemented")
+}
+func (UnimplementedSfuMediaEngineServiceServer) CreatePipeTransport(context.Context, *CreatePipeTransportRequest) (*CreatePipeTransportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreatePipeTransport not implemented")
+}
+func (UnimplementedSfuMediaEngineServiceServer) ConnectPipeTransport(context.Context, *ConnectPipeTransportRequest) (*ConnectPipeTransportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConnectPipeTransport not implemented")
 }
 func (UnimplementedSfuMediaEngineServiceServer) mustEmbedUnimplementedSfuMediaEngineServiceServer() {}
 func (UnimplementedSfuMediaEngineServiceServer) testEmbeddedByValue()                               {}
@@ -454,6 +508,60 @@ func _SfuMediaEngineService_WatchNodeEvents_Handler(srv interface{}, stream grpc
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type SfuMediaEngineService_WatchNodeEventsServer = grpc.ServerStreamingServer[NodeEvent]
 
+func _SfuMediaEngineService_GetNodeCapacity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNodeCapacityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SfuMediaEngineServiceServer).GetNodeCapacity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SfuMediaEngineService_GetNodeCapacity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SfuMediaEngineServiceServer).GetNodeCapacity(ctx, req.(*GetNodeCapacityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SfuMediaEngineService_CreatePipeTransport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreatePipeTransportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SfuMediaEngineServiceServer).CreatePipeTransport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SfuMediaEngineService_CreatePipeTransport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SfuMediaEngineServiceServer).CreatePipeTransport(ctx, req.(*CreatePipeTransportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SfuMediaEngineService_ConnectPipeTransport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConnectPipeTransportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SfuMediaEngineServiceServer).ConnectPipeTransport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SfuMediaEngineService_ConnectPipeTransport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SfuMediaEngineServiceServer).ConnectPipeTransport(ctx, req.(*ConnectPipeTransportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SfuMediaEngineService_ServiceDesc is the grpc.ServiceDesc for SfuMediaEngineService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -500,6 +608,18 @@ var SfuMediaEngineService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetStats",
 			Handler:    _SfuMediaEngineService_GetStats_Handler,
+		},
+		{
+			MethodName: "GetNodeCapacity",
+			Handler:    _SfuMediaEngineService_GetNodeCapacity_Handler,
+		},
+		{
+			MethodName: "CreatePipeTransport",
+			Handler:    _SfuMediaEngineService_CreatePipeTransport_Handler,
+		},
+		{
+			MethodName: "ConnectPipeTransport",
+			Handler:    _SfuMediaEngineService_ConnectPipeTransport_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
