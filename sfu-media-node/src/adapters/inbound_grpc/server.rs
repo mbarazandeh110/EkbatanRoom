@@ -11,6 +11,7 @@ use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
+#[derive(Clone)]
 pub struct GrpcMediaEngineService {
     node: Arc<MediaNode>,
 }
@@ -18,6 +19,29 @@ pub struct GrpcMediaEngineService {
 impl GrpcMediaEngineService {
     pub fn new(node: Arc<MediaNode>) -> Self {
         Self { node }
+    }
+}
+
+struct TracedStream<S> {
+    inner: S,
+    span: tracing::Span,
+}
+
+impl<S: Stream + Unpin> Stream for TracedStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.as_mut().get_mut();
+        let span = &this.span;
+        let inner = &mut this.inner;
+        span.in_scope(|| Pin::new(inner).poll_next(cx))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
     }
 }
 
@@ -250,8 +274,18 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                     tracing::Span::current().record("room_id", &room_id);
                 }
                 let is_producer = match req.resource_type() {
-                    proto::ResourceType::Producer => true,
-                    proto::ResourceType::Consumer => false,
+                    proto::ResourceType::Producer => {
+                        if let Some(p) = node.state.producers.get(&req.resource_id) {
+                            tracing::Span::current().record("peer_id", &p.peer_id);
+                        }
+                        true
+                    }
+                    proto::ResourceType::Consumer => {
+                        if let Some(c) = node.state.consumers.get(&req.resource_id) {
+                            tracing::Span::current().record("peer_id", &c.peer_id);
+                        }
+                        false
+                    }
                     _ => {
                         return Err(Status::invalid_argument(
                             "SetMediaPaused requires Producer or Consumer ResourceType",
@@ -280,6 +314,9 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
             move |req| async move {
                 if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
                     tracing::Span::current().record("room_id", &room_id);
+                }
+                if let Some(c) = node.state.consumers.get(&req.consumer_id) {
+                    tracing::Span::current().record("peer_id", &c.peer_id);
                 }
                 let (router_id, consumer_id, layers) =
                     mapper::from_set_consumer_preferred_layers_request(req)
@@ -327,16 +364,25 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                             .map_err(Status::from)?;
                     }
                     proto::ResourceType::Transport => {
+                        if let Some(t) = node.state.transports.get(&req.resource_id) {
+                            tracing::Span::current().record("peer_id", &t.peer_id);
+                        }
                         node.transport_service
                             .close_transport(&req.router_id, &req.resource_id)
                             .map_err(Status::from)?;
                     }
                     proto::ResourceType::Producer => {
+                        if let Some(p) = node.state.producers.get(&req.resource_id) {
+                            tracing::Span::current().record("peer_id", &p.peer_id);
+                        }
                         node.media_service
                             .close_producer(&req.router_id, &req.resource_id)
                             .map_err(Status::from)?;
                     }
                     proto::ResourceType::Consumer => {
+                        if let Some(c) = node.state.consumers.get(&req.resource_id) {
+                            tracing::Span::current().record("peer_id", &c.peer_id);
+                        }
                         node.media_service
                             .close_consumer(&req.router_id, &req.resource_id)
                             .map_err(Status::from)?;
@@ -363,6 +409,24 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
             move |req| async move {
                 if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
                     tracing::Span::current().record("room_id", &room_id);
+                }
+                match req.resource_type() {
+                    proto::ResourceType::Transport => {
+                        if let Some(t) = node.state.transports.get(&req.resource_id) {
+                            tracing::Span::current().record("peer_id", &t.peer_id);
+                        }
+                    }
+                    proto::ResourceType::Producer => {
+                        if let Some(p) = node.state.producers.get(&req.resource_id) {
+                            tracing::Span::current().record("peer_id", &p.peer_id);
+                        }
+                    }
+                    proto::ResourceType::Consumer => {
+                        if let Some(c) = node.state.consumers.get(&req.resource_id) {
+                            tracing::Span::current().record("peer_id", &c.peer_id);
+                        }
+                    }
+                    _ => {}
                 }
                 let r_type = match req.resource_type() {
                     proto::ResourceType::Transport => "transport",
@@ -404,28 +468,29 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
 
         let rx = self.node.event_hub.subscribe();
         let node_ref = self.node.clone();
-        let stream = BroadcastStream::new(rx).filter_map(move |item| match item {
-            Ok(event) => {
-                let is_passthrough = matches!(
-                    event.payload,
-                    Some(proto::node_event::Payload::ResourceClosed(_))
-                        | Some(proto::node_event::Payload::NodeCapacity(_))
-                );
-                if is_passthrough || node_ref.is_router_active(&event.router_id) {
-                    Some(Ok(event))
-                } else {
-                    tracing::debug!(
-                        router_id = %event.router_id,
-                        "Filtered out zombie event for closed router"
+        let stream = BroadcastStream::new(rx)
+            .filter_map(move |item| match item {
+                Ok(event) => {
+                    let is_passthrough = matches!(
+                        event.payload,
+                        Some(proto::node_event::Payload::ResourceClosed(_))
+                            | Some(proto::node_event::Payload::NodeCapacity(_))
                     );
+                    if is_passthrough || node_ref.is_router_active(&event.router_id) {
+                        Some(Ok(event))
+                    } else {
+                        tracing::debug!(
+                            router_id = %event.router_id,
+                            "Filtered out zombie event for closed router"
+                        );
+                        None
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Event stream skipped lagged items: {e}");
                     None
                 }
-            }
-            Err(e) => {
-                tracing::warn!("Event stream skipped lagged items: {e}");
-                None
-            }
-        });
+            });
 
         self.node.metrics.record_grpc_request(
             "WatchNodeEvents",
@@ -433,7 +498,12 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
             start.elapsed().as_secs_f64(),
         );
 
-        Ok(Response::new(Box::pin(stream)))
+        let traced_stream = TracedStream {
+            inner: stream,
+            span,
+        };
+
+        Ok(Response::new(Box::pin(traced_stream)))
     }
 
     async fn get_node_capacity(

@@ -167,9 +167,40 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
             }
         } // Shard entry lock is dropped immediately here before action().await
 
+        struct InFlightDropGuard<'a, T: Clone> {
+            cache: &'a DashMap<String, IdempotencyEntry<T>>,
+            request_id: &'a str,
+            completed: bool,
+        }
+
+        impl<'a, T: Clone> InFlightDropGuard<'a, T> {
+            fn new(cache: &'a DashMap<String, IdempotencyEntry<T>>, request_id: &'a str) -> Self {
+                Self {
+                    cache,
+                    request_id,
+                    completed: false,
+                }
+            }
+
+            fn complete(mut self) {
+                self.completed = true;
+            }
+        }
+
+        impl<'a, T: Clone> Drop for InFlightDropGuard<'a, T> {
+            fn drop(&mut self) {
+                if !self.completed {
+                    self.cache.remove(self.request_id);
+                }
+            }
+        }
+
+        let guard = InFlightDropGuard::new(&self.entries, request_id);
+
         // 3. Execute action
         match action().await {
             Ok(res) => {
+                guard.complete();
                 self.entries.insert(
                     request_id.to_string(),
                     IdempotencyEntry::Completed {
@@ -181,8 +212,7 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
                 Ok(res)
             }
             Err(err) => {
-                // On failure, remove in-flight entry to allow retry
-                self.entries.remove(request_id);
+                // On failure, guard.drop() automatically removes in-flight entry to allow retry
                 Err(err)
             }
         }
@@ -300,5 +330,42 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(80)).await;
         cache.clean_expired();
         assert!(!cache.entries.contains_key("req-exp"));
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_cleans_inflight_entry() {
+        let cache = Arc::new(IdempotencyCache::new(
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+        ));
+
+        let cache_clone = cache.clone();
+        let task = tokio::spawn(async move {
+            cache_clone
+                .execute_or_get("req-cancel", b"payload", || async {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    Ok("done".to_string())
+                })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(cache.entries.contains_key("req-cancel"));
+
+        task.abort();
+        let _ = task.await;
+
+        assert!(
+            !cache.entries.contains_key("req-cancel"),
+            "InFlight entry must be removed immediately on cancellation"
+        );
+
+        let res = cache
+            .execute_or_get("req-cancel", b"payload", || async {
+                Ok("immediate-retry".to_string())
+            })
+            .await
+            .unwrap();
+        assert_eq!(res, "immediate-retry");
     }
 }

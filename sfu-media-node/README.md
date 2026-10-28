@@ -121,6 +121,9 @@ make test-refactoring
 # اجرای تست‌های سرریز ورکر، توزیع اتاق و ظرفیت نود (Worker Spillover & Capacity)
 make test-capacity
 
+# اجرای تست‌های اعتبارسنجی تنظیمات و پارامترهای Mediasoup
+make test-config
+
 # اجرای سرور به صورت محلی
 make run
 ```
@@ -244,6 +247,7 @@ docker run --rm -it \
 │   └── proto.rs                # ماژول تولیدشده از protobuf
 └── tests/
     ├── api_verification.rs     # راستی‌آزمایی API هسته mediasoup
+    ├── config_and_mediasoup_tuning_tests.rs # آزمون‌های بارگذاری پیکربندی و پارامترهای mediasoup
     ├── lifecycle_tests.rs      # آزمون‌های چرخه حیات Router و Transport و ICE Restart
     ├── media_tests.rs          # آزمون‌های Produce/Consume، لایه‌ها، آمار و رویدادها
     ├── multi_worker_capacity_tests.rs # آزمون‌های Multi-Worker Spillover، سرریز، Pipe و ظرفیت نود

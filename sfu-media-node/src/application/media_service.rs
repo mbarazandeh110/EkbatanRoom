@@ -55,6 +55,12 @@ impl MediaService {
 impl MediaUseCase for MediaService {
     #[tracing::instrument(skip(self, params), fields(router_id = %params.router_id, transport_id = %params.transport_id, peer_id = %params.peer_id, request_id = %params.request_id))]
     async fn produce(&self, params: ProduceParams) -> Result<ProduceResult, SfuDomainError> {
+        if self.state.is_draining.load(Ordering::SeqCst) {
+            return Err(SfuDomainError::SystemDraining(
+                "Node is draining; rejecting new producer".to_string(),
+            ));
+        }
+
         validation::validate_not_empty("request_id", &params.request_id)?;
         validation::validate_not_empty("router_id", &params.router_id)?;
         validation::validate_not_empty("transport_id", &params.transport_id)?;
@@ -251,6 +257,12 @@ impl MediaUseCase for MediaService {
 
     #[tracing::instrument(skip(self, params), fields(router_id = %params.router_id, transport_id = %params.subscriber_transport_id, producer_id = %params.producer_id, request_id = %params.request_id))]
     async fn consume(&self, params: ConsumeParams) -> Result<ConsumeResult, SfuDomainError> {
+        if self.state.is_draining.load(Ordering::SeqCst) {
+            return Err(SfuDomainError::SystemDraining(
+                "Node is draining; rejecting new consumer".to_string(),
+            ));
+        }
+
         validation::validate_not_empty("request_id", &params.request_id)?;
         validation::validate_not_empty("router_id", &params.router_id)?;
         validation::validate_not_empty("subscriber_transport_id", &params.subscriber_transport_id)?;
@@ -347,6 +359,10 @@ impl MediaUseCase for MediaService {
                             .clone();
 
                         let _guard = lock.lock().await;
+                        let _key_guard = crate::application::state::SingleflightKeyGuard::new(
+                            self.state.pipe_singleflight.clone(),
+                            singleflight_key.clone(),
+                        );
 
                         let already_piped = self
                             .state
@@ -413,6 +429,14 @@ impl MediaUseCase for MediaService {
                                     ))
                                 })?;
 
+                            // Pre-check codec capability on source router before performing cross-worker pipe
+                            if !pub_router.can_consume(&producer_id_obj, &params.rtp_capabilities) {
+                                return Err(SfuDomainError::IncompatibleCodec(format!(
+                                    "Router cannot consume producer '{}' with given RTP capabilities",
+                                    params.producer_id
+                                )));
+                            }
+
                             let pipe_pair = pub_router
                                 .pipe_producer_to_router(
                                     producer_id_obj,
@@ -455,7 +479,6 @@ impl MediaUseCase for MediaService {
                         }
 
                         drop(_guard);
-                        self.state.pipe_singleflight.remove(&singleflight_key);
                     }
 
                     // Extract target router where subscriber transport lives

@@ -177,6 +177,10 @@ impl TransportUseCase for TransportService {
                                     .clone();
 
                                 let _guard = lock.lock().await;
+                                let _key_guard = crate::application::state::SingleflightKeyGuard::new(
+                                    self.state.sub_router_singleflight.clone(),
+                                    sf_key.clone(),
+                                );
 
                                 let router = if let Some(sub) = sub_routers.get(&target_worker) {
                                     sub.router.clone()
@@ -262,7 +266,6 @@ impl TransportUseCase for TransportService {
                                 };
 
                                 drop(_guard);
-                                self.state.sub_router_singleflight.remove(&sf_key);
                                 router
                             };
 
@@ -779,6 +782,27 @@ impl TransportUseCase for TransportService {
                 self.event_publisher.as_ref(),
                 router_id,
                 transport_id,
+            );
+        } else if let Some((_, p_item)) = self.state.pipe_transports.remove(transport_id) {
+            if p_item.router_id != router_id {
+                self.state
+                    .pipe_transports
+                    .insert(transport_id.to_string(), p_item);
+                return Err(SfuDomainError::NotFound(format!(
+                    "PipeTransport '{transport_id}' does not belong to router '{router_id}'"
+                )));
+            }
+
+            p_item.is_closed.store(true, Ordering::SeqCst);
+            if let Some(set) = self.state.router_pipe_transports.get_mut(router_id) {
+                set.remove(transport_id);
+            }
+
+            self.event_publisher.publish_resource_closed(
+                router_id,
+                "transport",
+                transport_id,
+                "pipe_transport_closed",
             );
         }
 

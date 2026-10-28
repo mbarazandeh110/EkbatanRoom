@@ -41,17 +41,23 @@ impl WorkerPool {
 
             let is_dead = Arc::new(AtomicBool::new(false));
             let is_dead_clone = is_dead.clone();
+            let load_counter = Arc::new(AtomicUsize::new(0));
+            let score_counter = Arc::new(AtomicUsize::new(0));
+            let load_clone = load_counter.clone();
+            let score_clone = score_counter.clone();
 
             worker
                 .on_dead(move |_| {
                     tracing::error!(worker_index = i, "Mediasoup worker died unexpectedly!");
                     is_dead_clone.store(true, Ordering::SeqCst);
+                    load_clone.store(0, Ordering::SeqCst);
+                    score_clone.store(0, Ordering::SeqCst);
                 })
                 .detach();
 
             workers.push(worker);
-            load_counts.push(Arc::new(AtomicUsize::new(0)));
-            resource_scores.push(Arc::new(AtomicUsize::new(0)));
+            load_counts.push(load_counter);
+            resource_scores.push(score_counter);
             dead_flags.push(is_dead);
         }
 
@@ -123,6 +129,12 @@ impl WorkerPoolPort for WorkerPool {
         if let Some(flag) = self.dead_flags.get(index) {
             flag.store(true, Ordering::SeqCst);
         }
+        if let Some(counter) = self.load_counts.get(index) {
+            counter.store(0, Ordering::SeqCst);
+        }
+        if let Some(counter) = self.resource_scores.get(index) {
+            counter.store(0, Ordering::SeqCst);
+        }
     }
 
     fn total_workers(&self) -> usize {
@@ -168,16 +180,22 @@ impl WorkerPoolPort for WorkerPool {
     }
 
     fn worker_resource_score(&self, index: usize) -> usize {
-        self.resource_scores
-            .get(index)
-            .map(|c| c.load(Ordering::Relaxed))
-            .unwrap_or(0)
+        if !self.is_worker_alive(index) {
+            0
+        } else {
+            self.resource_scores
+                .get(index)
+                .map(|c| c.load(Ordering::Relaxed))
+                .unwrap_or(0)
+        }
     }
 
     fn total_resource_score(&self) -> usize {
         self.resource_scores
             .iter()
-            .map(|c| c.load(Ordering::Relaxed))
+            .enumerate()
+            .filter(|(i, _)| self.is_worker_alive(*i))
+            .map(|(_, c)| c.load(Ordering::Relaxed))
             .sum()
     }
 

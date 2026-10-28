@@ -91,7 +91,21 @@ impl RouterUseCase for RouterService {
                 request_id,
                 &payload_bytes,
                 || async {
-                    // Check if room already has an active router (Scope guard dropped immediately)
+                    // Acquire singleflight lock for this room_id to serialize concurrent creation
+                    let lock = self
+                        .state
+                        .room_singleflight
+                        .entry(room_id.to_string())
+                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                        .clone();
+
+                    let guard = lock.lock().await;
+                    let _key_guard = crate::application::state::SingleflightKeyGuard::new(
+                        self.state.room_singleflight.clone(),
+                        room_id.to_string(),
+                    );
+
+                    // Check if room already has an active router (double-checked under room lock)
                     let existing_active_router = {
                         if let Some(r_id) = self.state.room_to_router.get(room_id) {
                             self.state.routers.get(r_id.value()).and_then(|r| {
@@ -112,7 +126,7 @@ impl RouterUseCase for RouterService {
                         return Ok((router.id().to_string(), worker_index as u32, caps_json));
                     }
 
-                    // Obtain least loaded worker and spawn router without holding any DashMap lock
+                    // Obtain least loaded worker and spawn router
                     let (worker_index, worker) = self.worker_pool.get_least_loaded();
                     let router_codecs = crate::domain::codecs::router_codecs_from_config(
                         &self.config.router_codecs,
@@ -125,45 +139,6 @@ impl RouterUseCase for RouterService {
                         })?;
 
                     let router_id = router.id().to_string();
-
-                    // Atomic registration in room_to_router to prevent concurrent race conditions
-                    use dashmap::mapref::entry::Entry;
-                    let winner = match self.state.room_to_router.entry(room_id.to_string()) {
-                        Entry::Occupied(mut occ) => {
-                            let existing_id = occ.get().clone();
-                            let is_active = self
-                                .state
-                                .routers
-                                .get(&existing_id)
-                                .map(|r| !r.is_closed.load(Ordering::SeqCst))
-                                .unwrap_or(false);
-
-                            if is_active {
-                                // Another concurrent request won the race; drop our newly created router
-                                let winner_item = self
-                                    .state
-                                    .routers
-                                    .get(&existing_id)
-                                    .map(|r| (r.router.clone(), r.worker_index));
-                                Some(winner_item)
-                            } else {
-                                // Previous router was closed; replace entry with our new router
-                                occ.insert(router_id.clone());
-                                None
-                            }
-                        }
-                        Entry::Vacant(vac) => {
-                            vac.insert(router_id.clone());
-                            None
-                        }
-                    };
-
-                    if let Some(Some((w_router, w_worker_index))) = winner {
-                        let caps_json = serde_json::to_string(&w_router.rtp_capabilities())
-                            .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
-                        return Ok((w_router.id().to_string(), w_worker_index as u32, caps_json));
-                    }
-
                     let caps_json = serde_json::to_string(&router.rtp_capabilities())
                         .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
 
@@ -225,12 +200,17 @@ impl RouterUseCase for RouterService {
                     self.worker_pool.increment_load(worker_index);
                     self.state.routers.insert(router_id.clone(), item);
                     self.state
+                        .room_to_router
+                        .insert(room_id.to_string(), router_id.clone());
+                    self.state
                         .router_transports
                         .insert(router_id.clone(), DashSet::new());
                     self.state
                         .router_pipe_transports
                         .insert(router_id.clone(), DashSet::new());
                     self.metrics.inc_active_routers();
+
+                    drop(guard);
 
                     Ok((router_id, worker_index as u32, caps_json))
                 },
@@ -249,6 +229,7 @@ impl RouterUseCase for RouterService {
         if let Some((_, item)) = self.state.routers.remove(router_id) {
             item.is_closed.store(true, Ordering::SeqCst);
             self.state.room_to_router.remove(&item.room_id);
+            self.state.room_singleflight.remove(&item.room_id);
             self.worker_pool.decrement_load(item.worker_index);
 
             // Clean up all sub-routers for this room
@@ -259,9 +240,12 @@ impl RouterUseCase for RouterService {
             }
             item.sub_routers.clear();
 
-            // Clean up peer affinity for this router
+            // Clean up peer affinity and singleflights for this router
             self.state
                 .peer_worker_affinity
+                .retain(|k, _| k.0 != router_id);
+            self.state
+                .sub_router_singleflight
                 .retain(|k, _| k.0 != router_id);
 
             self.metrics.dec_active_routers();

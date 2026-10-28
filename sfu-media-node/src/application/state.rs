@@ -78,6 +78,23 @@ pub struct PipedProducerEntry {
 
 pub type SubRouterLockMap = DashMap<(String, usize), Arc<tokio::sync::Mutex<()>>>;
 
+pub struct SingleflightKeyGuard<K: std::hash::Hash + Eq + Clone, V: Clone> {
+    map: Arc<DashMap<K, V>>,
+    key: K,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V: Clone> SingleflightKeyGuard<K, V> {
+    pub fn new(map: Arc<DashMap<K, V>>, key: K) -> Self {
+        Self { map, key }
+    }
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V: Clone> Drop for SingleflightKeyGuard<K, V> {
+    fn drop(&mut self) {
+        self.map.remove(&self.key);
+    }
+}
+
 #[derive(Clone)]
 pub struct EngineState {
     pub routers: Arc<DashMap<String, RouterItem>>,
@@ -93,6 +110,7 @@ pub struct EngineState {
     pub transport_consumers: Arc<DashMap<String, DashSet<String>>>,
     pub peer_worker_affinity: Arc<DashMap<(String, String), usize>>,
     pub piped_producers: Arc<DashMap<String, Vec<PipedProducerEntry>>>,
+    pub room_singleflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub pipe_singleflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub sub_router_singleflight: Arc<SubRouterLockMap>,
     pub is_draining: Arc<AtomicBool>,
@@ -114,6 +132,7 @@ impl Default for EngineState {
             transport_consumers: Arc::new(DashMap::new()),
             peer_worker_affinity: Arc::new(DashMap::new()),
             piped_producers: Arc::new(DashMap::new()),
+            room_singleflight: Arc::new(DashMap::new()),
             pipe_singleflight: Arc::new(DashMap::new()),
             sub_router_singleflight: Arc::new(DashMap::new()),
             is_draining: Arc::new(AtomicBool::new(false)),

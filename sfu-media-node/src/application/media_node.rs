@@ -194,6 +194,9 @@ pub fn compute_node_capacity(
 
     let mut max_worker_load_percent = 0.0f32;
     for i in 0..total_workers as usize {
+        if !worker_pool.is_worker_alive(i) {
+            continue;
+        }
         let w_score = worker_pool.worker_resource_score(i);
         let w_pct = if config.worker_capacity_weight > 0 {
             (w_score as f32 / config.worker_capacity_weight as f32) * 100.0

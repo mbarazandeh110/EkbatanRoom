@@ -247,4 +247,76 @@ async fn test_pipe_transport_lifecycle_and_connect() {
         }))
         .await;
     assert!(connect_resp2.is_ok());
+
+    // 7. Close PipeTransport 1 individually via CloseResource
+    let close_pt1 = service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r1.router_id.clone(),
+            resource_type: proto::ResourceType::Transport as i32,
+            resource_id: pt1_resp.pipe_transport_id.clone(),
+        }))
+        .await;
+    assert!(
+        close_pt1.is_ok(),
+        "Closing standalone PipeTransport via CloseResource must succeed"
+    );
+    assert!(
+        !node
+            .state
+            .pipe_transports
+            .contains_key(&pt1_resp.pipe_transport_id),
+        "Closed PipeTransport must be removed from state.pipe_transports"
+    );
+}
+
+#[tokio::test]
+async fn test_concurrent_create_router_same_room_singleflight() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let room_id = "concurrent-room-test";
+    let mut handles = Vec::new();
+
+    // Spawn 10 concurrent requests with different request_ids for the exact same room
+    for i in 0..10 {
+        let svc = service.clone();
+        let r_id = format!("req-concurrent-{}", i);
+        let room = room_id.to_string();
+        handles.push(tokio::spawn(async move {
+            svc.create_router(Request::new(proto::CreateRouterRequest {
+                request_id: r_id,
+                room_id: room,
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+        }));
+    }
+
+    let mut router_ids = Vec::new();
+    for handle in handles {
+        let resp = handle.await.unwrap();
+        router_ids.push(resp.router_id);
+    }
+
+    // All 10 requests MUST receive the exact same router_id!
+    let first_id = &router_ids[0];
+    for id in &router_ids {
+        assert_eq!(
+            id, first_id,
+            "All concurrent requests for the same room must resolve to the identical router"
+        );
+    }
+
+    // Verify there is strictly ONE router in state.routers for this room
+    assert_eq!(
+        node.state.routers.len(),
+        1,
+        "Exactly one router must exist in state.routers"
+    );
+    assert_eq!(
+        node.state.room_to_router.len(),
+        1,
+        "Exactly one mapping in room_to_router"
+    );
 }

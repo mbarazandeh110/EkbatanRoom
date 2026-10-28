@@ -581,6 +581,62 @@ async fn test_draining_rejects_new_resources() {
         .await
         .unwrap_err();
     assert_eq!(p_err.code(), tonic::Code::Unavailable);
+
+    // 4. Produce should be rejected with Unavailable
+    let opus_params = r#"{
+        "mid": "0",
+        "codecs": [{
+            "mimeType": "audio/opus",
+            "payloadType": 111,
+            "clockRate": 48000,
+            "channels": 2,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 11111111 }],
+        "rtcp": { "cname": "audio-test", "reducedSize": true }
+    }"#;
+
+    let prod_err = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-prod-draining".to_string(),
+            router_id: "router-draining".to_string(),
+            transport_id: "transport-draining".to_string(),
+            peer_id: "peer-draining".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(prod_err.code(), tonic::Code::Unavailable);
+
+    // 5. Consume should be rejected with Unavailable
+    let rtp_caps = r#"{
+        "codecs": [{
+            "mimeType": "audio/opus",
+            "kind": "audio",
+            "clockRate": 48000,
+            "channels": 2,
+            "preferredPayloadType": 111,
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": []
+    }"#;
+
+    let cons_err = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-cons-draining".to_string(),
+            router_id: "router-draining".to_string(),
+            subscriber_transport_id: "transport-draining".to_string(),
+            producer_id: "prod-draining".to_string(),
+            rtp_capabilities_json: rtp_caps.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(cons_err.code(), tonic::Code::Unavailable);
 }
 
 #[tokio::test]
@@ -675,6 +731,39 @@ async fn test_sub_router_concurrent_creation_singleflight() {
     assert_eq!(router_entry.sub_routers.len(), 1);
     assert!(router_entry.sub_routers.contains_key(&1));
     drop(router_entry);
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn test_worker_death_resets_scores_and_prevents_capacity_spike() {
+    let mut config = multi_worker_config();
+    config.worker_count = 2;
+    config.worker_capacity_weight = 100;
+    let node = Arc::new(MediaNode::new(config).await.unwrap());
+
+    // 1. Add resource score 50 to worker 0
+    node.worker_pool.add_resource_score(0, 50);
+    assert_eq!(node.worker_pool.worker_resource_score(0), 50);
+    assert_eq!(node.worker_pool.total_resource_score(), 50);
+
+    let info_before = node.get_node_capacity_info();
+    assert_eq!(info_before.alive_workers, 2);
+    assert_eq!(info_before.total_capacity_weight, 200);
+    assert_eq!(info_before.logical_load_percent, 25.0); // 50 / 200 = 25%
+
+    // 2. Mark worker 0 as dead (simulating crash)
+    node.worker_pool.mark_dead(0);
+    assert!(!node.worker_pool.is_worker_alive(0));
+    assert_eq!(node.worker_pool.worker_resource_score(0), 0);
+    assert_eq!(node.worker_pool.total_resource_score(), 0);
+
+    let info_after = node.get_node_capacity_info();
+    assert_eq!(info_after.alive_workers, 1);
+    assert_eq!(info_after.total_capacity_weight, 100);
+    // logical_load_percent must be 0%, NOT spiking falsely to 50%
+    assert_eq!(info_after.logical_load_percent, 0.0);
+    assert_eq!(info_after.max_worker_load_percent, 0.0);
 
     let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
 }
