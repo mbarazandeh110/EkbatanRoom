@@ -99,7 +99,7 @@ impl RouterUseCase for RouterService {
                         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                         .clone();
 
-                    let guard = lock.lock().await;
+                    let _guard = lock.lock().await;
                     let _key_guard = crate::application::state::SingleflightKeyGuard::new(
                         self.state.room_singleflight.clone(),
                         room_id.to_string(),
@@ -209,8 +209,6 @@ impl RouterUseCase for RouterService {
                         .router_pipe_transports
                         .insert(router_id.clone(), DashSet::new());
                     self.metrics.inc_active_routers();
-
-                    drop(guard);
 
                     Ok((router_id, worker_index as u32, caps_json))
                 },

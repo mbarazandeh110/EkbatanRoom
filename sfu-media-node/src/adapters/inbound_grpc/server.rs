@@ -78,6 +78,7 @@ where
             tonic::Code::InvalidArgument => "invalid_argument",
             tonic::Code::NotFound => "not_found",
             tonic::Code::AlreadyExists => "already_exists",
+            tonic::Code::FailedPrecondition => "failed_precondition",
             tonic::Code::Aborted => "aborted",
             tonic::Code::Unavailable => "unavailable",
             tonic::Code::Internal => "internal",
@@ -468,29 +469,28 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
 
         let rx = self.node.event_hub.subscribe();
         let node_ref = self.node.clone();
-        let stream = BroadcastStream::new(rx)
-            .filter_map(move |item| match item {
-                Ok(event) => {
-                    let is_passthrough = matches!(
-                        event.payload,
-                        Some(proto::node_event::Payload::ResourceClosed(_))
-                            | Some(proto::node_event::Payload::NodeCapacity(_))
+        let stream = BroadcastStream::new(rx).filter_map(move |item| match item {
+            Ok(event) => {
+                let is_passthrough = matches!(
+                    event.payload,
+                    Some(proto::node_event::Payload::ResourceClosed(_))
+                        | Some(proto::node_event::Payload::NodeCapacity(_))
+                );
+                if is_passthrough || node_ref.is_router_active(&event.router_id) {
+                    Some(Ok(event))
+                } else {
+                    tracing::debug!(
+                        router_id = %event.router_id,
+                        "Filtered out zombie event for closed router"
                     );
-                    if is_passthrough || node_ref.is_router_active(&event.router_id) {
-                        Some(Ok(event))
-                    } else {
-                        tracing::debug!(
-                            router_id = %event.router_id,
-                            "Filtered out zombie event for closed router"
-                        );
-                        None
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Event stream skipped lagged items: {e}");
                     None
                 }
-            });
+            }
+            Err(e) => {
+                tracing::warn!("Event stream skipped lagged items: {e}");
+                None
+            }
+        });
 
         self.node.metrics.record_grpc_request(
             "WatchNodeEvents",

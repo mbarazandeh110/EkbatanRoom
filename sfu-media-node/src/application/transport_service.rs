@@ -265,7 +265,6 @@ impl TransportUseCase for TransportService {
                                     new_sub
                                 };
 
-                                drop(_guard);
                                 router
                             };
 

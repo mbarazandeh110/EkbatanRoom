@@ -137,6 +137,7 @@ pub fn record_grpc_request(method: &'static str, status: &str, duration_secs: f6
         "invalid_argument" => "invalid_argument",
         "not_found" => "not_found",
         "already_exists" => "already_exists",
+        "failed_precondition" => "failed_precondition",
         "aborted" => "aborted",
         "internal" => "internal",
         "unavailable" => "unavailable",
@@ -184,5 +185,6 @@ mod tests {
         m.record_idempotency_hit();
         m.record_grpc_request("CreateRouter", "ok", 0.012);
         m.record_grpc_request("CreateRouter", "invalid_argument", 0.001);
+        m.record_grpc_request("Consume", "failed_precondition", 0.005);
     }
 }

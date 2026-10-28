@@ -78,20 +78,23 @@ pub struct PipedProducerEntry {
 
 pub type SubRouterLockMap = DashMap<(String, usize), Arc<tokio::sync::Mutex<()>>>;
 
-pub struct SingleflightKeyGuard<K: std::hash::Hash + Eq + Clone, V: Clone> {
-    map: Arc<DashMap<K, V>>,
+pub struct SingleflightKeyGuard<K: std::hash::Hash + Eq + Clone, V> {
+    map: Arc<DashMap<K, Arc<V>>>,
     key: K,
 }
 
-impl<K: std::hash::Hash + Eq + Clone, V: Clone> SingleflightKeyGuard<K, V> {
-    pub fn new(map: Arc<DashMap<K, V>>, key: K) -> Self {
+impl<K: std::hash::Hash + Eq + Clone, V> SingleflightKeyGuard<K, V> {
+    pub fn new(map: Arc<DashMap<K, Arc<V>>>, key: K) -> Self {
         Self { map, key }
     }
 }
 
-impl<K: std::hash::Hash + Eq + Clone, V: Clone> Drop for SingleflightKeyGuard<K, V> {
+impl<K: std::hash::Hash + Eq + Clone, V> Drop for SingleflightKeyGuard<K, V> {
     fn drop(&mut self) {
-        self.map.remove(&self.key);
+        // 1 reference inside DashMap + 1 reference in local `lock` variable = 2.
+        // If > 2, another concurrent task is waiting on `lock.lock().await`.
+        self.map
+            .remove_if(&self.key, |_, v| Arc::strong_count(v) <= 2);
     }
 }
 
@@ -166,5 +169,55 @@ impl EngineState {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_singleflight_key_guard_drop_preserves_queued_waiters() {
+        let map = Arc::new(DashMap::<String, Arc<tokio::sync::Mutex<()>>>::new());
+        let key = "room_123".to_string();
+
+        // Task 1 simulates entering critical section
+        let lock1 = map
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let guard1 = lock1.lock().await;
+        let key_guard1 = SingleflightKeyGuard::new(map.clone(), key.clone());
+
+        // Task 2 simulates queuing up on the same singleflight entry
+        let lock2 = map
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+
+        // When Task 1 finishes and drops key_guard1, key should NOT be removed because Task 2 holds lock2
+        drop(key_guard1);
+        assert!(
+            map.contains_key(&key),
+            "Key must remain in map while Task 2 is queued"
+        );
+
+        // Task 1 releases Mutex and drops its local lock
+        drop(guard1);
+        drop(lock1);
+
+        // Task 2 acquires lock and sets up its own key guard
+        let guard2 = lock2.lock().await;
+        let key_guard2 = SingleflightKeyGuard::new(map.clone(), key.clone());
+
+        // Now, no other tasks are waiting. When Task 2 drops key_guard2, key must be removed
+        drop(key_guard2);
+        assert!(
+            !map.contains_key(&key),
+            "Key must be removed when no concurrent tasks wait"
+        );
+
+        drop(guard2);
+        drop(lock2);
     }
 }

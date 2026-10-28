@@ -477,8 +477,6 @@ impl MediaUseCase for MediaService {
                                 .or_default()
                                 .push(entry);
                         }
-
-                        drop(_guard);
                     }
 
                     // Extract target router where subscriber transport lives
