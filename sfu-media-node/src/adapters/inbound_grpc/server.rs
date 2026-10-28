@@ -311,11 +311,12 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         let node_ref = self.node.clone();
         let stream = BroadcastStream::new(rx).filter_map(move |item| match item {
             Ok(event) => {
-                let is_closed_event = matches!(
+                let is_passthrough = matches!(
                     event.payload,
                     Some(proto::node_event::Payload::ResourceClosed(_))
+                        | Some(proto::node_event::Payload::NodeCapacity(_))
                 );
-                if is_closed_event || node_ref.is_router_active(&event.router_id) {
+                if is_passthrough || node_ref.is_router_active(&event.router_id) {
                     Some(Ok(event))
                 } else {
                     tracing::debug!(
@@ -338,5 +339,49 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         );
 
         Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn get_node_capacity(
+        &self,
+        request: Request<proto::GetNodeCapacityRequest>,
+    ) -> Result<Response<proto::NodeCapacityMetrics>, Status> {
+        let node = self.node.clone();
+        instrument_rpc("GetNodeCapacity", request, move |_req| async move {
+            Ok(node.get_node_capacity_metrics())
+        })
+        .await
+    }
+
+    async fn create_pipe_transport(
+        &self,
+        request: Request<proto::CreatePipeTransportRequest>,
+    ) -> Result<Response<proto::CreatePipeTransportResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc("CreatePipeTransport", request, move |req| async move {
+            let params = mapper::from_create_pipe_transport_request(req);
+            let res = node
+                .transport_service
+                .create_pipe_transport(params)
+                .await
+                .map_err(Status::from)?;
+            Ok(mapper::to_create_pipe_transport_response(res))
+        })
+        .await
+    }
+
+    async fn connect_pipe_transport(
+        &self,
+        request: Request<proto::ConnectPipeTransportRequest>,
+    ) -> Result<Response<proto::ConnectPipeTransportResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc("ConnectPipeTransport", request, move |req| async move {
+            let params = mapper::from_connect_pipe_transport_request(req).map_err(Status::from)?;
+            node.transport_service
+                .connect_pipe_transport(params)
+                .await
+                .map_err(Status::from)?;
+            Ok(proto::ConnectPipeTransportResponse {})
+        })
+        .await
     }
 }

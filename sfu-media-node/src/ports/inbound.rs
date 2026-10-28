@@ -34,6 +34,31 @@ pub struct ConnectTransportParams {
 }
 
 #[derive(Debug, Clone)]
+pub struct CreatePipeTransportParams {
+    pub request_id: String,
+    pub router_id: String,
+    pub enable_srtp: bool,
+    pub enable_rtx: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreatePipeTransportResult {
+    pub pipe_transport_id: String,
+    pub ip: String,
+    pub port: u32,
+    pub srtp_parameters_json: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectPipeTransportParams {
+    pub router_id: String,
+    pub pipe_transport_id: String,
+    pub remote_ip: String,
+    pub remote_port: u32,
+    pub remote_srtp_parameters_json: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ProduceParams {
     pub request_id: String,
     pub router_id: String,
@@ -113,6 +138,16 @@ pub trait TransportUseCase: Send + Sync {
         router_id: &str,
         transport_id: &str,
     ) -> Result<RestartIceResult, SfuDomainError>;
+
+    async fn create_pipe_transport(
+        &self,
+        params: CreatePipeTransportParams,
+    ) -> Result<CreatePipeTransportResult, SfuDomainError>;
+
+    async fn connect_pipe_transport(
+        &self,
+        params: ConnectPipeTransportParams,
+    ) -> Result<(), SfuDomainError>;
 
     fn close_transport(&self, router_id: &str, transport_id: &str) -> Result<(), SfuDomainError>;
 }

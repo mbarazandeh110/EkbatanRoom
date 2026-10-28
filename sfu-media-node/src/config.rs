@@ -31,6 +31,8 @@ pub struct Config {
     pub rtc_max_port: u16,
     pub grpc_port: u16,
     pub worker_count: usize,
+    pub worker_capacity_weight: u32,
+    pub worker_spillover_threshold_percent: f32,
     pub observability: ObservabilityConfig,
 }
 
@@ -126,6 +128,17 @@ impl Config {
                 .unwrap_or(1),
         };
 
+        let worker_capacity_weight = match std::env::var("SFU_WORKER_CAPACITY_WEIGHT") {
+            Ok(s) => s.trim().parse::<u32>().unwrap_or(1000).max(1),
+            Err(_) => 1000,
+        };
+
+        let worker_spillover_threshold_percent =
+            match std::env::var("SFU_WORKER_SPILLOVER_THRESHOLD_PERCENT") {
+                Ok(s) => s.trim().parse::<f32>().unwrap_or(80.0).clamp(1.0, 100.0),
+                Err(_) => 80.0,
+            };
+
         let observability = ObservabilityConfig::from_env();
 
         Ok(Self {
@@ -135,6 +148,8 @@ impl Config {
             rtc_max_port,
             grpc_port,
             worker_count,
+            worker_capacity_weight,
+            worker_spillover_threshold_percent,
             observability,
         })
     }
@@ -151,6 +166,8 @@ impl Config {
                 worker_count: std::thread::available_parallelism()
                     .map(|n| n.get())
                     .unwrap_or(1),
+                worker_capacity_weight: 1000,
+                worker_spillover_threshold_percent: 80.0,
                 observability: ObservabilityConfig::default(),
             }
         })

@@ -8,6 +8,7 @@ use std::sync::Arc;
 pub struct WorkerPool {
     workers: Vec<Worker>,
     load_counts: Vec<Arc<AtomicUsize>>,
+    resource_scores: Vec<Arc<AtomicUsize>>,
     dead_flags: Vec<Arc<AtomicBool>>,
 }
 
@@ -21,6 +22,7 @@ impl WorkerPool {
         let count = count.max(1);
         let mut workers = Vec::with_capacity(count);
         let mut load_counts = Vec::with_capacity(count);
+        let mut resource_scores = Vec::with_capacity(count);
         let mut dead_flags = Vec::with_capacity(count);
 
         for i in 0..count {
@@ -45,12 +47,14 @@ impl WorkerPool {
 
             workers.push(worker);
             load_counts.push(Arc::new(AtomicUsize::new(0)));
+            resource_scores.push(Arc::new(AtomicUsize::new(0)));
             dead_flags.push(is_dead);
         }
 
         Ok(Self {
             workers,
             load_counts,
+            resource_scores,
             dead_flags,
         })
     }
@@ -65,12 +69,12 @@ impl WorkerPoolPort for WorkerPool {
         let mut min_index = 0;
         let mut min_val = usize::MAX;
 
-        // First pass: find least loaded alive worker
-        for (i, count) in self.load_counts.iter().enumerate() {
+        // First pass: find least loaded alive worker based on logical resource score
+        for (i, score) in self.resource_scores.iter().enumerate() {
             if self.dead_flags[i].load(Ordering::SeqCst) {
                 continue;
             }
-            let val = count.load(Ordering::Relaxed);
+            let val = score.load(Ordering::Relaxed);
             if val < min_val {
                 min_val = val;
                 min_index = i;
@@ -113,5 +117,65 @@ impl WorkerPoolPort for WorkerPool {
         if let Some(flag) = self.dead_flags.get(index) {
             flag.store(true, Ordering::SeqCst);
         }
+    }
+
+    fn total_workers(&self) -> usize {
+        self.workers.len()
+    }
+
+    fn alive_workers(&self) -> usize {
+        self.dead_flags
+            .iter()
+            .filter(|f| !f.load(Ordering::SeqCst))
+            .count()
+    }
+
+    fn is_worker_alive(&self, index: usize) -> bool {
+        self.dead_flags
+            .get(index)
+            .map(|f| !f.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }
+
+    fn add_resource_score(&self, index: usize, weight: usize) {
+        if let Some(counter) = self.resource_scores.get(index) {
+            counter.fetch_add(weight, Ordering::Relaxed);
+        }
+    }
+
+    fn sub_resource_score(&self, index: usize, weight: usize) {
+        if let Some(counter) = self.resource_scores.get(index) {
+            let mut current = counter.load(Ordering::Relaxed);
+            while current > 0 {
+                let new_val = current.saturating_sub(weight);
+                match counter.compare_exchange_weak(
+                    current,
+                    new_val,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => current = actual,
+                }
+            }
+        }
+    }
+
+    fn worker_resource_score(&self, index: usize) -> usize {
+        self.resource_scores
+            .get(index)
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    fn total_resource_score(&self) -> usize {
+        self.resource_scores
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .sum()
+    }
+
+    fn get_worker(&self, index: usize) -> Option<Worker> {
+        self.workers.get(index).cloned()
     }
 }

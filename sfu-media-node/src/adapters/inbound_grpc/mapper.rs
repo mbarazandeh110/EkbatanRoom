@@ -2,7 +2,8 @@ use crate::domain::entities::*;
 use crate::domain::errors::SfuDomainError;
 use crate::domain::validation;
 use crate::ports::inbound::{
-    ConnectTransportParams, ConsumeParams, ConsumeResult, CreateTransportParams,
+    ConnectPipeTransportParams, ConnectTransportParams, ConsumeParams, ConsumeResult,
+    CreatePipeTransportParams, CreatePipeTransportResult, CreateTransportParams,
     CreateTransportResult, ProduceParams, ProduceResult, RestartIceResult,
 };
 use crate::proto::sfu::v1 as proto;
@@ -314,4 +315,42 @@ pub fn to_get_stats_response(info: ResourceStatsInfo) -> proto::GetStatsResponse
         current_spatial_layer: info.current_spatial_layer,
         current_temporal_layer: info.current_temporal_layer,
     }
+}
+
+pub fn from_create_pipe_transport_request(
+    req: proto::CreatePipeTransportRequest,
+) -> CreatePipeTransportParams {
+    CreatePipeTransportParams {
+        request_id: req.request_id,
+        router_id: req.router_id,
+        enable_srtp: req.enable_srtp,
+        enable_rtx: req.enable_rtx,
+    }
+}
+
+pub fn to_create_pipe_transport_response(
+    res: CreatePipeTransportResult,
+) -> proto::CreatePipeTransportResponse {
+    proto::CreatePipeTransportResponse {
+        pipe_transport_id: res.pipe_transport_id,
+        ip: res.ip,
+        port: res.port,
+        srtp_parameters_json: res.srtp_parameters_json,
+    }
+}
+
+pub fn from_connect_pipe_transport_request(
+    req: proto::ConnectPipeTransportRequest,
+) -> Result<ConnectPipeTransportParams, SfuDomainError> {
+    validation::validate_not_empty("router_id", &req.router_id)?;
+    validation::validate_not_empty("pipe_transport_id", &req.pipe_transport_id)?;
+    validation::validate_not_empty("remote_ip", &req.remote_ip)?;
+
+    Ok(ConnectPipeTransportParams {
+        router_id: req.router_id,
+        pipe_transport_id: req.pipe_transport_id,
+        remote_ip: req.remote_ip,
+        remote_port: req.remote_port,
+        remote_srtp_parameters_json: req.remote_srtp_parameters_json,
+    })
 }

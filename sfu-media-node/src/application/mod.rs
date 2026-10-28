@@ -2,6 +2,7 @@ pub mod media_node;
 pub mod media_service;
 pub mod router_service;
 pub mod state;
+pub mod system_sampler;
 pub mod transport_service;
 
 pub use media_node::MediaNode;

@@ -5,6 +5,15 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use mediasoup::audio_level_observer::AudioLevelObserver;
+use mediasoup::pipe_transport::PipeTransport;
+
+#[derive(Clone)]
+pub struct SubRouterItem {
+    pub router: Router,
+    pub worker_index: usize,
+    pub audio_level_observer: AudioLevelObserver,
+    pub is_closed: Arc<AtomicBool>,
+}
 
 #[derive(Clone)]
 pub struct RouterItem {
@@ -13,14 +22,24 @@ pub struct RouterItem {
     pub worker_index: usize,
     pub audio_level_observer: AudioLevelObserver,
     pub is_closed: Arc<AtomicBool>,
+    pub sub_routers: Arc<DashMap<usize, SubRouterItem>>,
 }
 
 #[derive(Clone)]
 pub struct TransportItem {
     pub transport: WebRtcTransport,
     pub router_id: String,
+    pub physical_router_id: String,
+    pub worker_index: usize,
     pub peer_id: String,
     pub is_publisher: bool,
+    pub is_closed: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+pub struct PipeTransportItem {
+    pub transport: PipeTransport,
+    pub router_id: String,
     pub is_closed: Arc<AtomicBool>,
 }
 
@@ -28,6 +47,8 @@ pub struct TransportItem {
 pub struct ProducerItem {
     pub producer: Producer,
     pub router_id: String,
+    pub physical_router_id: String,
+    pub worker_index: usize,
     pub transport_id: String,
     pub peer_id: String,
     pub kind: MediaKind,
@@ -38,6 +59,8 @@ pub struct ProducerItem {
 pub struct ConsumerItem {
     pub consumer: Consumer,
     pub router_id: String,
+    pub physical_router_id: String,
+    pub worker_index: usize,
     pub transport_id: String,
     pub producer_id: String,
     pub peer_id: String,
@@ -46,16 +69,29 @@ pub struct ConsumerItem {
 }
 
 #[derive(Clone)]
+pub struct PipedProducerEntry {
+    pub pipe_consumer: Consumer,
+    pub pipe_producer: Producer,
+    pub target_router_id: String,
+    pub target_worker_index: usize,
+}
+
+#[derive(Clone)]
 pub struct EngineState {
     pub routers: Arc<DashMap<String, RouterItem>>,
     pub room_to_router: Arc<DashMap<String, String>>,
     pub transports: Arc<DashMap<String, TransportItem>>,
+    pub pipe_transports: Arc<DashMap<String, PipeTransportItem>>,
     pub router_transports: Arc<DashMap<String, DashSet<String>>>,
+    pub router_pipe_transports: Arc<DashMap<String, DashSet<String>>>,
     pub producers: Arc<DashMap<String, ProducerItem>>,
     pub transport_producers: Arc<DashMap<String, DashSet<String>>>,
     pub producer_consumers: Arc<DashMap<String, DashSet<String>>>,
     pub consumers: Arc<DashMap<String, ConsumerItem>>,
     pub transport_consumers: Arc<DashMap<String, DashSet<String>>>,
+    pub peer_worker_affinity: Arc<DashMap<(String, String), usize>>,
+    pub piped_producers: Arc<DashMap<String, Vec<PipedProducerEntry>>>,
+    pub pipe_singleflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Default for EngineState {
@@ -64,12 +100,17 @@ impl Default for EngineState {
             routers: Arc::new(DashMap::new()),
             room_to_router: Arc::new(DashMap::new()),
             transports: Arc::new(DashMap::new()),
+            pipe_transports: Arc::new(DashMap::new()),
             router_transports: Arc::new(DashMap::new()),
+            router_pipe_transports: Arc::new(DashMap::new()),
             producers: Arc::new(DashMap::new()),
             transport_producers: Arc::new(DashMap::new()),
             producer_consumers: Arc::new(DashMap::new()),
             consumers: Arc::new(DashMap::new()),
             transport_consumers: Arc::new(DashMap::new()),
+            peer_worker_affinity: Arc::new(DashMap::new()),
+            piped_producers: Arc::new(DashMap::new()),
+            pipe_singleflight: Arc::new(DashMap::new()),
         }
     }
 }

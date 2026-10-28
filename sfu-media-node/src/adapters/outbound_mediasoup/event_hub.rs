@@ -126,4 +126,13 @@ impl EventPublisherPort for EventHub {
         };
         let _ = self.sender.send(event);
     }
+
+    fn publish_node_capacity(&self, metrics: proto::NodeCapacityMetrics) {
+        let event = proto::NodeEvent {
+            router_id: String::new(),
+            timestamp_ms: Self::now_ms(),
+            payload: Some(proto::node_event::Payload::NodeCapacity(metrics)),
+        };
+        let _ = self.sender.send(event);
+    }
 }

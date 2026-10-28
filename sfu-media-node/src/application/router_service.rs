@@ -42,6 +42,7 @@ impl RouterService {
     fn cascade_close_transport_internal(&self, router_id: &str, transport_id: &str) {
         if let Some((_, t_item)) = self.state.transports.remove(transport_id) {
             t_item.is_closed.store(true, Ordering::SeqCst);
+            self.worker_pool.sub_resource_score(t_item.worker_index, 1);
             self.metrics.dec_active_transports(t_item.is_publisher);
 
             self.event_publisher.publish_resource_closed(
@@ -56,7 +57,27 @@ impl RouterService {
                 for pid in p_ids {
                     if let Some((_, p)) = self.state.producers.remove(&pid) {
                         p.is_closed.store(true, Ordering::SeqCst);
+                        let p_weight = if p.kind == crate::domain::entities::MediaKind::Audio {
+                            2
+                        } else {
+                            10
+                        };
+                        self.worker_pool
+                            .sub_resource_score(p.worker_index, p_weight);
                         self.metrics.dec_active_producers(&p.kind.to_string());
+
+                        // Close any piped instances of this producer
+                        if let Some((_, piped_entries)) = self.state.piped_producers.remove(&pid) {
+                            for entry in piped_entries {
+                                self.worker_pool.sub_resource_score(p.worker_index, 1);
+                                self.worker_pool
+                                    .sub_resource_score(entry.target_worker_index, 1);
+                                // Dropping entry closes both pipe_consumer and pipe_producer via mediasoup RAII
+                            }
+                        }
+                        self.state
+                            .pipe_singleflight
+                            .retain(|k, _| !k.starts_with(&format!("{}:", pid)));
 
                         self.event_publisher.publish_resource_closed(
                             router_id,
@@ -69,6 +90,14 @@ impl RouterService {
                         if let Some((_, c_ids)) = self.state.producer_consumers.remove(&pid) {
                             for cid in c_ids {
                                 if let Some(c) = self.state.cascade_remove_consumer(&cid) {
+                                    let c_weight =
+                                        if c.kind == crate::domain::entities::MediaKind::Audio {
+                                            1
+                                        } else {
+                                            2
+                                        };
+                                    self.worker_pool
+                                        .sub_resource_score(c.worker_index, c_weight);
                                     self.metrics.dec_active_consumers(&c.kind.to_string());
                                     self.event_publisher.publish_resource_closed(
                                         router_id,
@@ -87,6 +116,13 @@ impl RouterService {
             if let Some((_, c_ids)) = self.state.transport_consumers.remove(transport_id) {
                 for cid in c_ids {
                     if let Some(c) = self.state.cascade_remove_consumer(&cid) {
+                        let c_weight = if c.kind == crate::domain::entities::MediaKind::Audio {
+                            1
+                        } else {
+                            2
+                        };
+                        self.worker_pool
+                            .sub_resource_score(c.worker_index, c_weight);
                         self.metrics.dec_active_consumers(&c.kind.to_string());
                         self.event_publisher.publish_resource_closed(
                             router_id,
@@ -245,6 +281,7 @@ impl RouterUseCase for RouterService {
                         worker_index,
                         audio_level_observer,
                         is_closed,
+                        sub_routers: Arc::new(dashmap::DashMap::new()),
                     };
 
                     self.worker_pool.increment_load(worker_index);
@@ -272,6 +309,20 @@ impl RouterUseCase for RouterService {
             item.is_closed.store(true, Ordering::SeqCst);
             self.state.room_to_router.remove(&item.room_id);
             self.worker_pool.decrement_load(item.worker_index);
+
+            // Clean up all sub-routers for this room
+            for sub_entry in item.sub_routers.iter() {
+                sub_entry.value().is_closed.store(true, Ordering::SeqCst);
+                self.worker_pool
+                    .decrement_load(sub_entry.value().worker_index);
+            }
+            item.sub_routers.clear();
+
+            // Clean up peer affinity for this router
+            self.state
+                .peer_worker_affinity
+                .retain(|k, _| k.0 != router_id);
+
             self.metrics.dec_active_routers();
 
             self.event_publisher.publish_resource_closed(
@@ -285,6 +336,15 @@ impl RouterUseCase for RouterService {
             if let Some((_, transport_ids)) = self.state.router_transports.remove(router_id) {
                 for tid in transport_ids {
                     self.cascade_close_transport_internal(router_id, &tid);
+                }
+            }
+
+            // Cascade close pipe transports
+            if let Some((_, pipe_ids)) = self.state.router_pipe_transports.remove(router_id) {
+                for pid in pipe_ids {
+                    if let Some((_, pt)) = self.state.pipe_transports.remove(&pid) {
+                        pt.is_closed.store(true, Ordering::SeqCst);
+                    }
                 }
             }
         }

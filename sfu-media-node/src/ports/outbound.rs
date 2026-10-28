@@ -5,6 +5,14 @@ pub trait WorkerPoolPort: Send + Sync {
     fn increment_load(&self, index: usize);
     fn decrement_load(&self, index: usize);
     fn mark_dead(&self, index: usize);
+    fn total_workers(&self) -> usize;
+    fn alive_workers(&self) -> usize;
+    fn is_worker_alive(&self, index: usize) -> bool;
+    fn add_resource_score(&self, index: usize, weight: usize);
+    fn sub_resource_score(&self, index: usize, weight: usize);
+    fn worker_resource_score(&self, index: usize) -> usize;
+    fn total_resource_score(&self) -> usize;
+    fn get_worker(&self, index: usize) -> Option<Worker>;
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +55,8 @@ pub trait EventPublisherPort: Send + Sync {
         resource_id: &str,
         reason: &str,
     );
+
+    fn publish_node_capacity(&self, metrics: crate::proto::sfu::v1::NodeCapacityMetrics);
 }
 
 pub trait MetricsPort: Send + Sync {
@@ -60,4 +70,11 @@ pub trait MetricsPort: Send + Sync {
     fn dec_active_consumers(&self, kind: &str);
     fn record_idempotency_hit(&self);
     fn record_grpc_request(&self, method: &'static str, status: &str, duration_secs: f64);
+    fn update_node_capacity(
+        &self,
+        total_capacity_weight: u32,
+        logical_load_percent: f32,
+        cpu_usage_percent: f32,
+        effective_load_percent: f32,
+    );
 }

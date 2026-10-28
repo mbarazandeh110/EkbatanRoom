@@ -155,3 +155,96 @@ async fn test_transport_lifecycle_and_ice_restart() {
         .await;
     assert!(err.is_err());
 }
+
+#[tokio::test]
+async fn test_pipe_transport_lifecycle_and_connect() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create two routers (e.g. representing two cascaded nodes/routers)
+    let r1 = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-pipe-1".to_string(),
+            room_id: "room-pipe-1".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let r2 = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-pipe-2".to_string(),
+            room_id: "room-pipe-2".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 2. Create PipeTransport on Router 1
+    let pt1_req = proto::CreatePipeTransportRequest {
+        request_id: "req-pt-1".to_string(),
+        router_id: r1.router_id.clone(),
+        enable_srtp: true,
+        enable_rtx: true,
+    };
+
+    let pt1_resp = service
+        .create_pipe_transport(Request::new(pt1_req.clone()))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!pt1_resp.pipe_transport_id.is_empty());
+    assert!(!pt1_resp.ip.is_empty());
+    assert!(pt1_resp.port > 0);
+    assert!(!pt1_resp.srtp_parameters_json.is_empty());
+
+    // 3. Idempotent CreatePipeTransport returns identical response
+    let pt1_dup = service
+        .create_pipe_transport(Request::new(pt1_req))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(pt1_resp.pipe_transport_id, pt1_dup.pipe_transport_id);
+
+    // 4. Create PipeTransport on Router 2
+    let pt2_req = proto::CreatePipeTransportRequest {
+        request_id: "req-pt-2".to_string(),
+        router_id: r2.router_id.clone(),
+        enable_srtp: true,
+        enable_rtx: true,
+    };
+
+    let pt2_resp = service
+        .create_pipe_transport(Request::new(pt2_req))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!pt2_resp.pipe_transport_id.is_empty());
+    assert!(!pt2_resp.srtp_parameters_json.is_empty());
+
+    // 5. Connect PipeTransport 1 to PipeTransport 2
+    let connect_resp1 = service
+        .connect_pipe_transport(Request::new(proto::ConnectPipeTransportRequest {
+            router_id: r1.router_id.clone(),
+            pipe_transport_id: pt1_resp.pipe_transport_id.clone(),
+            remote_ip: pt2_resp.ip.clone(),
+            remote_port: pt2_resp.port,
+            remote_srtp_parameters_json: pt2_resp.srtp_parameters_json.clone(),
+        }))
+        .await;
+    assert!(connect_resp1.is_ok());
+
+    // 6. Connect PipeTransport 2 to PipeTransport 1
+    let connect_resp2 = service
+        .connect_pipe_transport(Request::new(proto::ConnectPipeTransportRequest {
+            router_id: r2.router_id.clone(),
+            pipe_transport_id: pt2_resp.pipe_transport_id.clone(),
+            remote_ip: pt1_resp.ip.clone(),
+            remote_port: pt1_resp.port,
+            remote_srtp_parameters_json: pt1_resp.srtp_parameters_json.clone(),
+        }))
+        .await;
+    assert!(connect_resp2.is_ok());
+}
