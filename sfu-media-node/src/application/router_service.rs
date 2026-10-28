@@ -289,6 +289,9 @@ impl RouterUseCase for RouterService {
                     self.state
                         .router_transports
                         .insert(router_id.clone(), DashSet::new());
+                    self.state
+                        .router_pipe_transports
+                        .insert(router_id.clone(), DashSet::new());
                     self.metrics.inc_active_routers();
 
                     Ok((router_id, worker_index as u32, caps_json))

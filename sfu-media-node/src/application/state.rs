@@ -92,6 +92,7 @@ pub struct EngineState {
     pub peer_worker_affinity: Arc<DashMap<(String, String), usize>>,
     pub piped_producers: Arc<DashMap<String, Vec<PipedProducerEntry>>>,
     pub pipe_singleflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub is_draining: Arc<AtomicBool>,
 }
 
 impl Default for EngineState {
@@ -111,6 +112,7 @@ impl Default for EngineState {
             peer_worker_affinity: Arc::new(DashMap::new()),
             piped_producers: Arc::new(DashMap::new()),
             pipe_singleflight: Arc::new(DashMap::new()),
+            is_draining: Arc::new(AtomicBool::new(false)),
         }
     }
 }

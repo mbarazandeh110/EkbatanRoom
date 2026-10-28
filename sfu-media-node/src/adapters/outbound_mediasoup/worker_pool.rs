@@ -67,22 +67,24 @@ impl WorkerPool {
 impl WorkerPoolPort for WorkerPool {
     fn get_least_loaded(&self) -> (usize, Worker) {
         let mut min_index = 0;
-        let mut min_val = usize::MAX;
+        let mut min_tuple = (usize::MAX, usize::MAX);
 
-        // First pass: find least loaded alive worker based on logical resource score
+        // Find least loaded alive worker based on (resource_score, router_load_count)
         for (i, score) in self.resource_scores.iter().enumerate() {
             if self.dead_flags[i].load(Ordering::SeqCst) {
                 continue;
             }
-            let val = score.load(Ordering::Relaxed);
-            if val < min_val {
-                min_val = val;
+            let s_val = score.load(Ordering::Relaxed);
+            let l_val = self.load_counts[i].load(Ordering::Relaxed);
+            let candidate = (s_val, l_val);
+            if candidate < min_tuple {
+                min_tuple = candidate;
                 min_index = i;
             }
         }
 
         // If all workers are flagged dead, fallback to index 0
-        if min_val == usize::MAX && !self.workers.is_empty() {
+        if min_tuple == (usize::MAX, usize::MAX) && !self.workers.is_empty() {
             tracing::warn!("All workers flagged dead! Falling back to worker 0");
             min_index = 0;
         }

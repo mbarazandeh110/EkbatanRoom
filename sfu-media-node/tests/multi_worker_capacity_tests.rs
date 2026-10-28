@@ -372,3 +372,167 @@ async fn test_node_capacity_metrics_and_events() {
 
     let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
 }
+
+#[tokio::test]
+async fn test_sub_router_audio_observer_and_pipe_transport_cleanup() {
+    let node = Arc::new(MediaNode::new(multi_worker_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create Router
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-sub-audio".to_string(),
+            room_id: "room-sub-audio".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let router_id = r_resp.router_id;
+
+    // 2. Add resource load to Worker 0 so spillover triggers for Peer 2
+    node.worker_pool.add_resource_score(0, 10);
+
+    // 3. Peer 2 creates publisher transport (spills over to Worker 1)
+    let p2_pub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-p2-pub-audio".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-2".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let p2_item = node.state.transports.get(&p2_pub.transport_id).unwrap();
+    assert_eq!(p2_item.worker_index, 1);
+    drop(p2_item);
+
+    // 4. Peer 2 produces AUDIO on Worker 1's sub-router -> MUST add to sub-router's AudioLevelObserver without error!
+    let opus_rtp_params = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "audio/opus",
+                "payloadType": 111,
+                "clockRate": 48000,
+                "channels": 2,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": [],
+        "encodings": [
+            {
+                "ssrc": 55555555
+            }
+        ],
+        "rtcp": {
+            "cname": "audio-sub-test",
+            "reducedSize": true
+        }
+    }"#;
+
+    let p2_prod = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-p2-prod-audio".to_string(),
+            router_id: router_id.clone(),
+            transport_id: p2_pub.transport_id.clone(),
+            peer_id: "peer-2".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_rtp_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!p2_prod.producer_id.is_empty());
+
+    // 5. Create a PipeTransport and ensure it is tracked in state.pipe_transports
+    let pipe_resp = service
+        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+            request_id: "req-pipe-cleanup".to_string(),
+            router_id: router_id.clone(),
+            enable_srtp: false,
+            enable_rtx: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!pipe_resp.pipe_transport_id.is_empty());
+    assert_eq!(node.state.pipe_transports.len(), 1);
+
+    // 6. Close the router -> MUST cascade and clean up PipeTransport (preventing memory leak!)
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: router_id.clone(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: router_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+    assert!(
+        node.state.pipe_transports.is_empty(),
+        "pipe_transports should be empty after close_router"
+    );
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn test_initial_router_distribution_using_load_counts() {
+    let node = Arc::new(MediaNode::new(multi_worker_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // Create room 1 -> should go to worker 0
+    let r1 = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-dist-1".to_string(),
+            room_id: "room-dist-1".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(r1.worker_index, 0);
+
+    // Create room 2 -> since resource_scores are equal (0 == 0), load_counts tie-breaking
+    // should pick worker 1 (load_count 0 vs 1)!
+    let r2 = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-dist-2".to_string(),
+            room_id: "room-dist-2".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(r2.worker_index, 1);
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn test_draining_flag_on_shutdown() {
+    let node = Arc::new(MediaNode::new(multi_worker_config()).await.unwrap());
+    assert!(!node
+        .state
+        .is_draining
+        .load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!node.get_node_capacity_metrics().is_draining);
+
+    node.shutdown(std::time::Duration::from_secs(1))
+        .await
+        .unwrap();
+
+    assert!(node
+        .state
+        .is_draining
+        .load(std::sync::atomic::Ordering::SeqCst));
+    assert!(node.get_node_capacity_metrics().is_draining);
+}

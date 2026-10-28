@@ -174,11 +174,16 @@ impl MediaUseCase for MediaService {
                         .collect();
 
                     if params.kind == MediaKind::Audio {
-                        let observer_opt = self
-                            .state
-                            .routers
-                            .get(&params.router_id)
-                            .map(|r| r.audio_level_observer.clone());
+                        let observer_opt =
+                            self.state.routers.get(&params.router_id).and_then(|r| {
+                                if worker_index == r.worker_index {
+                                    Some(r.audio_level_observer.clone())
+                                } else {
+                                    r.sub_routers
+                                        .get(&worker_index)
+                                        .map(|sub| sub.audio_level_observer.clone())
+                                }
+                            });
                         if let Some(observer) = observer_opt {
                             use mediasoup::rtp_observer::{
                                 RtpObserver, RtpObserverAddProducerOptions,
@@ -190,6 +195,7 @@ impl MediaUseCase for MediaService {
                                 tracing::warn!(
                                     router_id = %params.router_id,
                                     producer_id = %producer_id,
+                                    worker_index = %worker_index,
                                     error = %e,
                                     "Failed to add audio producer to AudioLevelObserver"
                                 );
@@ -412,12 +418,24 @@ impl MediaUseCase for MediaService {
                                     ))
                                 })?;
 
+                            let is_source_paused = self
+                                .state
+                                .producers
+                                .get(&params.producer_id)
+                                .map(|p| p.producer.paused())
+                                .unwrap_or(false);
+
+                            let pipe_producer = pipe_pair.pipe_producer.into_inner();
+                            if is_source_paused {
+                                let _ = pipe_producer.pause().await;
+                            }
+
                             self.worker_pool.add_resource_score(producer_worker_index, 1);
                             self.worker_pool.add_resource_score(sub_worker_index, 1);
 
                             let entry = PipedProducerEntry {
                                 pipe_consumer: pipe_pair.pipe_consumer,
-                                pipe_producer: pipe_pair.pipe_producer.into_inner(),
+                                pipe_producer,
                                 target_router_id: sub_physical_router_id.clone(),
                                 target_worker_index: sub_worker_index,
                             };

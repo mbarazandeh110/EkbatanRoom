@@ -142,7 +142,10 @@ impl MediaNode {
                         active_transports: state_clone.transports.len() as u32,
                         active_producers: state_clone.producers.len() as u32,
                         active_consumers: state_clone.consumers.len() as u32,
-                        is_draining: alive_workers == 0,
+                        is_draining: state_clone
+                            .is_draining
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                            || alive_workers == 0,
                     };
 
                     event_hub_clone.publish_node_capacity(capacity_metrics);
@@ -210,13 +213,21 @@ impl MediaNode {
             active_transports: self.state.transports.len() as u32,
             active_producers: self.state.producers.len() as u32,
             active_consumers: self.state.consumers.len() as u32,
-            is_draining: alive_workers == 0,
+            is_draining: self
+                .state
+                .is_draining
+                .load(std::sync::atomic::Ordering::SeqCst)
+                || alive_workers == 0,
         }
     }
 
     /// Performs bounded graceful shutdown, closing all active routers and cascading resources cleanly.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), SfuDomainError> {
         tracing::info!("Initiating bounded graceful shutdown of MediaNode...");
+
+        self.state
+            .is_draining
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         if let Some(handle) = &self.capacity_task_abort {
             handle.abort();

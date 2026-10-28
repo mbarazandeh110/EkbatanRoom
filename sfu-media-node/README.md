@@ -29,16 +29,19 @@
 | RPC | شرح عملیات |
 | :--- | :--- |
 | `CreateRouter` | ساخت روتر جدید روی کم‌بارترین ورکر یا بازگرداندن روتر فعال موجود برای اتاق |
-| `CreateTransport` | ساخت `WebRtcTransport` جدید به همراه پارامترهای ICE، کاندیدها، فینگرپرینت‌های DTLS و SCTP |
+| `CreateTransport` | ساخت `WebRtcTransport` جدید به همراه پارامترهای ICE، کاندیدها، فینگرپرینت‌های DTLS و SCTP (با پشتیبانی از Worker Spillover) |
 | `ConnectTransport` | اتصال ترنسپورت سمت SFU به فینگرپرینت‌ها و نقش DTLS کلاینت |
+| `CreatePipeTransport` | ایجاد `PipeTransport` جهت توزیع جریان رسانه به روترها/نودهای دیگر (Cascading) |
+| `ConnectPipeTransport` | اتصال `PipeTransport` به آدرس IP و پورت مقصد |
 | `RestartIce` | تجدید اطلاعات احراز هویت ICE کاندیدها |
-| `Produce` | ایجاد پرودیوسر مدیا (صدا یا تصویر) با اعتبارسنجی پارامترهای RTP |
-| `Consume` | ایجاد کانسومر مدیا با بررسی الزامی `router.can_consume` و استخراج لایه‌های تصویر |
-| `SetMediaPaused` | توقف (`pause`) یا ادامه (`resume`) پرودیوسر یا کانسومر |
+| `Produce` | ایجاد پرودیوسر مدیا (صدا یا تصویر) با اعتبارسنجی پارامترهای RTP و اتصال به AudioLevelObserver متناظر |
+| `Consume` | ایجاد کانسومر مدیا با بررسی الزامی `router.can_consume` و Pipe خودکار بین ورکرهای داخلی در صورت سرریز |
+| `SetMediaPaused` | توقف (`pause`) یا ادامه (`resume`) پرودیوسر یا کانسومر (با همگام‌سازی وضعیت در صورت Pipe) |
 | `SetConsumerPreferredLayers` | تنظیم لایه‌های فضایی و زمانی مورد ترجیح در کانسومر |
-| `CloseResource` | بستن آبشاری هریک از منابع (`Router`, `Transport`, `Producer`, `Consumer`) |
-| `GetStats` | استخراج آمار برخط ترافیک، بایت‌ها و بسته‌های ارسالی/دریافتی RTP |
-| `WatchNodeEvents` | استریم رویدادهای نود (`MediaScoreEvent`, `LayerChangedEvent`, `ResourceClosedEvent`) |
+| `CloseResource` | بستن آبشاری هریک از منابع (`Router`, `Transport`, `Producer`, `Consumer`) و پاکسازی PipeTransportها |
+| `GetStats` | استخراج آمار برخط ترافیک، بایت‌ها و بسته‌های ارسالی/دریافتی RTP به صورت موازی |
+| `GetNodeCapacity` | استعلام وضعیت وزن، بار منطقی منابع، مصرف واقعی CPU و بار مؤثر کلی نود |
+| `WatchNodeEvents` | استریم رویدادهای نود (`MediaScoreEvent`, `LayerChangedEvent`, `ResourceClosedEvent`, `ActiveSpeakerEvent`, `NodeCapacityMetrics`) |
 
 ---
 
@@ -52,6 +55,8 @@
 | `RTC_MAX_PORT` | `49999` | انتهای بازه پورت‌های UDP برای ترافیک RTC |
 | `GRPC_PORT` | `50051` | پورت گوش فرا دادن سرور gRPC کنترلی |
 | `MEDIASOUP_WORKER_COUNT` | تعداد هسته‌های CPU | تعداد پروسه‌های ایزوله `mediasoup-worker` |
+| `SFU_WORKER_CAPACITY_WEIGHT` | `1000` | وزن ظرفیت اسمی هر ورکر جهت محاسبه درصد بار منابع فعال |
+| `SFU_WORKER_SPILLOVER_THRESHOLD_PERCENT` | `80.0` | درصد آستانه سرریز ورکر جهت ساخت Sub-Router روی کم‌بارترین ورکر دیگر |
 | `OBS_LOG_LEVEL` | `info` | سطح فیلتر لاگ‌های ساختاریافته (`trace`, `debug`, `info`, `warn`, `error`) |
 | `OBS_LOG_FORMAT` | `json` | قالب خروجی لاگ‌ها (`json` برای لاگ سرورها، `text` برای توسعه محلی) |
 | `OBS_TRACING_ENABLED` | `false` | فعال‌سازی ردیابی توزیع‌شده OpenTelemetry OTLP |
@@ -113,6 +118,9 @@ make test-observability
 # اجرای تست‌های اعتبارسنجی ریفکتورینگ و پاکسازی آبشاری
 make test-refactoring
 
+# اجرای تست‌های سرریز ورکر، توزیع اتاق و ظرفیت نود (Worker Spillover & Capacity)
+make test-capacity
+
 # اجرای سرور به صورت محلی
 make run
 ```
@@ -139,6 +147,10 @@ make run
      - `sfu_grpc_requests_total{method="...", status="..."}` (Counter)
      - `sfu_grpc_request_duration_seconds{method="...", status="..."}` (Histogram)
      - `sfu_idempotency_hits_total` (Counter)
+     - `sfu_node_capacity_weight` (Gauge)
+     - `sfu_node_logical_load_percent` (Gauge)
+     - `sfu_node_cpu_usage_percent` (Gauge)
+     - `sfu_node_effective_load_percent` (Gauge)
    - **خط قرمز:** شناسه‌های با کاردینالیتی بالا (`room_id`, `peer_id`, `transport_id`, `request_id`) **هرگز** در برچسب‌های متریک قرار نمی‌گیرند و منحصراً در فیلدهای لاگ JSON و اتریبیوت‌های Span تریسینگ ثبت می‌شوند.
 4. **پالایش و امنیت اطلاعات حساس (Security Redaction):**
    - گذرواژه‌های ICE (`ice_pwd`) و توکن‌ها در لاگ‌ها با مقدار `[REDACTED]` ماسک می‌شوند.
@@ -205,13 +217,13 @@ docker run --rm -it \
 │   │   ├── media_service.rs    # منطق تولید، مصرف و لایه‌بندی مدیا
 │   │   ├── router_service.rs   # مدیریت روترها و پیشگیری از شرایط مسابقه
 │   │   ├── state.rs            # نگهداری ایزوله و بدون ددلاک وضعیت نود
+│   │   ├── system_sampler.rs   # نمونه‌برداری بلادرنگ CPU و بار سیستم
 │   │   ├── transport_service.rs# مدیریت انتقال WebRTC و تجدید ICE
 │   │   └── mod.rs
 │   ├── config.rs               # تنظیمات شبکه، پورت‌ها، ورکرها و مقادیر پیش‌فرض امن
 │   ├── domain/                 # موجودیت‌ها، خطاها و منطق محض دامنه
 │   │   ├── codecs.rs           # پیکربندی کدک‌های استاندارد Opus, VP8, H.264
 │   │   ├── entities.rs         # مدل‌ها و تایپ‌های مستقل دامنه
-│   │   ├── error.rs            # تعریف خطاهای دامنه
 │   │   ├── errors.rs           # خطاهای تایپ‌شده SfuDomainError
 │   │   ├── idempotency.rs      # ماشین وضعیت کش Idempotency اتمیک با هش SHA-256
 │   │   ├── mod.rs
@@ -234,6 +246,7 @@ docker run --rm -it \
     ├── api_verification.rs     # راستی‌آزمایی API هسته mediasoup
     ├── lifecycle_tests.rs      # آزمون‌های چرخه حیات Router و Transport و ICE Restart
     ├── media_tests.rs          # آزمون‌های Produce/Consume، لایه‌ها، آمار و رویدادها
+    ├── multi_worker_capacity_tests.rs # آزمون‌های Multi-Worker Spillover، سرریز، Pipe و ظرفیت نود
     ├── observability_tests.rs  # آزمون‌های استخراج W3C TraceContext و متریک‌های پرومتئوس
     └── refactoring_verification_tests.rs # آزمون‌های حذف آبشاری، رویدادهای زامبی و ایمنی ورکر
 ```

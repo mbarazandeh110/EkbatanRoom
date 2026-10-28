@@ -561,10 +561,11 @@ impl TransportUseCase for TransportService {
                     self.state
                         .pipe_transports
                         .insert(pipe_transport_id.clone(), item);
-                    if let Some(set) = self.state.router_pipe_transports.get_mut(&params.router_id)
-                    {
-                        set.insert(pipe_transport_id.clone());
-                    }
+                    self.state
+                        .router_pipe_transports
+                        .entry(params.router_id.clone())
+                        .or_default()
+                        .insert(pipe_transport_id.clone());
 
                     Ok(CreatePipeTransportResult {
                         pipe_transport_id,
