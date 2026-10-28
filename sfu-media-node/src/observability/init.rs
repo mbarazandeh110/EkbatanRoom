@@ -51,8 +51,7 @@ pub fn shutdown_tracer_provider() {
 
 /// Initializes structured logging, optional OpenTelemetry distributed tracing, and Prometheus metrics
 pub fn init_observability(config: &ObservabilityConfig) -> Result<(), Box<dyn Error>> {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+    let filter = EnvFilter::new(&config.log_level);
 
     if config.log_format == "json" {
         let otel_layer = build_otel_layer(config)?;

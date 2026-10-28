@@ -25,4 +25,7 @@ pub enum SfuDomainError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Node is draining: {0}")]
+    SystemDraining(String),
 }

@@ -15,24 +15,6 @@ impl std::fmt::Display for MediaKind {
     }
 }
 
-impl From<MediaKind> for mediasoup::prelude::MediaKind {
-    fn from(kind: MediaKind) -> Self {
-        match kind {
-            MediaKind::Audio => mediasoup::prelude::MediaKind::Audio,
-            MediaKind::Video => mediasoup::prelude::MediaKind::Video,
-        }
-    }
-}
-
-impl From<mediasoup::prelude::MediaKind> for MediaKind {
-    fn from(kind: mediasoup::prelude::MediaKind) -> Self {
-        match kind {
-            mediasoup::prelude::MediaKind::Audio => MediaKind::Audio,
-            mediasoup::prelude::MediaKind::Video => MediaKind::Video,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DtlsRole {
     Auto,
@@ -82,4 +64,21 @@ pub struct IceCandidateInfo {
     pub r#type: String,
     pub tcp_type: String,
     pub sdp_candidate_line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeCapacityInfo {
+    pub total_capacity_weight: u32,
+    pub total_workers: u32,
+    pub alive_workers: u32,
+    pub logical_load_percent: f32,
+    pub cpu_usage_percent: f32,
+    pub memory_usage_percent: f32,
+    pub max_worker_load_percent: f32,
+    pub effective_load_percent: f32,
+    pub active_routers: u32,
+    pub active_transports: u32,
+    pub active_producers: u32,
+    pub active_consumers: u32,
+    pub is_draining: bool,
 }

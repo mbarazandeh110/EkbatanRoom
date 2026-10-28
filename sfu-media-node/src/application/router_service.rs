@@ -52,87 +52,14 @@ impl RouterService {
                 "cascade_closed",
             );
 
-            // Close producers on this transport
-            if let Some((_, p_ids)) = self.state.transport_producers.remove(transport_id) {
-                for pid in p_ids {
-                    if let Some((_, p)) = self.state.producers.remove(&pid) {
-                        p.is_closed.store(true, Ordering::SeqCst);
-                        let p_weight = if p.kind == crate::domain::entities::MediaKind::Audio {
-                            2
-                        } else {
-                            10
-                        };
-                        self.worker_pool
-                            .sub_resource_score(p.worker_index, p_weight);
-                        self.metrics.dec_active_producers(&p.kind.to_string());
-
-                        // Close any piped instances of this producer
-                        if let Some((_, piped_entries)) = self.state.piped_producers.remove(&pid) {
-                            for entry in piped_entries {
-                                self.worker_pool.sub_resource_score(p.worker_index, 1);
-                                self.worker_pool
-                                    .sub_resource_score(entry.target_worker_index, 1);
-                                // Dropping entry closes both pipe_consumer and pipe_producer via mediasoup RAII
-                            }
-                        }
-                        self.state
-                            .pipe_singleflight
-                            .retain(|k, _| !k.starts_with(&format!("{}:", pid)));
-
-                        self.event_publisher.publish_resource_closed(
-                            router_id,
-                            "producer",
-                            &pid,
-                            "cascade_closed",
-                        );
-
-                        // Cascade to consumers of this producer
-                        if let Some((_, c_ids)) = self.state.producer_consumers.remove(&pid) {
-                            for cid in c_ids {
-                                if let Some(c) = self.state.cascade_remove_consumer(&cid) {
-                                    let c_weight =
-                                        if c.kind == crate::domain::entities::MediaKind::Audio {
-                                            1
-                                        } else {
-                                            2
-                                        };
-                                    self.worker_pool
-                                        .sub_resource_score(c.worker_index, c_weight);
-                                    self.metrics.dec_active_consumers(&c.kind.to_string());
-                                    self.event_publisher.publish_resource_closed(
-                                        router_id,
-                                        "consumer",
-                                        &cid,
-                                        "cascade_closed",
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Close consumers directly on this transport
-            if let Some((_, c_ids)) = self.state.transport_consumers.remove(transport_id) {
-                for cid in c_ids {
-                    if let Some(c) = self.state.cascade_remove_consumer(&cid) {
-                        let c_weight = if c.kind == crate::domain::entities::MediaKind::Audio {
-                            1
-                        } else {
-                            2
-                        };
-                        self.worker_pool
-                            .sub_resource_score(c.worker_index, c_weight);
-                        self.metrics.dec_active_consumers(&c.kind.to_string());
-                        self.event_publisher.publish_resource_closed(
-                            router_id,
-                            "consumer",
-                            &cid,
-                            "cascade_closed",
-                        );
-                    }
-                }
-            }
+            crate::application::transport_service::cascade_close_producers_and_consumers(
+                &self.state,
+                self.worker_pool.as_ref(),
+                self.metrics.as_ref(),
+                self.event_publisher.as_ref(),
+                router_id,
+                transport_id,
+            );
         }
     }
 }
@@ -145,6 +72,12 @@ impl RouterUseCase for RouterService {
         request_id: &str,
         room_id: &str,
     ) -> Result<(String, u32, String), SfuDomainError> {
+        if self.state.is_draining.load(Ordering::SeqCst) {
+            return Err(SfuDomainError::SystemDraining(
+                "Node is draining; rejecting new router".to_string(),
+            ));
+        }
+
         validation::validate_not_empty("request_id", request_id)?;
         validation::validate_not_empty("room_id", room_id)?;
 

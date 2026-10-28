@@ -5,6 +5,7 @@ use crate::application::state::EngineState;
 use crate::application::system_sampler::SystemSampler;
 use crate::application::transport_service::TransportService;
 use crate::config::Config;
+use crate::domain::entities::NodeCapacityInfo;
 use crate::domain::errors::SfuDomainError;
 use crate::observability::metrics::PrometheusMetrics;
 use crate::ports::inbound::RouterUseCase;
@@ -85,70 +86,29 @@ impl MediaNode {
             loop {
                 ticker.tick().await;
 
-                let alive_workers = worker_pool_clone.alive_workers() as u32;
-                let total_workers = worker_pool_clone.total_workers() as u32;
-                let total_capacity_weight = alive_workers * config_clone.worker_capacity_weight;
-                let total_score = worker_pool_clone.total_resource_score();
-
-                let logical_load_percent = if total_capacity_weight > 0 {
-                    ((total_score as f32 / total_capacity_weight as f32) * 100.0).clamp(0.0, 100.0)
-                } else {
-                    100.0
-                };
-
-                let (cpu_usage_percent, memory_usage_percent) = sampler_clone.sample();
-
-                let mut max_worker_load_percent = 0.0f32;
-                for i in 0..total_workers as usize {
-                    let w_score = worker_pool_clone.worker_resource_score(i);
-                    let w_pct = if config_clone.worker_capacity_weight > 0 {
-                        (w_score as f32 / config_clone.worker_capacity_weight as f32) * 100.0
-                    } else {
-                        0.0
-                    };
-                    if w_pct > max_worker_load_percent {
-                        max_worker_load_percent = w_pct;
-                    }
-                }
-
-                let effective_load_percent = f32::max(logical_load_percent, cpu_usage_percent);
+                let info = compute_node_capacity(
+                    worker_pool_clone.as_ref(),
+                    &config_clone,
+                    &sampler_clone,
+                    &state_clone,
+                );
 
                 // Update Prometheus metrics every tick
                 metrics_clone.update_node_capacity(
-                    total_capacity_weight,
-                    logical_load_percent,
-                    cpu_usage_percent,
-                    effective_load_percent,
+                    info.total_capacity_weight,
+                    info.logical_load_percent,
+                    info.cpu_usage_percent,
+                    info.effective_load_percent,
                 );
 
                 // Check hysteresis and heartbeat
-                let delta = (effective_load_percent - last_published_load).abs();
+                let delta = (info.effective_load_percent - last_published_load).abs();
                 heartbeat_ticks += 1;
 
                 if delta >= 3.0 || heartbeat_ticks >= 5 {
-                    last_published_load = effective_load_percent;
+                    last_published_load = info.effective_load_percent;
                     heartbeat_ticks = 0;
-
-                    let capacity_metrics = crate::proto::sfu::v1::NodeCapacityMetrics {
-                        total_capacity_weight,
-                        total_workers,
-                        alive_workers,
-                        logical_load_percent,
-                        cpu_usage_percent,
-                        memory_usage_percent,
-                        max_worker_load_percent,
-                        effective_load_percent,
-                        active_routers: state_clone.routers.len() as u32,
-                        active_transports: state_clone.transports.len() as u32,
-                        active_producers: state_clone.producers.len() as u32,
-                        active_consumers: state_clone.consumers.len() as u32,
-                        is_draining: state_clone
-                            .is_draining
-                            .load(std::sync::atomic::Ordering::SeqCst)
-                            || alive_workers == 0,
-                    };
-
-                    event_hub_clone.publish_node_capacity(capacity_metrics);
+                    event_hub_clone.publish_node_capacity(&info);
                 }
             }
         });
@@ -171,54 +131,13 @@ impl MediaNode {
         self.state.is_router_active(router_id)
     }
 
-    pub fn get_node_capacity_metrics(&self) -> crate::proto::sfu::v1::NodeCapacityMetrics {
-        let alive_workers = self.worker_pool.alive_workers() as u32;
-        let total_workers = self.worker_pool.total_workers() as u32;
-        let total_capacity_weight = alive_workers * self.config.worker_capacity_weight;
-        let total_score = self.worker_pool.total_resource_score();
-
-        let logical_load_percent = if total_capacity_weight > 0 {
-            ((total_score as f32 / total_capacity_weight as f32) * 100.0).clamp(0.0, 100.0)
-        } else {
-            100.0
-        };
-
-        let (cpu_usage_percent, memory_usage_percent) = self.system_sampler.sample();
-
-        let mut max_worker_load_percent = 0.0f32;
-        for i in 0..total_workers as usize {
-            let w_score = self.worker_pool.worker_resource_score(i);
-            let w_pct = if self.config.worker_capacity_weight > 0 {
-                (w_score as f32 / self.config.worker_capacity_weight as f32) * 100.0
-            } else {
-                0.0
-            };
-            if w_pct > max_worker_load_percent {
-                max_worker_load_percent = w_pct;
-            }
-        }
-
-        let effective_load_percent = f32::max(logical_load_percent, cpu_usage_percent);
-
-        crate::proto::sfu::v1::NodeCapacityMetrics {
-            total_capacity_weight,
-            total_workers,
-            alive_workers,
-            logical_load_percent,
-            cpu_usage_percent,
-            memory_usage_percent,
-            max_worker_load_percent,
-            effective_load_percent,
-            active_routers: self.state.routers.len() as u32,
-            active_transports: self.state.transports.len() as u32,
-            active_producers: self.state.producers.len() as u32,
-            active_consumers: self.state.consumers.len() as u32,
-            is_draining: self
-                .state
-                .is_draining
-                .load(std::sync::atomic::Ordering::SeqCst)
-                || alive_workers == 0,
-        }
+    pub fn get_node_capacity_info(&self) -> NodeCapacityInfo {
+        compute_node_capacity(
+            self.worker_pool.as_ref(),
+            &self.config,
+            &self.system_sampler,
+            &self.state,
+        )
     }
 
     /// Performs bounded graceful shutdown, closing all active routers and cascading resources cleanly.
@@ -249,5 +168,57 @@ impl MediaNode {
 
         tracing::info!("All routers and associated resources closed cleanly.");
         Ok(())
+    }
+}
+
+pub fn compute_node_capacity(
+    worker_pool: &dyn WorkerPoolPort,
+    config: &Config,
+    system_sampler: &SystemSampler,
+    state: &EngineState,
+) -> NodeCapacityInfo {
+    let alive_workers = worker_pool.alive_workers() as u32;
+    let total_workers = worker_pool.total_workers() as u32;
+    let total_capacity_weight = alive_workers * config.worker_capacity_weight;
+    let total_score = worker_pool.total_resource_score();
+
+    let logical_load_percent = if total_capacity_weight > 0 {
+        ((total_score as f32 / total_capacity_weight as f32) * 100.0).clamp(0.0, 100.0)
+    } else {
+        100.0
+    };
+
+    let (cpu_usage_percent, memory_usage_percent) = system_sampler.sample();
+
+    let mut max_worker_load_percent = 0.0f32;
+    for i in 0..total_workers as usize {
+        let w_score = worker_pool.worker_resource_score(i);
+        let w_pct = if config.worker_capacity_weight > 0 {
+            (w_score as f32 / config.worker_capacity_weight as f32) * 100.0
+        } else {
+            0.0
+        };
+        if w_pct > max_worker_load_percent {
+            max_worker_load_percent = w_pct;
+        }
+    }
+
+    let effective_load_percent = f32::max(logical_load_percent, cpu_usage_percent);
+
+    NodeCapacityInfo {
+        total_capacity_weight,
+        total_workers,
+        alive_workers,
+        logical_load_percent,
+        cpu_usage_percent,
+        memory_usage_percent,
+        max_worker_load_percent,
+        effective_load_percent,
+        active_routers: state.routers.len() as u32,
+        active_transports: state.transports.len() as u32,
+        active_producers: state.producers.len() as u32,
+        active_consumers: state.consumers.len() as u32,
+        is_draining: state.is_draining.load(std::sync::atomic::Ordering::SeqCst)
+            || alive_workers == 0,
     }
 }

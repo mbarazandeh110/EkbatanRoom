@@ -127,7 +127,22 @@ impl EventPublisherPort for EventHub {
         let _ = self.sender.send(event);
     }
 
-    fn publish_node_capacity(&self, metrics: proto::NodeCapacityMetrics) {
+    fn publish_node_capacity(&self, info: &crate::domain::entities::NodeCapacityInfo) {
+        let metrics = proto::NodeCapacityMetrics {
+            total_capacity_weight: info.total_capacity_weight,
+            total_workers: info.total_workers,
+            alive_workers: info.alive_workers,
+            logical_load_percent: info.logical_load_percent,
+            cpu_usage_percent: info.cpu_usage_percent,
+            memory_usage_percent: info.memory_usage_percent,
+            max_worker_load_percent: info.max_worker_load_percent,
+            effective_load_percent: info.effective_load_percent,
+            active_routers: info.active_routers,
+            active_transports: info.active_transports,
+            active_producers: info.active_producers,
+            active_consumers: info.active_consumers,
+            is_draining: info.is_draining,
+        };
         let event = proto::NodeEvent {
             router_id: String::new(),
             timestamp_ms: Self::now_ms(),

@@ -65,7 +65,7 @@ docker-run: ## Run Docker container locally with host networking
 		-e RTC_MIN_PORT=40000 \
 		-e RTC_MAX_PORT=49999 \
 		-e GRPC_PORT=50051 \
-		-e RUST_LOG=info \
+		-e OBS_LOG_LEVEL=info \
 		$(IMAGE_NAME):$(IMAGE_TAG)
 
 clean: ## Clean build target directory

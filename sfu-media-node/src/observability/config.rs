@@ -22,6 +22,7 @@ impl Default for ObservabilityConfig {
 impl ObservabilityConfig {
     pub fn from_env() -> Self {
         let log_level = std::env::var("OBS_LOG_LEVEL")
+            .or_else(|_| std::env::var("RUST_LOG"))
             .ok()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "info".to_string());

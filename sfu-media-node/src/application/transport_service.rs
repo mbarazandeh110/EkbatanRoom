@@ -70,6 +70,12 @@ impl TransportUseCase for TransportService {
         &self,
         params: CreateTransportParams,
     ) -> Result<CreateTransportResult, SfuDomainError> {
+        if self.state.is_draining.load(Ordering::SeqCst) {
+            return Err(SfuDomainError::SystemDraining(
+                "Node is draining; rejecting new transport".to_string(),
+            ));
+        }
+
         validation::validate_not_empty("request_id", &params.request_id)?;
         validation::validate_not_empty("router_id", &params.router_id)?;
         validation::validate_not_empty("peer_id", &params.peer_id)?;
@@ -115,30 +121,40 @@ impl TransportUseCase for TransportService {
                         )
                     };
 
-                    // Peer Affinity & Worker Spillover:
+                    // Peer Affinity & Worker Spillover with liveness verification:
                     let peer_affinity_key = (params.router_id.clone(), params.peer_id.clone());
-                    let target_worker = if let Some(existing_worker) =
-                        self.state.peer_worker_affinity.get(&peer_affinity_key)
-                    {
-                        *existing_worker
-                    } else {
-                        let primary_score =
-                            self.worker_pool.worker_resource_score(primary_worker_index);
-                        let threshold_score = ((self.config.worker_capacity_weight as f64)
-                            * (self.config.worker_spillover_threshold_percent as f64)
-                            / 100.0) as usize;
-
-                        let chosen_worker = if primary_score >= threshold_score {
-                            let (least_loaded, _) = self.worker_pool.get_least_loaded();
-                            least_loaded
-                        } else {
-                            primary_worker_index
-                        };
-
-                        self.state
+                    let target_worker = {
+                        let worker_from_affinity = self
+                            .state
                             .peer_worker_affinity
-                            .insert(peer_affinity_key, chosen_worker);
-                        chosen_worker
+                            .get(&peer_affinity_key)
+                            .map(|v| *v);
+
+                        match worker_from_affinity {
+                            Some(w) if self.worker_pool.is_worker_alive(w) => w,
+                            _ => {
+                                let primary_alive =
+                                    self.worker_pool.is_worker_alive(primary_worker_index);
+                                let primary_score =
+                                    self.worker_pool.worker_resource_score(primary_worker_index);
+                                let threshold_score = ((self.config.worker_capacity_weight as f64)
+                                    * (self.config.worker_spillover_threshold_percent as f64)
+                                    / 100.0) as usize;
+
+                                let chosen_worker =
+                                    if !primary_alive || primary_score >= threshold_score {
+                                        let (least_loaded, _) = self.worker_pool.get_least_loaded();
+                                        least_loaded
+                                    } else {
+                                        primary_worker_index
+                                    };
+
+                                self.state
+                                    .peer_worker_affinity
+                                    .insert(peer_affinity_key, chosen_worker);
+                                chosen_worker
+                            }
+                        }
                     };
 
                     let (router, physical_router_id, worker_index) =
@@ -149,12 +165,23 @@ impl TransportUseCase for TransportService {
                                 primary_worker_index,
                             )
                         } else {
-                            let existing_sub =
-                                sub_routers.get(&target_worker).map(|s| s.router.clone());
+                            // Double-checked locking with singleflight to eliminate concurrent duplicate sub-router creation
+                            let sub_router = if let Some(sub) = sub_routers.get(&target_worker) {
+                                sub.router.clone()
+                            } else {
+                                let sf_key = (params.router_id.clone(), target_worker);
+                                let lock = self
+                                    .state
+                                    .sub_router_singleflight
+                                    .entry(sf_key.clone())
+                                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                                    .clone();
 
-                            let sub_router = match existing_sub {
-                                Some(r) => r,
-                                None => {
+                                let _guard = lock.lock().await;
+
+                                let router = if let Some(sub) = sub_routers.get(&target_worker) {
+                                    sub.router.clone()
+                                } else {
                                     let worker = self
                                         .worker_pool
                                         .get_worker(target_worker)
@@ -227,7 +254,11 @@ impl TransportUseCase for TransportService {
                                     sub_routers.insert(target_worker, sub_item);
                                     self.worker_pool.increment_load(target_worker);
                                     new_sub
-                                }
+                                };
+
+                                drop(_guard);
+                                self.state.sub_router_singleflight.remove(&sf_key);
+                                router
                             };
 
                             let id = sub_router.id().to_string();
@@ -422,13 +453,10 @@ impl TransportUseCase for TransportService {
             }
         };
 
-        let fp_tuples: Vec<(String, String)> = params
-            .remote_fingerprints
-            .into_iter()
-            .map(|fp| (fp.algorithm, fp.value))
-            .collect();
-        let fingerprints = parse_dtls_fingerprints(&fp_tuples)?;
-        let dtls_parameters = DtlsParameters { role, fingerprints };
+        let dtls_parameters = DtlsParameters {
+            role,
+            fingerprints: params.remote_fingerprints,
+        };
 
         transport
             .connect(WebRtcTransportRemoteParameters { dtls_parameters })
@@ -488,6 +516,12 @@ impl TransportUseCase for TransportService {
         &self,
         params: CreatePipeTransportParams,
     ) -> Result<CreatePipeTransportResult, SfuDomainError> {
+        if self.state.is_draining.load(Ordering::SeqCst) {
+            return Err(SfuDomainError::SystemDraining(
+                "Node is draining; rejecting new pipe transport".to_string(),
+            ));
+        }
+
         validation::validate_not_empty("request_id", &params.request_id)?;
         validation::validate_not_empty("router_id", &params.router_id)?;
 
@@ -705,115 +739,102 @@ impl TransportUseCase for TransportService {
                 "transport_closed",
             );
 
-            // Cascade close producers on this transport
-            if let Some((_, p_ids)) = self.state.transport_producers.remove(transport_id) {
-                for pid in p_ids {
-                    if let Some((_, p)) = self.state.producers.remove(&pid) {
-                        p.is_closed.store(true, Ordering::SeqCst);
-                        let p_weight = if p.kind == crate::domain::entities::MediaKind::Audio {
-                            2
-                        } else {
-                            10
-                        };
-                        self.worker_pool
-                            .sub_resource_score(p.worker_index, p_weight);
-                        self.metrics.dec_active_producers(&p.kind.to_string());
-
-                        // Close any piped instances of this producer
-                        if let Some((_, piped_entries)) = self.state.piped_producers.remove(&pid) {
-                            for entry in piped_entries {
-                                self.worker_pool.sub_resource_score(p.worker_index, 1);
-                                self.worker_pool
-                                    .sub_resource_score(entry.target_worker_index, 1);
-                                // Dropping entry closes both pipe_consumer and pipe_producer via mediasoup RAII
-                            }
-                        }
-                        self.state
-                            .pipe_singleflight
-                            .retain(|k, _| !k.starts_with(&format!("{}:", pid)));
-
-                        self.event_publisher.publish_resource_closed(
-                            router_id,
-                            "producer",
-                            &pid,
-                            "cascade_closed",
-                        );
-
-                        // Cascade close all consumers connected to this producer
-                        if let Some((_, c_ids)) = self.state.producer_consumers.remove(&pid) {
-                            for cid in c_ids {
-                                if let Some(c) = self.state.cascade_remove_consumer(&cid) {
-                                    let c_weight =
-                                        if c.kind == crate::domain::entities::MediaKind::Audio {
-                                            1
-                                        } else {
-                                            2
-                                        };
-                                    self.worker_pool
-                                        .sub_resource_score(c.worker_index, c_weight);
-                                    self.metrics.dec_active_consumers(&c.kind.to_string());
-                                    self.event_publisher.publish_resource_closed(
-                                        router_id,
-                                        "consumer",
-                                        &cid,
-                                        "cascade_closed",
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Cascade close consumers directly on this transport
-            if let Some((_, c_ids)) = self.state.transport_consumers.remove(transport_id) {
-                for cid in c_ids {
-                    if let Some(c) = self.state.cascade_remove_consumer(&cid) {
-                        let c_weight = if c.kind == crate::domain::entities::MediaKind::Audio {
-                            1
-                        } else {
-                            2
-                        };
-                        self.worker_pool
-                            .sub_resource_score(c.worker_index, c_weight);
-                        self.metrics.dec_active_consumers(&c.kind.to_string());
-                        self.event_publisher.publish_resource_closed(
-                            router_id,
-                            "consumer",
-                            &cid,
-                            "cascade_closed",
-                        );
-                    }
-                }
-            }
+            cascade_close_producers_and_consumers(
+                &self.state,
+                self.worker_pool.as_ref(),
+                self.metrics.as_ref(),
+                self.event_publisher.as_ref(),
+                router_id,
+                transport_id,
+            );
         }
 
         Ok(())
     }
 }
 
-fn parse_dtls_fingerprints(
-    fingerprints: &[(String, String)],
-) -> Result<Vec<DtlsFingerprint>, SfuDomainError> {
-    if fingerprints.is_empty() {
-        return Err(SfuDomainError::InvalidArgument(
-            "At least one DTLS fingerprint is required".to_string(),
-        ));
+pub(crate) fn cascade_close_producers_and_consumers(
+    state: &crate::application::state::EngineState,
+    worker_pool: &dyn crate::ports::outbound::WorkerPoolPort,
+    metrics: &dyn crate::ports::outbound::MetricsPort,
+    event_publisher: &dyn crate::ports::outbound::EventPublisherPort,
+    router_id: &str,
+    transport_id: &str,
+) {
+    // Cascade close producers on this transport
+    if let Some((_, p_ids)) = state.transport_producers.remove(transport_id) {
+        for pid in p_ids {
+            if let Some((_, p)) = state.producers.remove(&pid) {
+                p.is_closed.store(true, Ordering::SeqCst);
+                let p_weight = if p.kind == crate::domain::entities::MediaKind::Audio {
+                    2
+                } else {
+                    10
+                };
+                worker_pool.sub_resource_score(p.worker_index, p_weight);
+                metrics.dec_active_producers(&p.kind.to_string());
+
+                // Close any piped instances of this producer
+                if let Some((_, piped_entries)) = state.piped_producers.remove(&pid) {
+                    for entry in piped_entries {
+                        worker_pool.sub_resource_score(p.worker_index, 1);
+                        worker_pool.sub_resource_score(entry.target_worker_index, 1);
+                        // Dropping entry closes both pipe_consumer and pipe_producer via mediasoup RAII
+                    }
+                }
+                state
+                    .pipe_singleflight
+                    .retain(|k, _| !k.starts_with(&format!("{}:", pid)));
+
+                event_publisher.publish_resource_closed(
+                    router_id,
+                    "producer",
+                    &pid,
+                    "cascade_closed",
+                );
+
+                // Cascade close all consumers connected to this producer
+                if let Some((_, c_ids)) = state.producer_consumers.remove(&pid) {
+                    for cid in c_ids {
+                        if let Some(c) = state.cascade_remove_consumer(&cid) {
+                            let c_weight = if c.kind == crate::domain::entities::MediaKind::Audio {
+                                1
+                            } else {
+                                2
+                            };
+                            worker_pool.sub_resource_score(c.worker_index, c_weight);
+                            metrics.dec_active_consumers(&c.kind.to_string());
+                            event_publisher.publish_resource_closed(
+                                router_id,
+                                "consumer",
+                                &cid,
+                                "cascade_closed",
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    let mut result = Vec::with_capacity(fingerprints.len());
-    for (algorithm, value) in fingerprints {
-        let json_val = serde_json::json!({
-            "algorithm": algorithm.to_lowercase(),
-            "value": value
-        });
-        let fp: DtlsFingerprint = serde_json::from_value(json_val).map_err(|e| {
-            SfuDomainError::InvalidArgument(format!(
-                "Invalid DTLS fingerprint with algorithm '{algorithm}': {e}"
-            ))
-        })?;
-        result.push(fp);
+    // Cascade close consumers directly on this transport
+    if let Some((_, c_ids)) = state.transport_consumers.remove(transport_id) {
+        for cid in c_ids {
+            if let Some(c) = state.cascade_remove_consumer(&cid) {
+                let c_weight = if c.kind == crate::domain::entities::MediaKind::Audio {
+                    1
+                } else {
+                    2
+                };
+                worker_pool.sub_resource_score(c.worker_index, c_weight);
+                metrics.dec_active_consumers(&c.kind.to_string());
+                event_publisher.publish_resource_closed(
+                    router_id,
+                    "consumer",
+                    &cid,
+                    "cascade_closed",
+                );
+            }
+        }
     }
-
-    Ok(result)
 }

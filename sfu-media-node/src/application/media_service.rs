@@ -114,7 +114,7 @@ impl MediaUseCase for MediaService {
                         )
                     };
 
-                    let ms_kind: mediasoup::prelude::MediaKind = params.kind.into();
+                    let ms_kind = to_mediasoup_kind(params.kind);
 
                     let mut options = ProducerOptions::new(ms_kind, params.rtp_parameters);
                     options.paused = params.paused;
@@ -127,13 +127,14 @@ impl MediaUseCase for MediaService {
                     let producer_id = producer.id().to_string();
                     let is_closed = Arc::new(AtomicBool::new(false));
 
-                    // Register score callback
+                    // Register score callback with hot-path change throttling
                     let event_publisher = self.event_publisher.clone();
                     let r_id = params.router_id.clone();
                     let p_id = producer_id.clone();
                     let peer_id = params.peer_id.clone();
                     let state_ref = self.state.clone();
                     let closed_ref = is_closed.clone();
+                    let last_score = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
 
                     producer
                         .on_score(move |scores| {
@@ -149,6 +150,12 @@ impl MediaUseCase for MediaService {
                                 (scores.iter().map(|s| s.score as u32).sum::<u32>())
                                     / (scores.len() as u32)
                             };
+
+                            let prev = last_score.swap(avg_score, Ordering::Relaxed);
+                            if prev == avg_score {
+                                return; // Skip if score hasn't changed (Hot-path throttling)
+                            }
+
                             let all_scores = scores.iter().map(|s| s.score as u32).collect();
 
                             event_publisher
@@ -335,7 +342,7 @@ impl MediaUseCase for MediaService {
                         let lock = self
                             .state
                             .pipe_singleflight
-                            .entry(singleflight_key)
+                            .entry(singleflight_key.clone())
                             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                             .clone();
 
@@ -446,6 +453,9 @@ impl MediaUseCase for MediaService {
                                 .or_default()
                                 .push(entry);
                         }
+
+                        drop(_guard);
+                        self.state.pipe_singleflight.remove(&singleflight_key);
                     }
 
                     // Extract target router where subscriber transport lives
@@ -511,6 +521,7 @@ impl MediaUseCase for MediaService {
                     let state_ref = self.state.clone();
                     let closed_ref = is_closed.clone();
 
+                    let last_consumer_score = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
                     consumer
                         .on_score({
                             let r_id = r_id.clone();
@@ -519,6 +530,7 @@ impl MediaUseCase for MediaService {
                             let event_publisher = event_publisher.clone();
                             let state_ref = state_ref.clone();
                             let closed_ref = closed_ref.clone();
+                            let last_score_ref = last_consumer_score.clone();
 
                             move |score| {
                                 if closed_ref.load(Ordering::SeqCst)
@@ -527,12 +539,18 @@ impl MediaUseCase for MediaService {
                                     return;
                                 }
 
+                                let cur_score = score.score as u32;
+                                let prev = last_score_ref.swap(cur_score, Ordering::Relaxed);
+                                if prev == cur_score {
+                                    return; // Hot-Path throttling: skip if score unchanged
+                                }
+
                                 event_publisher.publish_score(
                                     &r_id,
                                     &c_id,
                                     &peer_id,
                                     false,
-                                    score.score as u32,
+                                    cur_score,
                                     score.producer_scores.iter().map(|&s| s as u32).collect(),
                                 );
                             }
@@ -632,7 +650,7 @@ impl MediaUseCase for MediaService {
                         .map(|t| t as i32)
                         .unwrap_or(-1);
 
-                    let consumer_kind: MediaKind = consumer.kind().into();
+                    let consumer_kind: MediaKind = from_mediasoup_kind(consumer.kind());
 
                     let item = ConsumerItem {
                         consumer,
@@ -1129,5 +1147,19 @@ impl MediaUseCase for MediaService {
                 "Invalid resource_type '{other}' for get_stats"
             ))),
         }
+    }
+}
+
+pub(crate) fn to_mediasoup_kind(kind: MediaKind) -> mediasoup::prelude::MediaKind {
+    match kind {
+        MediaKind::Audio => mediasoup::prelude::MediaKind::Audio,
+        MediaKind::Video => mediasoup::prelude::MediaKind::Video,
+    }
+}
+
+pub(crate) fn from_mediasoup_kind(kind: mediasoup::prelude::MediaKind) -> MediaKind {
+    match kind {
+        mediasoup::prelude::MediaKind::Audio => MediaKind::Audio,
+        mediasoup::prelude::MediaKind::Video => MediaKind::Video,
     }
 }

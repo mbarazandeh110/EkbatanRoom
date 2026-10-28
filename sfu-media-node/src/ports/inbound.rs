@@ -30,7 +30,7 @@ pub struct ConnectTransportParams {
     pub router_id: String,
     pub transport_id: String,
     pub dtls_role: DtlsRole,
-    pub remote_fingerprints: Vec<DtlsFingerprintInfo>,
+    pub remote_fingerprints: Vec<mediasoup::types::data_structures::DtlsFingerprint>,
 }
 
 #[derive(Debug, Clone)]

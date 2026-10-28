@@ -1,6 +1,7 @@
 use crate::adapters::inbound_grpc::mapper;
 use crate::application::MediaNode;
 use crate::ports::inbound::{MediaUseCase, RouterUseCase, TransportUseCase};
+use crate::ports::outbound::MetricsPort;
 use crate::proto::sfu::v1 as proto;
 use crate::proto::sfu::v1::sfu_media_engine_service_server::SfuMediaEngineService;
 use std::pin::Pin;
@@ -22,6 +23,7 @@ impl GrpcMediaEngineService {
 
 async fn instrument_rpc<Req, Resp, Fut>(
     method: &'static str,
+    metrics: Arc<dyn MetricsPort>,
     request: Request<Req>,
     handler: impl FnOnce(Req) -> Fut,
 ) -> Result<Response<Resp>, Status>
@@ -35,6 +37,8 @@ where
         trace_id = tracing::field::Empty,
         span_id = tracing::field::Empty,
         request_id = tracing::field::Empty,
+        room_id = tracing::field::Empty,
+        peer_id = tracing::field::Empty,
         status = tracing::field::Empty,
     );
 
@@ -58,7 +62,7 @@ where
     };
 
     span.record("status", status_str);
-    crate::observability::metrics::record_grpc_request(method, status_str, duration);
+    metrics.record_grpc_request(method, status_str, duration);
 
     res.map(Response::new)
 }
@@ -73,18 +77,25 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::CreateRouterRequest>,
     ) -> Result<Response<proto::CreateRouterResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("CreateRouter", request, move |req| async move {
-            let (router_id, worker_index, caps_json) = node
-                .router_service
-                .create_router(&req.request_id, &req.room_id)
-                .await
-                .map_err(Status::from)?;
-            Ok(mapper::to_create_router_response(
-                router_id,
-                worker_index,
-                caps_json,
-            ))
-        })
+        instrument_rpc(
+            "CreateRouter",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::Span::current().record("request_id", &req.request_id);
+                tracing::Span::current().record("room_id", &req.room_id);
+                let (router_id, worker_index, caps_json) = node
+                    .router_service
+                    .create_router(&req.request_id, &req.room_id)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_create_router_response(
+                    router_id,
+                    worker_index,
+                    caps_json,
+                ))
+            },
+        )
         .await
     }
 
@@ -93,15 +104,25 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::CreateTransportRequest>,
     ) -> Result<Response<proto::CreateTransportResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("CreateTransport", request, move |req| async move {
-            let params = mapper::from_create_transport_request(req);
-            let res = node
-                .transport_service
-                .create_transport(params)
-                .await
-                .map_err(Status::from)?;
-            Ok(mapper::to_create_transport_response(res))
-        })
+        instrument_rpc(
+            "CreateTransport",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::Span::current().record("request_id", &req.request_id);
+                tracing::Span::current().record("peer_id", &req.peer_id);
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params = mapper::from_create_transport_request(req);
+                let res = node
+                    .transport_service
+                    .create_transport(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_create_transport_response(res))
+            },
+        )
         .await
     }
 
@@ -110,14 +131,25 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::ConnectTransportRequest>,
     ) -> Result<Response<proto::ConnectTransportResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("ConnectTransport", request, move |req| async move {
-            let params = mapper::from_connect_transport_request(req).map_err(Status::from)?;
-            node.transport_service
-                .connect_transport(params)
-                .await
-                .map_err(Status::from)?;
-            Ok(proto::ConnectTransportResponse {})
-        })
+        instrument_rpc(
+            "ConnectTransport",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                if let Some(t) = node.state.transports.get(&req.transport_id) {
+                    tracing::Span::current().record("peer_id", &t.peer_id);
+                }
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params = mapper::from_connect_transport_request(req).map_err(Status::from)?;
+                node.transport_service
+                    .connect_transport(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(proto::ConnectTransportResponse {})
+            },
+        )
         .await
     }
 
@@ -126,14 +158,25 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::RestartIceRequest>,
     ) -> Result<Response<proto::RestartIceResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("RestartIce", request, move |req| async move {
-            let res = node
-                .transport_service
-                .restart_ice(&req.router_id, &req.transport_id)
-                .await
-                .map_err(Status::from)?;
-            Ok(mapper::to_restart_ice_response(res))
-        })
+        instrument_rpc(
+            "RestartIce",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                if let Some(t) = node.state.transports.get(&req.transport_id) {
+                    tracing::Span::current().record("peer_id", &t.peer_id);
+                }
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let res = node
+                    .transport_service
+                    .restart_ice(&req.router_id, &req.transport_id)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_restart_ice_response(res))
+            },
+        )
         .await
     }
 
@@ -142,15 +185,25 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::ProduceRequest>,
     ) -> Result<Response<proto::ProduceResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("Produce", request, move |req| async move {
-            let params = mapper::from_produce_request(req).map_err(Status::from)?;
-            let res = node
-                .media_service
-                .produce(params)
-                .await
-                .map_err(Status::from)?;
-            Ok(mapper::to_produce_response(res))
-        })
+        instrument_rpc(
+            "Produce",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::Span::current().record("request_id", &req.request_id);
+                tracing::Span::current().record("peer_id", &req.peer_id);
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params = mapper::from_produce_request(req).map_err(Status::from)?;
+                let res = node
+                    .media_service
+                    .produce(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_produce_response(res))
+            },
+        )
         .await
     }
 
@@ -159,15 +212,27 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::ConsumeRequest>,
     ) -> Result<Response<proto::ConsumeResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("Consume", request, move |req| async move {
-            let params = mapper::from_consume_request(req).map_err(Status::from)?;
-            let res = node
-                .media_service
-                .consume(params)
-                .await
-                .map_err(Status::from)?;
-            Ok(mapper::to_consume_response(res))
-        })
+        instrument_rpc(
+            "Consume",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::Span::current().record("request_id", &req.request_id);
+                if let Some(t) = node.state.transports.get(&req.subscriber_transport_id) {
+                    tracing::Span::current().record("peer_id", &t.peer_id);
+                }
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params = mapper::from_consume_request(req).map_err(Status::from)?;
+                let res = node
+                    .media_service
+                    .consume(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_consume_response(res))
+            },
+        )
         .await
     }
 
@@ -176,22 +241,30 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::SetMediaPausedRequest>,
     ) -> Result<Response<proto::SetMediaPausedResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("SetMediaPaused", request, move |req| async move {
-            let is_producer = match req.resource_type() {
-                proto::ResourceType::Producer => true,
-                proto::ResourceType::Consumer => false,
-                _ => {
-                    return Err(Status::invalid_argument(
-                        "SetMediaPaused requires Producer or Consumer ResourceType",
-                    ));
+        instrument_rpc(
+            "SetMediaPaused",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
                 }
-            };
-            node.media_service
-                .set_media_paused(&req.router_id, &req.resource_id, is_producer, req.paused)
-                .await
-                .map_err(Status::from)?;
-            Ok(proto::SetMediaPausedResponse {})
-        })
+                let is_producer = match req.resource_type() {
+                    proto::ResourceType::Producer => true,
+                    proto::ResourceType::Consumer => false,
+                    _ => {
+                        return Err(Status::invalid_argument(
+                            "SetMediaPaused requires Producer or Consumer ResourceType",
+                        ));
+                    }
+                };
+                node.media_service
+                    .set_media_paused(&req.router_id, &req.resource_id, is_producer, req.paused)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(proto::SetMediaPausedResponse {})
+            },
+        )
         .await
     }
 
@@ -202,8 +275,12 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         let node = self.node.clone();
         instrument_rpc(
             "SetConsumerPreferredLayers",
+            self.node.metrics.clone(),
             request,
             move |req| async move {
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
                 let (router_id, consumer_id, layers) =
                     mapper::from_set_consumer_preferred_layers_request(req)
                         .map_err(Status::from)?;
@@ -222,47 +299,55 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::CloseResourceRequest>,
     ) -> Result<Response<proto::CloseResourceResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("CloseResource", request, move |req| async move {
-            match req.resource_type() {
-                proto::ResourceType::Router => {
-                    if !req.router_id.is_empty()
-                        && !req.resource_id.is_empty()
-                        && req.router_id != req.resource_id
-                    {
-                        return Err(Status::invalid_argument(
-                            "router_id and resource_id must match when closing a Router",
-                        ));
+        instrument_rpc(
+            "CloseResource",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                match req.resource_type() {
+                    proto::ResourceType::Router => {
+                        if !req.router_id.is_empty()
+                            && !req.resource_id.is_empty()
+                            && req.router_id != req.resource_id
+                        {
+                            return Err(Status::invalid_argument(
+                                "router_id and resource_id must match when closing a Router",
+                            ));
+                        }
+                        let r_id = if !req.resource_id.is_empty() {
+                            &req.resource_id
+                        } else {
+                            &req.router_id
+                        };
+                        node.router_service
+                            .close_router(r_id)
+                            .map_err(Status::from)?;
                     }
-                    let r_id = if !req.resource_id.is_empty() {
-                        &req.resource_id
-                    } else {
-                        &req.router_id
-                    };
-                    node.router_service
-                        .close_router(r_id)
-                        .map_err(Status::from)?;
+                    proto::ResourceType::Transport => {
+                        node.transport_service
+                            .close_transport(&req.router_id, &req.resource_id)
+                            .map_err(Status::from)?;
+                    }
+                    proto::ResourceType::Producer => {
+                        node.media_service
+                            .close_producer(&req.router_id, &req.resource_id)
+                            .map_err(Status::from)?;
+                    }
+                    proto::ResourceType::Consumer => {
+                        node.media_service
+                            .close_consumer(&req.router_id, &req.resource_id)
+                            .map_err(Status::from)?;
+                    }
+                    proto::ResourceType::Unspecified => {
+                        return Err(Status::invalid_argument("Resource type unspecified"));
+                    }
                 }
-                proto::ResourceType::Transport => {
-                    node.transport_service
-                        .close_transport(&req.router_id, &req.resource_id)
-                        .map_err(Status::from)?;
-                }
-                proto::ResourceType::Producer => {
-                    node.media_service
-                        .close_producer(&req.router_id, &req.resource_id)
-                        .map_err(Status::from)?;
-                }
-                proto::ResourceType::Consumer => {
-                    node.media_service
-                        .close_consumer(&req.router_id, &req.resource_id)
-                        .map_err(Status::from)?;
-                }
-                proto::ResourceType::Unspecified => {
-                    return Err(Status::invalid_argument("Resource type unspecified"));
-                }
-            }
-            Ok(proto::CloseResourceResponse {})
-        })
+                Ok(proto::CloseResourceResponse {})
+            },
+        )
         .await
     }
 
@@ -271,24 +356,32 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::GetStatsRequest>,
     ) -> Result<Response<proto::GetStatsResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("GetStats", request, move |req| async move {
-            let r_type = match req.resource_type() {
-                proto::ResourceType::Transport => "transport",
-                proto::ResourceType::Producer => "producer",
-                proto::ResourceType::Consumer => "consumer",
-                _ => {
-                    return Err(Status::invalid_argument(
-                        "GetStats requires Transport, Producer, or Consumer ResourceType",
-                    ));
+        instrument_rpc(
+            "GetStats",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
                 }
-            };
-            let stats = node
-                .media_service
-                .get_stats(&req.router_id, &req.resource_id, r_type)
-                .await
-                .map_err(Status::from)?;
-            Ok(mapper::to_get_stats_response(stats))
-        })
+                let r_type = match req.resource_type() {
+                    proto::ResourceType::Transport => "transport",
+                    proto::ResourceType::Producer => "producer",
+                    proto::ResourceType::Consumer => "consumer",
+                    _ => {
+                        return Err(Status::invalid_argument(
+                            "GetStats requires Transport, Producer, or Consumer ResourceType",
+                        ));
+                    }
+                };
+                let stats = node
+                    .media_service
+                    .get_stats(&req.router_id, &req.resource_id, r_type)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_get_stats_response(stats))
+            },
+        )
         .await
     }
 
@@ -303,6 +396,8 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
             trace_id = tracing::field::Empty,
             span_id = tracing::field::Empty,
             request_id = tracing::field::Empty,
+            room_id = tracing::field::Empty,
+            peer_id = tracing::field::Empty,
             status = "ok",
         );
         crate::observability::tracing_extractor::attach_trace_context(&span, request.metadata());
@@ -332,7 +427,7 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
             }
         });
 
-        crate::observability::metrics::record_grpc_request(
+        self.node.metrics.record_grpc_request(
             "WatchNodeEvents",
             "ok",
             start.elapsed().as_secs_f64(),
@@ -346,9 +441,16 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::GetNodeCapacityRequest>,
     ) -> Result<Response<proto::NodeCapacityMetrics>, Status> {
         let node = self.node.clone();
-        instrument_rpc("GetNodeCapacity", request, move |_req| async move {
-            Ok(node.get_node_capacity_metrics())
-        })
+        instrument_rpc(
+            "GetNodeCapacity",
+            self.node.metrics.clone(),
+            request,
+            move |_req| async move {
+                Ok(mapper::to_node_capacity_metrics(
+                    node.get_node_capacity_info(),
+                ))
+            },
+        )
         .await
     }
 
@@ -357,15 +459,24 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::CreatePipeTransportRequest>,
     ) -> Result<Response<proto::CreatePipeTransportResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("CreatePipeTransport", request, move |req| async move {
-            let params = mapper::from_create_pipe_transport_request(req);
-            let res = node
-                .transport_service
-                .create_pipe_transport(params)
-                .await
-                .map_err(Status::from)?;
-            Ok(mapper::to_create_pipe_transport_response(res))
-        })
+        instrument_rpc(
+            "CreatePipeTransport",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::Span::current().record("request_id", &req.request_id);
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params = mapper::from_create_pipe_transport_request(req);
+                let res = node
+                    .transport_service
+                    .create_pipe_transport(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_create_pipe_transport_response(res))
+            },
+        )
         .await
     }
 
@@ -374,14 +485,23 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         request: Request<proto::ConnectPipeTransportRequest>,
     ) -> Result<Response<proto::ConnectPipeTransportResponse>, Status> {
         let node = self.node.clone();
-        instrument_rpc("ConnectPipeTransport", request, move |req| async move {
-            let params = mapper::from_connect_pipe_transport_request(req).map_err(Status::from)?;
-            node.transport_service
-                .connect_pipe_transport(params)
-                .await
-                .map_err(Status::from)?;
-            Ok(proto::ConnectPipeTransportResponse {})
-        })
+        instrument_rpc(
+            "ConnectPipeTransport",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params =
+                    mapper::from_connect_pipe_transport_request(req).map_err(Status::from)?;
+                node.transport_service
+                    .connect_pipe_transport(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(proto::ConnectPipeTransportResponse {})
+            },
+        )
         .await
     }
 }

@@ -354,7 +354,7 @@ async fn test_node_capacity_metrics_and_events() {
 
     // Trigger an immediate capacity event by publishing one
     node.event_hub
-        .publish_node_capacity(node.get_node_capacity_metrics());
+        .publish_node_capacity(&node.get_node_capacity_info());
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
         .await
@@ -524,7 +524,7 @@ async fn test_draining_flag_on_shutdown() {
         .state
         .is_draining
         .load(std::sync::atomic::Ordering::SeqCst));
-    assert!(!node.get_node_capacity_metrics().is_draining);
+    assert!(!node.get_node_capacity_info().is_draining);
 
     node.shutdown(std::time::Duration::from_secs(1))
         .await
@@ -534,5 +534,147 @@ async fn test_draining_flag_on_shutdown() {
         .state
         .is_draining
         .load(std::sync::atomic::Ordering::SeqCst));
-    assert!(node.get_node_capacity_metrics().is_draining);
+    assert!(node.get_node_capacity_info().is_draining);
+}
+
+#[tokio::test]
+async fn test_draining_rejects_new_resources() {
+    let node = Arc::new(MediaNode::new(multi_worker_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // Mark as draining
+    node.state
+        .is_draining
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // 1. Create Router should be rejected with Unavailable
+    let r_err = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-draining".to_string(),
+            room_id: "room-draining".to_string(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(r_err.code(), tonic::Code::Unavailable);
+
+    // 2. Create Transport should be rejected with Unavailable
+    let t_err = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-t-draining".to_string(),
+            router_id: "router-draining".to_string(),
+            peer_id: "peer-draining".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(t_err.code(), tonic::Code::Unavailable);
+
+    // 3. Create PipeTransport should be rejected with Unavailable
+    let p_err = service
+        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+            request_id: "req-p-draining".to_string(),
+            router_id: "router-draining".to_string(),
+            enable_srtp: false,
+            enable_rtx: false,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(p_err.code(), tonic::Code::Unavailable);
+}
+
+#[tokio::test]
+async fn test_dead_primary_worker_spillover() {
+    let node = Arc::new(MediaNode::new(multi_worker_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create router (will be assigned to worker 0)
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-dead-worker".to_string(),
+            room_id: "room-dead-worker".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(r_resp.worker_index, 0);
+
+    // 2. Mark worker 0 as dead (simulating mediasoup-worker crash)
+    node.worker_pool.mark_dead(0);
+    assert!(!node.worker_pool.is_worker_alive(0));
+
+    // 3. New peer creates transport on this router
+    // Even though worker 0 is primary, because it is dead, transport must fallback to worker 1
+    let t_resp = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-t-dead-worker".to_string(),
+            router_id: r_resp.router_id.clone(),
+            peer_id: "peer-fallback".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let item = node.state.transports.get(&t_resp.transport_id).unwrap();
+    assert_eq!(item.worker_index, 1);
+    drop(item);
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn test_sub_router_concurrent_creation_singleflight() {
+    let node = Arc::new(MediaNode::new(multi_worker_config()).await.unwrap());
+    let service = Arc::new(GrpcMediaEngineService::new(node.clone()));
+
+    // 1. Create router on worker 0
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-conc".to_string(),
+            room_id: "room-conc".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let router_id = r_resp.router_id;
+
+    // 2. Exceed spillover threshold on worker 0 so new peers spillover to worker 1
+    node.worker_pool.add_resource_score(0, 10);
+
+    // 3. Launch 5 concurrent create_transport requests for different peers
+    let mut handles = Vec::new();
+    for i in 0..5 {
+        let svc = service.clone();
+        let rid = router_id.clone();
+        let peer_id = format!("peer-conc-{}", i);
+        let req_id = format!("req-conc-{}", i);
+        handles.push(tokio::spawn(async move {
+            svc.create_transport(Request::new(proto::CreateTransportRequest {
+                request_id: req_id,
+                router_id: rid,
+                peer_id,
+                is_publisher: true,
+                enable_sctp: false,
+            }))
+            .await
+        }));
+    }
+
+    for h in handles {
+        let res = h.await.unwrap().unwrap().into_inner();
+        let item = node.state.transports.get(&res.transport_id).unwrap();
+        assert_eq!(item.worker_index, 1);
+    }
+
+    // 4. Verify that exactly ONE sub-router was created on worker 1 (no duplicates overwritten)
+    let router_entry = node.state.routers.get(&router_id).unwrap();
+    assert_eq!(router_entry.sub_routers.len(), 1);
+    assert!(router_entry.sub_routers.contains_key(&1));
+    drop(router_entry);
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
 }

@@ -23,6 +23,7 @@ impl From<SfuDomainError> for tonic::Status {
                 tonic::Status::internal(format!("Mediasoup error: {msg}"))
             }
             SfuDomainError::Internal(msg) => tonic::Status::internal(msg),
+            SfuDomainError::SystemDraining(msg) => tonic::Status::unavailable(msg),
         }
     }
 }
@@ -157,20 +158,12 @@ pub fn from_connect_transport_request(
     validation::validate_not_empty("transport_id", &req.transport_id)?;
 
     let dtls_role = validation::parse_dtls_role(&req.dtls_role)?;
-    let remote_fingerprints: Vec<DtlsFingerprintInfo> = req
+    let fp_tuples: Vec<(String, String)> = req
         .remote_fingerprints
         .into_iter()
-        .map(|f| DtlsFingerprintInfo {
-            algorithm: f.algorithm,
-            value: f.value,
-        })
+        .map(|f| (f.algorithm, f.value))
         .collect();
-
-    let fp_tuples: Vec<(String, String)> = remote_fingerprints
-        .iter()
-        .map(|fp| (fp.algorithm.clone(), fp.value.clone()))
-        .collect();
-    let _ = parse_dtls_fingerprints(&fp_tuples)?;
+    let remote_fingerprints = parse_dtls_fingerprints(&fp_tuples)?;
 
     Ok(ConnectTransportParams {
         router_id: req.router_id,
@@ -353,4 +346,22 @@ pub fn from_connect_pipe_transport_request(
         remote_port: req.remote_port,
         remote_srtp_parameters_json: req.remote_srtp_parameters_json,
     })
+}
+
+pub fn to_node_capacity_metrics(info: NodeCapacityInfo) -> proto::NodeCapacityMetrics {
+    proto::NodeCapacityMetrics {
+        total_capacity_weight: info.total_capacity_weight,
+        total_workers: info.total_workers,
+        alive_workers: info.alive_workers,
+        logical_load_percent: info.logical_load_percent,
+        cpu_usage_percent: info.cpu_usage_percent,
+        memory_usage_percent: info.memory_usage_percent,
+        max_worker_load_percent: info.max_worker_load_percent,
+        effective_load_percent: info.effective_load_percent,
+        active_routers: info.active_routers,
+        active_transports: info.active_transports,
+        active_producers: info.active_producers,
+        active_consumers: info.active_consumers,
+        is_draining: info.is_draining,
+    }
 }

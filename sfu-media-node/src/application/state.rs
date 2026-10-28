@@ -76,6 +76,8 @@ pub struct PipedProducerEntry {
     pub target_worker_index: usize,
 }
 
+pub type SubRouterLockMap = DashMap<(String, usize), Arc<tokio::sync::Mutex<()>>>;
+
 #[derive(Clone)]
 pub struct EngineState {
     pub routers: Arc<DashMap<String, RouterItem>>,
@@ -92,6 +94,7 @@ pub struct EngineState {
     pub peer_worker_affinity: Arc<DashMap<(String, String), usize>>,
     pub piped_producers: Arc<DashMap<String, Vec<PipedProducerEntry>>>,
     pub pipe_singleflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub sub_router_singleflight: Arc<SubRouterLockMap>,
     pub is_draining: Arc<AtomicBool>,
 }
 
@@ -112,6 +115,7 @@ impl Default for EngineState {
             peer_worker_affinity: Arc::new(DashMap::new()),
             piped_producers: Arc::new(DashMap::new()),
             pipe_singleflight: Arc::new(DashMap::new()),
+            sub_router_singleflight: Arc::new(DashMap::new()),
             is_draining: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -123,6 +127,10 @@ impl EngineState {
             .get(router_id)
             .map(|r| !r.is_closed.load(std::sync::atomic::Ordering::SeqCst))
             .unwrap_or(false)
+    }
+
+    pub fn get_room_id_for_router(&self, router_id: &str) -> Option<String> {
+        self.routers.get(router_id).map(|r| r.room_id.clone())
     }
 
     pub fn cascade_remove_consumer(&self, consumer_id: &str) -> Option<ConsumerItem> {

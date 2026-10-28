@@ -56,7 +56,7 @@ pub trait EventPublisherPort: Send + Sync {
         reason: &str,
     );
 
-    fn publish_node_capacity(&self, metrics: crate::proto::sfu::v1::NodeCapacityMetrics);
+    fn publish_node_capacity(&self, info: &crate::domain::entities::NodeCapacityInfo);
 }
 
 pub trait MetricsPort: Send + Sync {
