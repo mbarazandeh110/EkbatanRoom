@@ -26,6 +26,8 @@ impl From<SfuDomainError> for tonic::Status {
             SfuDomainError::Internal(msg) => tonic::Status::internal(msg),
             SfuDomainError::SystemDraining(msg) => tonic::Status::unavailable(msg),
             SfuDomainError::EnterpriseFeatureRequired(msg) => tonic::Status::unimplemented(msg),
+            SfuDomainError::LicensePermissionDenied(msg) => tonic::Status::permission_denied(msg),
+            SfuDomainError::InvalidLicense(msg) => tonic::Status::invalid_argument(msg),
         }
     }
 }
@@ -366,6 +368,7 @@ pub fn to_node_capacity_metrics(info: NodeCapacityInfo) -> proto::NodeCapacityMe
         active_consumers: info.active_consumers,
         is_draining: info.is_draining,
         enterprise_cascading_enabled: info.enterprise_cascading_enabled,
+        license_tier: info.license_tier,
     }
 }
 

@@ -477,6 +477,19 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         );
         crate::observability::tracing_extractor::attach_trace_context(&span, request.metadata());
 
+        let req_inner = request.into_inner();
+        let license_token = req_inner.license_token.trim().to_string();
+        if !license_token.is_empty() {
+            let node_for_lic = self.node.clone();
+            let coord_id = req_inner.coordinator_id.clone();
+            tokio::spawn(async move {
+                tracing::info!(coordinator_id = %coord_id, "Applying license received via WatchNodeEvents [REDACTED]");
+                if let Err(e) = node_for_lic.apply_license(&license_token).await {
+                    tracing::warn!(error = %e, coordinator_id = %coord_id, "Failed to apply license from WatchNodeEvents");
+                }
+            });
+        }
+
         let rx = self.node.event_hub.subscribe();
         let node_ref = self.node.clone();
         let stream = BroadcastStream::new(rx).filter_map(move |item| match item {
@@ -632,6 +645,34 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                     .await
                     .map_err(Status::from)?;
                 Ok(mapper::to_consume_response(res))
+            },
+        )
+        .await
+    }
+
+    async fn apply_license(
+        &self,
+        request: Request<proto::ApplyLicenseRequest>,
+    ) -> Result<Response<proto::ApplyLicenseResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc(
+            "ApplyLicense",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::info!("Processing dynamic ApplyLicense request [REDACTED]");
+                let res = node
+                    .apply_license(&req.license_token)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(proto::ApplyLicenseResponse {
+                    is_valid: res.is_valid,
+                    license_tier: res.license_tier,
+                    expires_at_timestamp: res.expires_at_timestamp,
+                    features: res.features,
+                    issued_to: res.issued_to,
+                    error_message: res.error_message,
+                })
             },
         )
         .await

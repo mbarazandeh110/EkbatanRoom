@@ -12,6 +12,8 @@ pub const METRIC_NODE_CAPACITY_WEIGHT: &str = "sfu_node_capacity_weight";
 pub const METRIC_NODE_LOGICAL_LOAD_PERCENT: &str = "sfu_node_logical_load_percent";
 pub const METRIC_NODE_CPU_USAGE_PERCENT: &str = "sfu_node_cpu_usage_percent";
 pub const METRIC_NODE_EFFECTIVE_LOAD_PERCENT: &str = "sfu_node_effective_load_percent";
+pub const METRIC_LICENSE_VALID: &str = "sfu_license_valid";
+pub const METRIC_LICENSE_EXPIRY_TIMESTAMP: &str = "sfu_license_expiry_timestamp_seconds";
 
 #[derive(Clone, Default)]
 pub struct PrometheusMetrics;
@@ -60,6 +62,9 @@ impl MetricsPort for PrometheusMetrics {
             cpu_usage_percent,
             effective_load_percent,
         );
+    }
+    fn update_license_status(&self, is_valid: bool, expiry_timestamp_secs: u64) {
+        update_license_status(is_valid, expiry_timestamp_secs);
     }
 }
 
@@ -142,6 +147,7 @@ pub fn record_grpc_request(method: &'static str, status: &str, duration_secs: f6
         "internal" => "internal",
         "unavailable" => "unavailable",
         "unimplemented" => "unimplemented",
+        "permission_denied" => "permission_denied",
         _ => "other",
     };
 
@@ -162,6 +168,12 @@ pub fn update_node_capacity(
     gauge!(METRIC_NODE_LOGICAL_LOAD_PERCENT).set(logical_load_percent as f64);
     gauge!(METRIC_NODE_CPU_USAGE_PERCENT).set(cpu_usage_percent as f64);
     gauge!(METRIC_NODE_EFFECTIVE_LOAD_PERCENT).set(effective_load_percent as f64);
+}
+
+/// Update license validity and expiry timestamp gauges without high-cardinality labels
+pub fn update_license_status(is_valid: bool, expiry_timestamp_secs: u64) {
+    gauge!(METRIC_LICENSE_VALID).set(if is_valid { 1.0 } else { 0.0 });
+    gauge!(METRIC_LICENSE_EXPIRY_TIMESTAMP).set(expiry_timestamp_secs as f64);
 }
 
 #[cfg(test)]

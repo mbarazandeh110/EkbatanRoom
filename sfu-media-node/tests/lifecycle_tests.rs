@@ -10,6 +10,28 @@ fn test_config() -> Config {
     config
 }
 
+#[cfg(feature = "enterprise")]
+fn create_test_enterprise_license() -> String {
+    let priv_hex = "02dc0bfacd35d5f44baada453877d98d2dfadcfa175d67f211195a6eba102eb4";
+    let priv_bytes = hex::decode(priv_hex).unwrap();
+    let mut priv_arr = [0u8; 32];
+    priv_arr.copy_from_slice(&priv_bytes);
+
+    let claims = sfu_media_node::domain::license::LicenseClaims {
+        license_id: "test-ent-lic-life".to_string(),
+        customer_id: "ekbatan-test".to_string(),
+        tier: "enterprise".to_string(),
+        features: vec![sfu_media_node::domain::license::FEATURE_INTER_NODE_CASCADING.to_string()],
+        cluster_limits: sfu_media_node::domain::license::ClusterLimits::default(),
+        allowed_domains: vec![],
+        issued_at: 1000,
+        expires_at: 0,
+        grace_period_days: 0,
+    };
+
+    sfu_media_node::domain::license::generate_license_token(&claims, &priv_arr).unwrap()
+}
+
 #[tokio::test]
 async fn test_router_lifecycle_and_idempotency() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
@@ -161,6 +183,13 @@ async fn test_transport_lifecycle_and_ice_restart() {
 async fn test_pipe_transport_lifecycle_and_connect() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
     let service = GrpcMediaEngineService::new(node.clone());
+
+    service
+        .apply_license(Request::new(proto::ApplyLicenseRequest {
+            license_token: create_test_enterprise_license(),
+        }))
+        .await
+        .unwrap();
 
     // 1. Create two routers (e.g. representing two cascaded nodes/routers)
     let r1 = service

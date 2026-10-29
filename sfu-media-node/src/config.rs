@@ -284,6 +284,10 @@ pub struct Config {
     pub router_codecs: MediasoupRouterCodecsConfig,
     #[serde(default)]
     pub observability: ObservabilityConfig,
+    #[serde(default)]
+    pub license_token: Option<String>,
+    #[serde(default)]
+    pub license_public_key_hex: Option<String>,
 }
 
 impl Default for Config {
@@ -356,6 +360,8 @@ impl Config {
             audio_level_observer: MediasoupAudioLevelObserverConfig::default(),
             router_codecs: MediasoupRouterCodecsConfig::default(),
             observability: ObservabilityConfig::default(),
+            license_token: None,
+            license_public_key_hex: None,
         }
     }
 
@@ -751,6 +757,21 @@ impl Config {
 
         // Observability overrides
         self.observability.apply_env_overrides()?;
+
+        // Licensing env overrides
+        if let Ok(s) = std::env::var("EKBATAN_LICENSE_KEY") {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                self.license_token = Some(trimmed.to_string());
+            }
+        }
+
+        if let Ok(s) = std::env::var("EKBATAN_LICENSE_PUBLIC_KEY") {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                self.license_public_key_hex = Some(trimmed.to_string());
+            }
+        }
 
         Ok(())
     }

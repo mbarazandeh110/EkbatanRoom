@@ -82,6 +82,7 @@ pub struct NodeCapacityInfo {
     pub active_consumers: u32,
     pub is_draining: bool,
     pub enterprise_cascading_enabled: bool,
+    pub license_tier: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

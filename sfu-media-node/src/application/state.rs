@@ -118,10 +118,16 @@ pub struct EngineState {
     pub pipe_singleflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub sub_router_singleflight: Arc<SubRouterLockMap>,
     pub is_draining: Arc<AtomicBool>,
+    pub active_license: Arc<parking_lot::RwLock<Option<crate::domain::license::LicenseClaims>>>,
+    pub license_public_key: Arc<parking_lot::RwLock<[u8; 32]>>,
 }
 
 impl Default for EngineState {
     fn default() -> Self {
+        let default_pubkey = crate::domain::license::parse_public_key_hex(
+            crate::domain::license::DEFAULT_PUBLIC_KEY_HEX,
+        )
+        .unwrap_or([0u8; 32]);
         Self {
             routers: Arc::new(DashMap::new()),
             room_to_router: Arc::new(DashMap::new()),
@@ -140,11 +146,54 @@ impl Default for EngineState {
             pipe_singleflight: Arc::new(DashMap::new()),
             sub_router_singleflight: Arc::new(DashMap::new()),
             is_draining: Arc::new(AtomicBool::new(false)),
+            active_license: Arc::new(parking_lot::RwLock::new(None)),
+            license_public_key: Arc::new(parking_lot::RwLock::new(default_pubkey)),
         }
     }
 }
 
 impl EngineState {
+    pub fn get_active_license(&self) -> Option<crate::domain::license::LicenseClaims> {
+        self.active_license.read().clone()
+    }
+
+    pub fn set_active_license(&self, claims: crate::domain::license::LicenseClaims) {
+        *self.active_license.write() = Some(claims);
+    }
+
+    pub fn set_license_public_key(&self, key: [u8; 32]) {
+        *self.license_public_key.write() = key;
+    }
+
+    pub fn get_license_public_key(&self) -> [u8; 32] {
+        *self.license_public_key.read()
+    }
+
+    pub fn is_enterprise_license_valid(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.active_license
+            .read()
+            .as_ref()
+            .map(|lic| lic.is_enterprise_cascading_allowed(now))
+            .unwrap_or(false)
+    }
+
+    pub fn get_license_tier(&self) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Some(ref lic) = *self.active_license.read() {
+            if lic.is_valid_at(now) && lic.tier.eq_ignore_ascii_case("enterprise") {
+                return "enterprise".to_string();
+            }
+        }
+        "community".to_string()
+    }
+
     pub fn is_router_active(&self, router_id: &str) -> bool {
         self.routers
             .get(router_id)

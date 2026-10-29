@@ -343,6 +343,7 @@ async fn test_zombie_events_filtered_for_closed_router() {
     let stream_res = service
         .watch_node_events(Request::new(proto::WatchNodeEventsRequest {
             coordinator_id: "coord-1".to_string(),
+            license_token: String::new(),
         }))
         .await
         .unwrap();

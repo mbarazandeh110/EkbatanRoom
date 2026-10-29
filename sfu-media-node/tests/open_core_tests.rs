@@ -12,11 +12,33 @@ fn test_config() -> Config {
     config
 }
 
+pub fn create_test_enterprise_license() -> String {
+    let priv_hex = "02dc0bfacd35d5f44baada453877d98d2dfadcfa175d67f211195a6eba102eb4";
+    let priv_bytes = hex::decode(priv_hex).unwrap();
+    let mut priv_arr = [0u8; 32];
+    priv_arr.copy_from_slice(&priv_bytes);
+
+    let claims = sfu_media_node::domain::license::LicenseClaims {
+        license_id: "test-ent-lic".to_string(),
+        customer_id: "ekbatan-test".to_string(),
+        tier: "enterprise".to_string(),
+        features: vec![sfu_media_node::domain::license::FEATURE_INTER_NODE_CASCADING.to_string()],
+        cluster_limits: sfu_media_node::domain::license::ClusterLimits::default(),
+        allowed_domains: vec![],
+        issued_at: 1000,
+        expires_at: 0, // perpetual
+        grace_period_days: 0,
+    };
+
+    sfu_media_node::domain::license::generate_license_token(&claims, &priv_arr).unwrap()
+}
+
 #[tokio::test]
 async fn test_open_core_node_capacity_and_feature_matrix() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
     let service = GrpcMediaEngineService::new(node.clone());
 
+    // 1. In default boot without license token: cascading is disabled and tier is community
     let cap = service
         .get_node_capacity(Request::new(proto::GetNodeCapacityRequest {}))
         .await
@@ -26,12 +48,31 @@ async fn test_open_core_node_capacity_and_feature_matrix() {
     assert_eq!(cap.total_workers, 2);
     assert_eq!(cap.alive_workers, 2);
     assert_eq!(cap.total_capacity_weight, 20);
+    assert!(!cap.enterprise_cascading_enabled);
+    assert_eq!(cap.license_tier, "community");
+
+    // 2. Apply valid Enterprise license
+    let token = create_test_enterprise_license();
+    let apply_resp = service
+        .apply_license(Request::new(proto::ApplyLicenseRequest {
+            license_token: token,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(apply_resp.is_valid);
+    assert_eq!(apply_resp.license_tier, "enterprise");
+
+    let cap_after = service
+        .get_node_capacity(Request::new(proto::GetNodeCapacityRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
 
     let is_enterprise = cfg!(feature = "enterprise");
-    assert_eq!(
-        cap.enterprise_cascading_enabled, is_enterprise,
-        "enterprise_cascading_enabled must reflect cargo feature"
-    );
+    assert_eq!(cap_after.enterprise_cascading_enabled, is_enterprise);
+    assert_eq!(cap_after.license_tier, "enterprise");
 
     let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
 }
@@ -130,6 +171,13 @@ async fn test_community_edition_pipe_rpcs_return_unimplemented() {
 async fn test_enterprise_edition_pipe_cascade_e2e() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
     let service = GrpcMediaEngineService::new(node.clone());
+
+    service
+        .apply_license(Request::new(proto::ApplyLicenseRequest {
+            license_token: create_test_enterprise_license(),
+        }))
+        .await
+        .unwrap();
 
     // 1. Create two routers representing two cascaded instances
     let r1 = service
@@ -366,6 +414,13 @@ async fn test_enterprise_pipe_produce_idempotency_conflict_on_kind_or_params() {
     let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
     let service = GrpcMediaEngineService::new(node.clone());
 
+    service
+        .apply_license(Request::new(proto::ApplyLicenseRequest {
+            license_token: create_test_enterprise_license(),
+        }))
+        .await
+        .unwrap();
+
     let r = service
         .create_router(Request::new(proto::CreateRouterRequest {
             request_id: "req-r-idemp-pipe".to_string(),
@@ -463,6 +518,13 @@ async fn test_enterprise_pipe_consume_sub_router_spillover() {
 
     let node = Arc::new(MediaNode::new(config).await.unwrap());
     let service = GrpcMediaEngineService::new(node.clone());
+
+    service
+        .apply_license(Request::new(proto::ApplyLicenseRequest {
+            license_token: create_test_enterprise_license(),
+        }))
+        .await
+        .unwrap();
 
     let r = service
         .create_router(Request::new(proto::CreateRouterRequest {
@@ -611,6 +673,83 @@ async fn test_enterprise_pipe_consume_sub_router_spillover() {
         .unwrap();
     assert!(piped.iter().any(|e| e.target_router_id == r.router_id));
     drop(piped);
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}
+
+#[cfg(feature = "enterprise")]
+#[tokio::test]
+async fn test_enterprise_license_gate_enforcement() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-gate".to_string(),
+            room_id: "room-gate".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 1. Without license: Pipe operations must return PermissionDenied
+    let err_unlicensed = service
+        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+            request_id: "req-pt-unlicensed".to_string(),
+            router_id: r.router_id.clone(),
+            enable_srtp: false,
+            enable_rtx: false,
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err_unlicensed.code(), tonic::Code::PermissionDenied);
+    assert!(err_unlicensed
+        .message()
+        .contains("Valid Enterprise license is required"));
+
+    // 2. Apply invalid license token
+    let invalid_resp = service
+        .apply_license(Request::new(proto::ApplyLicenseRequest {
+            license_token: "EKB1.badpayload.badsig".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!invalid_resp.is_valid);
+    assert!(!invalid_resp.error_message.is_empty());
+
+    // 3. Apply valid Enterprise license token
+    let valid_token = create_test_enterprise_license();
+    let valid_resp = service
+        .apply_license(Request::new(proto::ApplyLicenseRequest {
+            license_token: valid_token,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(valid_resp.is_valid);
+    assert_eq!(valid_resp.license_tier, "enterprise");
+    assert!(valid_resp
+        .features
+        .contains(&sfu_media_node::domain::license::FEATURE_INTER_NODE_CASCADING.to_string()));
+
+    // 4. Now pipe operation must succeed!
+    let pt_resp = service
+        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+            request_id: "req-pt-licensed".to_string(),
+            router_id: r.router_id.clone(),
+            enable_srtp: false,
+            enable_rtx: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!pt_resp.pipe_transport_id.is_empty());
+    assert!(!pt_resp.ip.is_empty());
 
     let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
 }

@@ -31,4 +31,10 @@ pub enum SfuDomainError {
 
     #[error("Enterprise feature required: {0}")]
     EnterpriseFeatureRequired(String),
+
+    #[error("License permission denied: {0}")]
+    LicensePermissionDenied(String),
+
+    #[error("Invalid license: {0}")]
+    InvalidLicense(String),
 }

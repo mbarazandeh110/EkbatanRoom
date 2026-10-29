@@ -106,6 +106,15 @@ impl EnterprisePipeService {
             cleanup_handles: vec![c1.abort_handle(), c2.abort_handle(), c3.abort_handle()],
         }
     }
+
+    fn check_enterprise_license(&self) -> Result<(), SfuDomainError> {
+        if !self.state.is_enterprise_license_valid() {
+            return Err(SfuDomainError::LicensePermissionDenied(
+                "Valid Enterprise license is required for inter-node room cascading".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -119,6 +128,8 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                 "Node is draining; rejecting new pipe transport".to_string(),
             ));
         }
+
+        self.check_enterprise_license()?;
 
         validation::validate_not_empty("request_id", &params.request_id)?;
         validation::validate_not_empty("router_id", &params.router_id)?;
@@ -229,6 +240,8 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         &self,
         params: ConnectPipeTransportParams,
     ) -> Result<(), SfuDomainError> {
+        self.check_enterprise_license()?;
+
         validation::validate_not_empty("router_id", &params.router_id)?;
         validation::validate_not_empty("pipe_transport_id", &params.pipe_transport_id)?;
         validation::validate_not_empty("remote_ip", &params.remote_ip)?;
@@ -305,6 +318,8 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                 "Node is draining; rejecting pipe produce".to_string(),
             ));
         }
+
+        self.check_enterprise_license()?;
 
         validation::validate_not_empty("request_id", &params.request_id)?;
         validation::validate_not_empty("router_id", &params.router_id)?;
@@ -561,6 +576,8 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                 "Node is draining; rejecting pipe consume".to_string(),
             ));
         }
+
+        self.check_enterprise_license()?;
 
         validation::validate_not_empty("request_id", &params.request_id)?;
         validation::validate_not_empty("router_id", &params.router_id)?;
@@ -949,7 +966,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
     }
 
     fn is_enterprise_enabled(&self) -> bool {
-        true
+        self.state.is_enterprise_license_valid()
     }
 
     fn abort_cleanup_tasks(&self) {

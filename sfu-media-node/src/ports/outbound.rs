@@ -80,4 +80,5 @@ pub trait MetricsPort: Send + Sync {
         cpu_usage_percent: f32,
         effective_load_percent: f32,
     );
+    fn update_license_status(&self, is_valid: bool, expiry_timestamp_secs: u64);
 }

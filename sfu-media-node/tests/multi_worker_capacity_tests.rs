@@ -14,6 +14,28 @@ fn multi_worker_config() -> Config {
     config
 }
 
+#[cfg(feature = "enterprise")]
+fn create_test_enterprise_license() -> String {
+    let priv_hex = "02dc0bfacd35d5f44baada453877d98d2dfadcfa175d67f211195a6eba102eb4";
+    let priv_bytes = hex::decode(priv_hex).unwrap();
+    let mut priv_arr = [0u8; 32];
+    priv_arr.copy_from_slice(&priv_bytes);
+
+    let claims = sfu_media_node::domain::license::LicenseClaims {
+        license_id: "test-ent-lic-multi".to_string(),
+        customer_id: "ekbatan-test".to_string(),
+        tier: "enterprise".to_string(),
+        features: vec![sfu_media_node::domain::license::FEATURE_INTER_NODE_CASCADING.to_string()],
+        cluster_limits: sfu_media_node::domain::license::ClusterLimits::default(),
+        allowed_domains: vec![],
+        issued_at: 1000,
+        expires_at: 0,
+        grace_period_days: 0,
+    };
+
+    sfu_media_node::domain::license::generate_license_token(&claims, &priv_arr).unwrap()
+}
+
 #[tokio::test]
 async fn test_multi_worker_spillover_and_peer_affinity() {
     let node = Arc::new(MediaNode::new(multi_worker_config()).await.unwrap());
@@ -342,15 +364,14 @@ async fn test_node_capacity_metrics_and_events() {
     assert_eq!(cap.total_capacity_weight, 20); // 2 workers * weight 10
     assert_eq!(cap.active_routers, 0);
     assert_eq!(cap.active_transports, 0);
-    assert_eq!(
-        cap.enterprise_cascading_enabled,
-        cfg!(feature = "enterprise")
-    );
+    assert!(!cap.enterprise_cascading_enabled);
+    assert_eq!(cap.license_tier, "community");
 
     // 2. Subscribe to WatchNodeEvents and verify NodeCapacity event arrives
     let mut stream = service
         .watch_node_events(Request::new(proto::WatchNodeEventsRequest {
             coordinator_id: "coord-test".to_string(),
+            license_token: String::new(),
         }))
         .await
         .unwrap()
@@ -370,7 +391,8 @@ async fn test_node_capacity_metrics_and_events() {
         Some(proto::node_event::Payload::NodeCapacity(c)) => {
             assert_eq!(c.total_workers, 2);
             assert_eq!(c.total_capacity_weight, 20);
-            assert_eq!(c.enterprise_cascading_enabled, cfg!(feature = "enterprise"));
+            assert!(!c.enterprise_cascading_enabled);
+            assert_eq!(c.license_tier, "community");
         }
         other => panic!("Expected NodeCapacity event, got {:?}", other),
     }
@@ -459,6 +481,13 @@ async fn test_sub_router_audio_observer_and_pipe_transport_cleanup() {
     // 5. Create a PipeTransport and ensure it is tracked in state.pipe_transports
     #[cfg(feature = "enterprise")]
     {
+        service
+            .apply_license(Request::new(proto::ApplyLicenseRequest {
+                license_token: create_test_enterprise_license(),
+            }))
+            .await
+            .unwrap();
+
         let pipe_resp = service
             .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
                 request_id: "req-pipe-cleanup".to_string(),

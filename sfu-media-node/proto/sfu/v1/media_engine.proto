@@ -34,6 +34,9 @@ service SfuMediaEngineService {
   rpc ConnectPipeTransport(ConnectPipeTransportRequest) returns (ConnectPipeTransportResponse);
   rpc PipeProduce(PipeProduceRequest) returns (ProduceResponse);
   rpc PipeConsume(PipeConsumeRequest) returns (ConsumeResponse);
+
+  // ۷. [LICENSING] اعمال یا تمدید پویای کلید لایسنس تجاری
+  rpc ApplyLicense(ApplyLicenseRequest) returns (ApplyLicenseResponse);
 }
 
 enum ResourceType {
@@ -81,6 +84,7 @@ message NodeCapacityMetrics {
   bool is_draining = 13;
 
   bool enterprise_cascading_enabled = 14; // مشخص می‌کند آیا این نود با قابلیت Enterprise بالا آمده است یا خیر
+  string license_tier = 15; // "community" | "enterprise"
 }
 
 // پیام‌های مربوط به PipeTransport بین دو نود مجزا (Inter-Node Cascading)
@@ -259,7 +263,10 @@ message GetStatsResponse {
   int32 current_temporal_layer = 7;
 }
 
-message WatchNodeEventsRequest { string coordinator_id = 1; }
+message WatchNodeEventsRequest {
+  string coordinator_id = 1;
+  string license_token = 2;
+}
 message NodeEvent {
   string router_id = 1;
   int64 timestamp_ms = 2;
@@ -317,4 +324,17 @@ message PipeConsumeRequest {
   string router_id = 2;
   string pipe_transport_id = 3;
   string producer_id = 4;
+}
+
+message ApplyLicenseRequest {
+  string license_token = 1;
+}
+
+message ApplyLicenseResponse {
+  bool is_valid = 1;
+  string license_tier = 2; // "community" | "enterprise"
+  int64 expires_at_timestamp = 3; // Unix timestamp in seconds (0 = perpetual)
+  repeated string features = 4;
+  string issued_to = 5;
+  string error_message = 6;
 }

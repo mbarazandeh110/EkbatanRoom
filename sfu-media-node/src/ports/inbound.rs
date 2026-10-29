@@ -195,6 +195,21 @@ pub trait MediaUseCase: Send + Sync {
     ) -> Result<ResourceStatsInfo, SfuDomainError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyLicenseResult {
+    pub is_valid: bool,
+    pub license_tier: String,
+    pub expires_at_timestamp: i64,
+    pub features: Vec<String>,
+    pub issued_to: String,
+    pub error_message: String,
+}
+
+#[async_trait]
+pub trait LicenseUseCase: Send + Sync {
+    async fn apply_license(&self, token: &str) -> Result<ApplyLicenseResult, SfuDomainError>;
+}
+
 #[async_trait]
 pub trait InterNodePipeUseCase: Send + Sync {
     async fn create_pipe_transport(

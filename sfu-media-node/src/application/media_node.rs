@@ -49,6 +49,42 @@ impl MediaNode {
         let metrics = Arc::new(PrometheusMetrics);
         let state = EngineState::default();
 
+        if let Some(ref hex_key) = config.license_public_key_hex {
+            match crate::domain::license::parse_public_key_hex(hex_key) {
+                Ok(pubkey) => state.set_license_public_key(pubkey),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Invalid EKBATAN_LICENSE_PUBLIC_KEY hex, using default root public key")
+                }
+            }
+        }
+
+        if let Some(ref token) = config.license_token {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let pubkey = state.get_license_public_key();
+            match crate::domain::license::verify_license_token(token, &pubkey, now_secs) {
+                Ok(claims) => {
+                    tracing::info!(
+                        license_id = %claims.license_id,
+                        customer_id = %claims.customer_id,
+                        tier = %claims.tier,
+                        expires_at = claims.expires_at,
+                        "Loaded valid license from environment"
+                    );
+                    metrics.update_license_status(true, claims.expires_at);
+                    state.set_active_license(claims);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to verify initial license from environment");
+                    metrics.update_license_status(false, 0);
+                }
+            }
+        } else {
+            metrics.update_license_status(false, 0);
+        }
+
         let state_dead = state.clone();
         let worker_pool_dead = worker_pool.clone();
         let metrics_dead = metrics.clone();
@@ -224,6 +260,74 @@ impl MediaNode {
         tracing::info!("All routers and associated resources closed cleanly.");
         Ok(())
     }
+
+    pub async fn apply_license(
+        &self,
+        token: &str,
+    ) -> Result<crate::ports::inbound::ApplyLicenseResult, SfuDomainError> {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            return Err(SfuDomainError::InvalidArgument(
+                "License token cannot be empty".to_string(),
+            ));
+        }
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let pubkey = self.state.get_license_public_key();
+        match crate::domain::license::verify_license_token(trimmed, &pubkey, now_secs) {
+            Ok(claims) => {
+                tracing::info!(
+                    license_id = %claims.license_id,
+                    customer_id = %claims.customer_id,
+                    tier = %claims.tier,
+                    expires_at = claims.expires_at,
+                    "Successfully applied license dynamically"
+                );
+
+                self.metrics.update_license_status(true, claims.expires_at);
+                let result = crate::ports::inbound::ApplyLicenseResult {
+                    is_valid: true,
+                    license_tier: claims.tier.clone(),
+                    expires_at_timestamp: claims.expires_at as i64,
+                    features: claims.features.clone(),
+                    issued_to: claims.customer_id.clone(),
+                    error_message: String::new(),
+                };
+                self.state.set_active_license(claims);
+
+                // Publish updated node capacity metrics with new license tier immediately
+                let info = self.get_node_capacity_info();
+                self.event_hub.publish_node_capacity(&info);
+
+                Ok(result)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Dynamic license verification failed");
+                Ok(crate::ports::inbound::ApplyLicenseResult {
+                    is_valid: false,
+                    license_tier: self.state.get_license_tier(),
+                    expires_at_timestamp: 0,
+                    features: Vec::new(),
+                    issued_to: String::new(),
+                    error_message: e.to_string(),
+                })
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::ports::inbound::LicenseUseCase for MediaNode {
+    async fn apply_license(
+        &self,
+        token: &str,
+    ) -> Result<crate::ports::inbound::ApplyLicenseResult, SfuDomainError> {
+        self.apply_license(token).await
+    }
 }
 
 pub fn compute_node_capacity(
@@ -264,6 +368,10 @@ pub fn compute_node_capacity(
 
     let effective_load_percent = f32::max(logical_load_percent, cpu_usage_percent);
 
+    let license_tier = state.get_license_tier();
+    let enterprise_cascading_enabled =
+        enterprise_cascading_enabled && state.is_enterprise_license_valid();
+
     NodeCapacityInfo {
         total_capacity_weight,
         total_workers,
@@ -279,5 +387,6 @@ pub fn compute_node_capacity(
         active_consumers: state.consumers.len() as u32,
         is_draining: state.is_draining.load(Ordering::SeqCst) || alive_workers == 0,
         enterprise_cascading_enabled,
+        license_tier,
     }
 }
