@@ -218,4 +218,6 @@ pub trait InterNodePipeUseCase: Send + Sync {
     ) -> Result<ConsumeResult, SfuDomainError>;
 
     fn is_enterprise_enabled(&self) -> bool;
+
+    fn abort_cleanup_tasks(&self) {}
 }

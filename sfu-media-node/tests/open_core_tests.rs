@@ -344,10 +344,14 @@ async fn test_enterprise_edition_pipe_cascade_e2e() {
         .state
         .pipe_transports
         .contains_key(&pt2.pipe_transport_id));
-    assert!(!node
+    assert!(node
         .state
-        .producers
-        .contains_key(&pipe_prod_resp.producer_id));
+        .get_producer(&r2.router_id, &pipe_prod_resp.producer_id)
+        .is_none());
+    assert!(node
+        .state
+        .get_producer(&r1.router_id, &p1_prod.producer_id)
+        .is_some());
     assert!(!node
         .state
         .consumers
@@ -561,7 +565,10 @@ async fn test_enterprise_pipe_consume_sub_router_spillover() {
         .unwrap()
         .into_inner();
 
-    let p2_prod_item = node.state.producers.get(&p2_prod.producer_id).unwrap();
+    let p2_prod_item = node
+        .state
+        .get_producer(&r.router_id, &p2_prod.producer_id)
+        .unwrap();
     assert_eq!(p2_prod_item.worker_index, 1);
     assert_ne!(p2_prod_item.physical_router_id, r.router_id);
     drop(p2_prod_item);

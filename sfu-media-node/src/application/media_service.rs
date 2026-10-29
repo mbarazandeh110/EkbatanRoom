@@ -25,6 +25,7 @@ pub struct MediaService {
     metrics: Arc<dyn MetricsPort>,
     produce_cache: Arc<IdempotencyCache<ProduceResult>>,
     consume_cache: Arc<IdempotencyCache<ConsumeResult>>,
+    cleanup_handles: Vec<tokio::task::AbortHandle>,
 }
 
 impl MediaService {
@@ -35,10 +36,10 @@ impl MediaService {
         metrics: Arc<dyn MetricsPort>,
     ) -> Self {
         let produce_cache = Arc::new(IdempotencyCache::default());
-        let _p_clean = produce_cache.start_periodic_cleanup(Duration::from_secs(30));
+        let p_clean = produce_cache.start_periodic_cleanup(Duration::from_secs(30));
 
         let consume_cache = Arc::new(IdempotencyCache::default());
-        let _c_clean = consume_cache.start_periodic_cleanup(Duration::from_secs(30));
+        let c_clean = consume_cache.start_periodic_cleanup(Duration::from_secs(30));
 
         Self {
             state,
@@ -47,6 +48,13 @@ impl MediaService {
             metrics,
             produce_cache,
             consume_cache,
+            cleanup_handles: vec![p_clean.abort_handle(), c_clean.abort_handle()],
+        }
+    }
+
+    pub fn abort_cleanup_tasks(&self) {
+        for handle in &self.cleanup_handles {
+            handle.abort();
         }
     }
 }
@@ -129,6 +137,28 @@ impl MediaUseCase for MediaService {
                     let producer = transport.produce(options).await.map_err(|e| {
                         SfuDomainError::Mediasoup(format!("Failed to produce: {e}"))
                     })?;
+
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(producer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during produce",
+                            params.router_id
+                        )));
+                    }
+
+                    let transport_active = self
+                        .state
+                        .transports
+                        .get(&params.transport_id)
+                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if !transport_active {
+                        drop(producer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Transport '{}' was closed during produce",
+                            params.transport_id
+                        )));
+                    }
 
                     let producer_id = producer.id().to_string();
                     let is_closed = Arc::new(AtomicBool::new(false));
@@ -227,7 +257,9 @@ impl MediaUseCase for MediaService {
                         is_closed,
                     };
 
-                    self.state.producers.insert(producer_id.clone(), item);
+                    self.state
+                        .producers
+                        .insert((params.router_id.clone(), producer_id.clone()), item);
                     if let Some(set) = self.state.transport_producers.get(&params.transport_id) {
                         set.insert(producer_id.clone());
                     }
@@ -288,24 +320,20 @@ impl MediaUseCase for MediaService {
                 &payload_bytes,
                 || async {
                     let (producer_physical_router_id, producer_worker_index) = {
-                        let p_item = self.state.producers.get(&params.producer_id).ok_or_else(|| {
-                            SfuDomainError::NotFound(format!(
-                                "Producer '{}' not found",
-                                params.producer_id
-                            ))
-                        })?;
+                        let p_item = self
+                            .state
+                            .get_producer(&params.router_id, &params.producer_id)
+                            .ok_or_else(|| {
+                                SfuDomainError::NotFound(format!(
+                                    "Producer '{}' not found",
+                                    params.producer_id
+                                ))
+                            })?;
 
                         if p_item.is_closed.load(Ordering::SeqCst) {
                             return Err(SfuDomainError::NotFound(format!(
                                 "Producer '{}' is closed",
                                 params.producer_id
-                            )));
-                        }
-
-                        if p_item.router_id != params.router_id {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Producer '{}' does not belong to router '{}'",
-                                params.producer_id, params.router_id
                             )));
                         }
 
@@ -451,8 +479,7 @@ impl MediaUseCase for MediaService {
 
                             let is_source_paused = self
                                 .state
-                                .producers
-                                .get(&params.producer_id)
+                                .get_producer(&params.router_id, &params.producer_id)
                                 .map(|p| p.producer.paused())
                                 .unwrap_or(false);
 
@@ -529,6 +556,41 @@ impl MediaUseCase for MediaService {
                     let consumer = transport.consume(options).await.map_err(|e| {
                         SfuDomainError::Mediasoup(format!("Failed to consume: {e}"))
                     })?;
+
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(consumer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during consume",
+                            params.router_id
+                        )));
+                    }
+
+                    let transport_active = self
+                        .state
+                        .transports
+                        .get(&params.subscriber_transport_id)
+                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if !transport_active {
+                        drop(consumer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Transport '{}' was closed during consume",
+                            params.subscriber_transport_id
+                        )));
+                    }
+
+                    let producer_active = self
+                        .state
+                        .get_producer(&params.router_id, &params.producer_id)
+                        .map(|p| !p.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if !producer_active {
+                        drop(consumer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Producer '{}' was closed during consume",
+                            params.producer_id
+                        )));
+                    }
 
                     let consumer_id = consumer.id().to_string();
                     let is_closed = Arc::new(AtomicBool::new(false));
@@ -738,19 +800,16 @@ impl MediaUseCase for MediaService {
         if is_producer {
             // Extract producer and DROP guard before .await
             let producer = {
-                let p_item = self.state.producers.get(resource_id).ok_or_else(|| {
-                    SfuDomainError::NotFound(format!("Producer '{resource_id}' not found"))
-                })?;
+                let p_item = self
+                    .state
+                    .get_producer(router_id, resource_id)
+                    .ok_or_else(|| {
+                        SfuDomainError::NotFound(format!("Producer '{resource_id}' not found"))
+                    })?;
 
                 if p_item.is_closed.load(Ordering::SeqCst) {
                     return Err(SfuDomainError::NotFound(format!(
                         "Producer '{resource_id}' is closed"
-                    )));
-                }
-
-                if p_item.router_id != router_id {
-                    return Err(SfuDomainError::NotFound(format!(
-                        "Producer '{resource_id}' does not belong to router '{router_id}'"
                     )));
                 }
 
@@ -870,15 +929,11 @@ impl MediaUseCase for MediaService {
         validation::validate_not_empty("router_id", router_id)?;
         validation::validate_not_empty("producer_id", producer_id)?;
 
-        if let Some((_, item)) = self.state.producers.remove(producer_id) {
-            if item.router_id != router_id {
-                // Restore if router mismatch
-                self.state.producers.insert(producer_id.to_string(), item);
-                return Err(SfuDomainError::NotFound(format!(
-                    "Producer '{producer_id}' does not belong to router '{router_id}'"
-                )));
-            }
-
+        if let Some((_, item)) = self
+            .state
+            .producers
+            .remove(&(router_id.to_string(), producer_id.to_string()))
+        {
             item.is_closed.store(true, Ordering::SeqCst);
             let p_weight = if item.kind == MediaKind::Audio { 2 } else { 10 };
             self.worker_pool
@@ -952,6 +1007,7 @@ impl MediaUseCase for MediaService {
                     // Clean up intra-node pipe if this was the last consumer on the target physical router
                     if let Some((piped_entry, pub_worker_idx)) =
                         self.state.cleanup_piped_producer_if_last_consumer(
+                            &item.router_id,
                             &item.producer_id,
                             &item.physical_router_id,
                         )
@@ -1018,7 +1074,11 @@ impl MediaUseCase for MediaService {
 
                 let producer_futs: Vec<_> = producer_ids
                     .into_iter()
-                    .filter_map(|pid| self.state.producers.get(&pid).map(|p| p.producer.clone()))
+                    .filter_map(|pid| {
+                        self.state
+                            .get_producer(router_id, &pid)
+                            .map(|p| p.producer.clone())
+                    })
                     .map(|p| async move { p.get_stats().await.ok().unwrap_or_default() })
                     .collect();
 
@@ -1080,19 +1140,18 @@ impl MediaUseCase for MediaService {
             }
             "producer" => {
                 let producer = {
-                    let p_item = self.state.producers.get(resource_id).ok_or_else(|| {
-                        SfuDomainError::NotFound(format!("Producer '{resource_id}' not found"))
-                    })?;
+                    let p_item =
+                        self.state
+                            .get_producer(router_id, resource_id)
+                            .ok_or_else(|| {
+                                SfuDomainError::NotFound(format!(
+                                    "Producer '{resource_id}' not found"
+                                ))
+                            })?;
 
                     if p_item.is_closed.load(Ordering::SeqCst) {
                         return Err(SfuDomainError::NotFound(format!(
                             "Producer '{resource_id}' is closed"
-                        )));
-                    }
-
-                    if p_item.router_id != router_id {
-                        return Err(SfuDomainError::NotFound(format!(
-                            "Producer '{resource_id}' does not belong to router '{router_id}'"
                         )));
                     }
 

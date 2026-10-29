@@ -75,6 +75,7 @@ pub struct EnterprisePipeService {
     create_pipe_transport_cache: Arc<IdempotencyCache<CreatePipeTransportResult>>,
     pipe_produce_cache: Arc<IdempotencyCache<ProduceResult>>,
     pipe_consume_cache: Arc<IdempotencyCache<ConsumeResult>>,
+    cleanup_handles: Vec<tokio::task::AbortHandle>,
 }
 
 impl EnterprisePipeService {
@@ -89,9 +90,9 @@ impl EnterprisePipeService {
         let pipe_produce_cache = Arc::new(IdempotencyCache::default());
         let pipe_consume_cache = Arc::new(IdempotencyCache::default());
 
-        create_pipe_transport_cache.start_periodic_cleanup(Duration::from_secs(30));
-        pipe_produce_cache.start_periodic_cleanup(Duration::from_secs(30));
-        pipe_consume_cache.start_periodic_cleanup(Duration::from_secs(30));
+        let c1 = create_pipe_transport_cache.start_periodic_cleanup(Duration::from_secs(30));
+        let c2 = pipe_produce_cache.start_periodic_cleanup(Duration::from_secs(30));
+        let c3 = pipe_consume_cache.start_periodic_cleanup(Duration::from_secs(30));
 
         Self {
             config,
@@ -102,6 +103,7 @@ impl EnterprisePipeService {
             create_pipe_transport_cache,
             pipe_produce_cache,
             pipe_consume_cache,
+            cleanup_handles: vec![c1.abort_handle(), c2.abort_handle(), c3.abort_handle()],
         }
     }
 }
@@ -172,6 +174,14 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     let transport = router.create_pipe_transport(options).await.map_err(|e| {
                         SfuDomainError::Mediasoup(format!("Failed to create PipeTransport: {e}"))
                     })?;
+
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(transport);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during pipe transport creation",
+                            params.router_id
+                        )));
+                    }
 
                     let pipe_transport_id = transport.id().to_string();
                     let tuple = transport.tuple();
@@ -320,7 +330,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                 &params.request_id,
                 &payload_bytes,
                 || async {
-                    let pipe_transport = {
+                    let (pipe_transport, transport_worker_index) = {
                         let t_item = self
                             .state
                             .pipe_transports
@@ -346,7 +356,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                             )));
                         }
 
-                        t_item.transport.clone()
+                        (t_item.transport.clone(), t_item.worker_index)
                     };
 
                     let producer_id_obj: ProducerId = params.producer_id.parse().map_err(|e| {
@@ -376,6 +386,28 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                                 "Failed to produce on PipeTransport: {e}"
                             ))
                         })?;
+
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(producer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during pipe produce",
+                            params.router_id
+                        )));
+                    }
+
+                    let pt_active = self
+                        .state
+                        .pipe_transports
+                        .get(&params.pipe_transport_id)
+                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if !pt_active {
+                        drop(producer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "PipeTransport '{}' was closed during pipe produce",
+                            params.pipe_transport_id
+                        )));
+                    }
 
                     let producer_id = producer.id().to_string();
                     let kind_str = match producer.kind() {
@@ -477,14 +509,16 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         producer,
                         router_id: params.router_id.clone(),
                         physical_router_id: params.router_id.clone(),
-                        worker_index,
+                        worker_index: transport_worker_index,
                         transport_id: params.pipe_transport_id.clone(),
                         peer_id: "inter-node-cascade".to_string(),
                         kind: params.kind,
                         is_closed,
                     };
 
-                    self.state.producers.insert(producer_id.clone(), item);
+                    self.state
+                        .producers
+                        .insert((params.router_id.clone(), producer_id.clone()), item);
                     self.state
                         .transport_producers
                         .entry(params.pipe_transport_id.clone())
@@ -500,7 +534,8 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     } else {
                         10
                     };
-                    self.worker_pool.add_resource_score(worker_index, p_weight);
+                    self.worker_pool
+                        .add_resource_score(transport_worker_index, p_weight);
 
                     self.metrics.inc_active_producers(kind_str);
 
@@ -575,24 +610,20 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     };
 
                     let (producer_physical_router_id, producer_worker_index, is_source_paused) = {
-                        let p_item = self.state.producers.get(&params.producer_id).ok_or_else(|| {
-                            SfuDomainError::NotFound(format!(
-                                "Producer '{}' not found",
-                                params.producer_id
-                            ))
-                        })?;
+                        let p_item = self
+                            .state
+                            .get_producer(&params.router_id, &params.producer_id)
+                            .ok_or_else(|| {
+                                SfuDomainError::NotFound(format!(
+                                    "Producer '{}' not found",
+                                    params.producer_id
+                                ))
+                            })?;
 
                         if p_item.is_closed.load(Ordering::SeqCst) {
                             return Err(SfuDomainError::NotFound(format!(
                                 "Producer '{}' is closed",
                                 params.producer_id
-                            )));
-                        }
-
-                        if p_item.router_id != params.router_id {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Producer '{}' does not belong to router '{}'",
-                                params.producer_id, params.router_id
                             )));
                         }
 
@@ -751,6 +782,41 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                             ))
                         })?;
 
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(consumer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during pipe consume",
+                            params.router_id
+                        )));
+                    }
+
+                    let pt_active = self
+                        .state
+                        .pipe_transports
+                        .get(&params.pipe_transport_id)
+                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if !pt_active {
+                        drop(consumer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "PipeTransport '{}' was closed during pipe consume",
+                            params.pipe_transport_id
+                        )));
+                    }
+
+                    let producer_active = self
+                        .state
+                        .get_producer(&params.router_id, &params.producer_id)
+                        .map(|p| !p.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if !producer_active {
+                        drop(consumer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Producer '{}' was closed during pipe consume",
+                            params.producer_id
+                        )));
+                    }
+
                     let consumer_id = consumer.id().to_string();
                     let (kind_str, domain_kind) = match consumer.kind() {
                         mediasoup::prelude::MediaKind::Audio => ("audio", DomainMediaKind::Audio),
@@ -884,5 +950,11 @@ impl InterNodePipeUseCase for EnterprisePipeService {
 
     fn is_enterprise_enabled(&self) -> bool {
         true
+    }
+
+    fn abort_cleanup_tasks(&self) {
+        for handle in &self.cleanup_handles {
+            handle.abort();
+        }
     }
 }

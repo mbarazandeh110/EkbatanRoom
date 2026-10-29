@@ -25,6 +25,7 @@ pub struct TransportService {
     event_publisher: Arc<dyn EventPublisherPort>,
     metrics: Arc<dyn MetricsPort>,
     create_transport_cache: Arc<IdempotencyCache<CreateTransportResult>>,
+    cleanup_handles: Vec<tokio::task::AbortHandle>,
 }
 
 impl TransportService {
@@ -36,7 +37,7 @@ impl TransportService {
         metrics: Arc<dyn MetricsPort>,
     ) -> Self {
         let create_transport_cache = Arc::new(IdempotencyCache::default());
-        let _cleanup_task = create_transport_cache.start_periodic_cleanup(Duration::from_secs(30));
+        let cleanup_task = create_transport_cache.start_periodic_cleanup(Duration::from_secs(30));
 
         Self {
             config,
@@ -45,6 +46,13 @@ impl TransportService {
             event_publisher,
             metrics,
             create_transport_cache,
+            cleanup_handles: vec![cleanup_task.abort_handle()],
+        }
+    }
+
+    pub fn abort_cleanup_tasks(&self) {
+        for handle in &self.cleanup_handles {
+            handle.abort();
         }
     }
 }
@@ -225,8 +233,7 @@ impl TransportUseCase for TransportService {
                                             for v in volumes {
                                                 let p_id = v.producer.id().to_string();
                                                 let peer_id = state_ref
-                                                    .producers
-                                                    .get(&p_id)
+                                                    .get_producer(&r_id, &p_id)
                                                     .map(|p| p.peer_id.clone())
                                                     .unwrap_or_default();
 
@@ -291,6 +298,14 @@ impl TransportUseCase for TransportService {
                     let transport = router.create_webrtc_transport(options).await.map_err(|e| {
                         SfuDomainError::Mediasoup(format!("Failed to create WebRtcTransport: {e}"))
                     })?;
+
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(transport);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during transport creation",
+                            params.router_id
+                        )));
+                    }
 
                     if let Some(bitrate) = self.config.webrtc_transport.max_incoming_bitrate {
                         if let Err(e) = transport.set_max_incoming_bitrate(bitrate).await {
@@ -643,7 +658,10 @@ pub(crate) fn cascade_close_producers_and_consumers(
     // Cascade close producers on this transport
     if let Some((_, p_ids)) = state.transport_producers.remove(transport_id) {
         for pid in p_ids {
-            if let Some((_, p)) = state.producers.remove(&pid) {
+            if let Some((_, p)) = state
+                .producers
+                .remove(&(router_id.to_string(), pid.clone()))
+            {
                 p.is_closed.store(true, Ordering::SeqCst);
                 let p_weight = if p.kind == crate::domain::entities::MediaKind::Audio {
                     2
@@ -710,7 +728,11 @@ pub(crate) fn cascade_close_producers_and_consumers(
 
                 // Clean up intra-node pipe if this was the last consumer on the target physical router
                 if let Some((piped_entry, pub_worker_idx)) = state
-                    .cleanup_piped_producer_if_last_consumer(&c.producer_id, &c.physical_router_id)
+                    .cleanup_piped_producer_if_last_consumer(
+                        &c.router_id,
+                        &c.producer_id,
+                        &c.physical_router_id,
+                    )
                 {
                     worker_pool.sub_resource_score(pub_worker_idx, 1);
                     worker_pool.sub_resource_score(piped_entry.target_worker_index, 1);

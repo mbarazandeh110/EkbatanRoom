@@ -1007,3 +1007,142 @@ async fn test_piped_producer_cleanup_on_last_sub_router_consumer_closed() {
 
     let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
 }
+
+#[tokio::test]
+async fn test_dead_primary_worker_cascades_sub_router_transports_and_consumers() {
+    let node = Arc::new(MediaNode::new(multi_worker_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create Router (assigned to Worker 0)
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-dead-cascade".to_string(),
+            room_id: "room-dead-cascade".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let router_id = r_resp.router_id;
+    assert_eq!(r_resp.worker_index, 0);
+
+    // 2. Peer 1 on Worker 0 publishes video
+    let p1_pub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-p1-pub-dead-casc".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-1".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let vp8_rtp_params = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "payloadType": 96,
+                "clockRate": 90000,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": [],
+        "encodings": [
+            {
+                "ssrc": 77777777
+            }
+        ],
+        "rtcp": {
+            "cname": "video-dead-casc",
+            "reducedSize": true
+        }
+    }"#;
+
+    let p1_prod = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-p1-prod-dead-casc".to_string(),
+            router_id: router_id.clone(),
+            transport_id: p1_pub.transport_id.clone(),
+            peer_id: "peer-1".to_string(),
+            kind: "video".to_string(),
+            rtp_parameters_json: vp8_rtp_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 3. Add load to Worker 0 to force Peer 2 to spill over to Worker 1
+    node.worker_pool.add_resource_score(0, 10);
+
+    let p2_sub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-p2-sub-dead-casc".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-2".to_string(),
+            is_publisher: false,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let p2_sub_item = node.state.transports.get(&p2_sub.transport_id).unwrap();
+    assert_eq!(p2_sub_item.worker_index, 1);
+    drop(p2_sub_item);
+
+    // 4. Peer 2 consumes Peer 1's stream on Worker 1's sub-router
+    let vp8_caps = r#"{
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "kind": "video",
+                "preferredPayloadType": 96,
+                "clockRate": 90000,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": []
+    }"#;
+
+    let consume_resp = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-c-dead-casc".to_string(),
+            router_id: router_id.clone(),
+            subscriber_transport_id: p2_sub.transport_id.clone(),
+            producer_id: p1_prod.producer_id.clone(),
+            rtp_capabilities_json: vp8_caps.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!consume_resp.consumer_id.is_empty());
+    assert!(node.state.transports.contains_key(&p2_sub.transport_id));
+    assert!(node.state.consumers.contains_key(&consume_resp.consumer_id));
+
+    // 5. Worker 0 dies!
+    node.worker_pool.mark_dead(0);
+
+    // 6. Verify: sub-router resources on Worker 1 must NOT be orphaned!
+    assert!(
+        !node.state.transports.contains_key(&p2_sub.transport_id),
+        "Sub-router transport on alive worker 1 must be cascade cleaned"
+    );
+    assert!(
+        !node.state.consumers.contains_key(&consume_resp.consumer_id),
+        "Sub-router consumer on alive worker 1 must be cascade cleaned"
+    );
+    assert!(
+        !node.state.router_transports.contains_key(&router_id),
+        "Router transports map must be cleaned"
+    );
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}

@@ -107,7 +107,7 @@ pub struct EngineState {
     pub pipe_transports: Arc<DashMap<String, PipeTransportItem>>,
     pub router_transports: Arc<DashMap<String, DashSet<String>>>,
     pub router_pipe_transports: Arc<DashMap<String, DashSet<String>>>,
-    pub producers: Arc<DashMap<String, ProducerItem>>,
+    pub producers: Arc<DashMap<(String, String), ProducerItem>>,
     pub transport_producers: Arc<DashMap<String, DashSet<String>>>,
     pub producer_consumers: Arc<DashMap<String, DashSet<String>>>,
     pub consumers: Arc<DashMap<String, ConsumerItem>>,
@@ -152,6 +152,15 @@ impl EngineState {
             .unwrap_or(false)
     }
 
+    pub fn get_producer(
+        &self,
+        router_id: &str,
+        producer_id: &str,
+    ) -> Option<dashmap::mapref::one::Ref<'_, (String, String), ProducerItem>> {
+        self.producers
+            .get(&(router_id.to_string(), producer_id.to_string()))
+    }
+
     pub fn get_room_id_for_router(&self, router_id: &str) -> Option<String> {
         self.routers.get(router_id).map(|r| r.room_id.clone())
     }
@@ -173,11 +182,12 @@ impl EngineState {
 
     pub fn cleanup_piped_producer_if_last_consumer(
         &self,
+        router_id: &str,
         producer_id: &str,
         target_router_id: &str,
     ) -> Option<(PipedProducerEntry, usize)> {
         let (p_physical_router_id, p_worker_index) = {
-            let p = self.producers.get(producer_id)?;
+            let p = self.get_producer(router_id, producer_id)?;
             (p.physical_router_id.clone(), p.worker_index)
         };
 
@@ -290,7 +300,7 @@ impl EngineState {
         }
 
         // 2. Identify and close all producers on this worker
-        let dead_producers: Vec<(String, String, MediaKind)> = self
+        let dead_producers: Vec<((String, String), String, MediaKind)> = self
             .producers
             .iter()
             .filter(|entry| entry.value().worker_index == worker_index)
@@ -303,8 +313,9 @@ impl EngineState {
             })
             .collect();
 
-        for (pid, router_id, kind) in dead_producers {
-            if let Some((_, p)) = self.producers.remove(&pid) {
+        for (key, router_id, kind) in dead_producers {
+            let pid = key.1.clone();
+            if let Some((_, p)) = self.producers.remove(&key) {
                 p.is_closed.store(true, Ordering::SeqCst);
                 metrics.dec_active_producers(&kind.to_string());
                 self.transport_producers.retain(|_, set| {
@@ -363,7 +374,11 @@ impl EngineState {
             if let Some(c) = self.cascade_remove_consumer(&cid) {
                 metrics.dec_active_consumers(&kind.to_string());
                 if let Some((_piped_entry, pub_worker_idx)) = self
-                    .cleanup_piped_producer_if_last_consumer(&c.producer_id, &c.physical_router_id)
+                    .cleanup_piped_producer_if_last_consumer(
+                        &c.router_id,
+                        &c.producer_id,
+                        &c.physical_router_id,
+                    )
                 {
                     worker_pool.sub_resource_score(pub_worker_idx, 1);
                 }
@@ -380,7 +395,11 @@ impl EngineState {
         let mut empty_piped_keys = Vec::new();
         for mut entry in self.piped_producers.iter_mut() {
             let pid = entry.key().clone();
-            let pub_worker_opt = self.producers.get(&pid).map(|p| p.worker_index);
+            let pub_worker_opt = self
+                .producers
+                .iter()
+                .find(|p| p.key().1 == pid)
+                .map(|p| p.value().worker_index);
             let vec = entry.value_mut();
             let mut i = 0;
             while i < vec.len() {
@@ -425,6 +444,61 @@ impl EngineState {
                     worker_pool.decrement_load(sub_entry.value().worker_index);
                 }
                 r_item.sub_routers.clear();
+
+                // Clean up peer affinity and singleflights for this router
+                self.peer_worker_affinity.retain(|k, _| k.0 != router_id);
+                self.sub_router_singleflight.retain(|k, _| k.0 != router_id);
+
+                // Cascade close any remaining transports associated with this router
+                // (e.g. transports and consumers living on sub-routers on alive workers)
+                if let Some((_, transport_ids)) = self.router_transports.remove(&router_id) {
+                    for tid in transport_ids {
+                        if let Some((_, t_item)) = self.transports.remove(&tid) {
+                            t_item.is_closed.store(true, Ordering::SeqCst);
+                            worker_pool.sub_resource_score(t_item.worker_index, 1);
+                            metrics.dec_active_transports(t_item.is_publisher);
+                            event_publisher.publish_resource_closed(
+                                &router_id,
+                                "transport",
+                                &tid,
+                                "worker_died",
+                            );
+                            crate::application::transport_service::cascade_close_producers_and_consumers(
+                                self,
+                                worker_pool,
+                                metrics,
+                                event_publisher,
+                                &router_id,
+                                &tid,
+                            );
+                        }
+                    }
+                }
+
+                // Cascade close any remaining pipe transports for this router
+                if let Some((_, pipe_ids)) = self.router_pipe_transports.remove(&router_id) {
+                    for pid in pipe_ids {
+                        if let Some((_, pt)) = self.pipe_transports.remove(&pid) {
+                            pt.is_closed.store(true, Ordering::SeqCst);
+                            worker_pool.sub_resource_score(pt.worker_index, 1);
+                            metrics.dec_active_transports(false);
+                            event_publisher.publish_resource_closed(
+                                &router_id,
+                                "transport",
+                                &pid,
+                                "worker_died",
+                            );
+                            crate::application::transport_service::cascade_close_producers_and_consumers(
+                                self,
+                                worker_pool,
+                                metrics,
+                                event_publisher,
+                                &router_id,
+                                &pid,
+                            );
+                        }
+                    }
+                }
 
                 metrics.dec_active_routers();
                 event_publisher.publish_resource_closed(

@@ -202,6 +202,11 @@ impl MediaNode {
             handle.abort();
         }
 
+        self.router_service.abort_cleanup_tasks();
+        self.transport_service.abort_cleanup_tasks();
+        self.media_service.abort_cleanup_tasks();
+        self.pipe_service.abort_cleanup_tasks();
+
         let router_ids: Vec<String> = self.state.routers.iter().map(|r| r.key().clone()).collect();
 
         let shutdown_fut = async {

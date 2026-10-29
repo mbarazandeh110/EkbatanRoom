@@ -18,6 +18,7 @@ pub struct RouterService {
     metrics: Arc<dyn MetricsPort>,
     config: crate::Config,
     cache: Arc<IdempotencyCache<(String, u32, String)>>,
+    cleanup_handles: Vec<tokio::task::AbortHandle>,
 }
 
 impl RouterService {
@@ -29,7 +30,7 @@ impl RouterService {
         config: crate::Config,
     ) -> Self {
         let cache = Arc::new(IdempotencyCache::default());
-        let _cleanup_task = cache.start_periodic_cleanup(Duration::from_secs(30));
+        let cleanup_task = cache.start_periodic_cleanup(Duration::from_secs(30));
 
         Self {
             state,
@@ -38,6 +39,13 @@ impl RouterService {
             metrics,
             config,
             cache,
+            cleanup_handles: vec![cleanup_task.abort_handle()],
+        }
+    }
+
+    pub fn abort_cleanup_tasks(&self) {
+        for handle in &self.cleanup_handles {
+            handle.abort();
         }
     }
 
@@ -175,8 +183,7 @@ impl RouterUseCase for RouterService {
                             for v in volumes {
                                 let p_id = v.producer.id().to_string();
                                 let peer_id = state_ref
-                                    .producers
-                                    .get(&p_id)
+                                    .get_producer(&r_id, &p_id)
                                     .map(|p| p.peer_id.clone())
                                     .unwrap_or_default();
 

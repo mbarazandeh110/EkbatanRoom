@@ -277,7 +277,7 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                 }
                 let is_producer = match req.resource_type() {
                     proto::ResourceType::Producer => {
-                        if let Some(p) = node.state.producers.get(&req.resource_id) {
+                        if let Some(p) = node.state.get_producer(&req.router_id, &req.resource_id) {
                             tracing::Span::current().record("peer_id", &p.peer_id);
                         }
                         true
@@ -383,7 +383,7 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                             .map_err(Status::from)?;
                     }
                     proto::ResourceType::Producer => {
-                        if let Some(p) = node.state.producers.get(&req.resource_id) {
+                        if let Some(p) = node.state.get_producer(&req.router_id, &req.resource_id) {
                             tracing::Span::current().record("peer_id", &p.peer_id);
                         }
                         node.media_service
@@ -428,7 +428,7 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                         }
                     }
                     proto::ResourceType::Producer => {
-                        if let Some(p) = node.state.producers.get(&req.resource_id) {
+                        if let Some(p) = node.state.get_producer(&req.router_id, &req.resource_id) {
                             tracing::Span::current().record("peer_id", &p.peer_id);
                         }
                     }
