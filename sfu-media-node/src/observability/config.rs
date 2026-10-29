@@ -30,64 +30,73 @@ impl Default for ObservabilityConfig {
 }
 
 impl ObservabilityConfig {
-    pub fn from_env() -> Self {
-        let log_level = std::env::var("OBS_LOG_LEVEL")
-            .or_else(|_| std::env::var("RUST_LOG"))
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "info".to_string());
-
-        let log_format = std::env::var("OBS_LOG_FORMAT")
-            .ok()
-            .map(|s| s.to_lowercase())
-            .filter(|s| s == "json" || s == "pretty" || s == "text")
-            .unwrap_or_else(|| "json".to_string());
-
-        let tracing_enabled = std::env::var("OBS_TRACING_ENABLED")
-            .ok()
-            .map(|s| s.eq_ignore_ascii_case("true") || s == "1")
-            .unwrap_or(false);
-
-        // Prioritize OBS_OTLP_ENDPOINT per SIGNALING_CONTRACT.md, fallback to OBS_TRACING_ENDPOINT
-        let tracing_endpoint = std::env::var("OBS_OTLP_ENDPOINT")
-            .or_else(|_| std::env::var("OBS_TRACING_ENDPOINT"))
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "http://localhost:4317".to_string());
-
-        // Prioritize OBS_TRACE_SAMPLE_RATE per SIGNALING_CONTRACT.md (default 0.1), fallback to OBS_TRACING_SAMPLE_RATE
-        let tracing_sample_rate = std::env::var("OBS_TRACE_SAMPLE_RATE")
-            .or_else(|_| std::env::var("OBS_TRACING_SAMPLE_RATE"))
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-            .filter(|&r| (0.0..=1.0).contains(&r))
-            .unwrap_or(0.1);
-
-        let metrics_enabled = std::env::var("OBS_METRICS_ENABLED")
-            .ok()
-            .map(|s| s.eq_ignore_ascii_case("true") || s == "1")
-            .unwrap_or(true);
-
-        let metrics_addr = std::env::var("OBS_METRICS_ADDR")
-            .ok()
-            .and_then(|s| SocketAddr::from_str(&s).ok())
-            .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 9090)));
-
-        let log_raw_sdp = std::env::var("OBS_LOG_RAW_SDP")
-            .ok()
-            .map(|s| s.eq_ignore_ascii_case("true") || s == "1")
-            .unwrap_or(false);
-
-        Self {
-            log_level,
-            log_format,
-            tracing_enabled,
-            tracing_endpoint,
-            tracing_sample_rate,
-            metrics_enabled,
-            metrics_addr,
-            log_raw_sdp,
+    pub fn apply_env_overrides(&mut self) -> Result<(), crate::config::ConfigError> {
+        if let Ok(val) = std::env::var("OBS_LOG_LEVEL").or_else(|_| std::env::var("RUST_LOG")) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                self.log_level = trimmed.to_string();
+            }
         }
+
+        if let Ok(val) = std::env::var("OBS_LOG_FORMAT") {
+            let lower = val.trim().to_lowercase();
+            if lower == "json" || lower == "pretty" || lower == "text" {
+                self.log_format = lower;
+            } else {
+                return Err(crate::config::ConfigError::InvalidLogFormat(val));
+            }
+        }
+
+        if let Ok(val) = std::env::var("OBS_TRACING_ENABLED") {
+            self.tracing_enabled = val.eq_ignore_ascii_case("true") || val == "1";
+        }
+
+        if let Ok(val) =
+            std::env::var("OBS_OTLP_ENDPOINT").or_else(|_| std::env::var("OBS_TRACING_ENDPOINT"))
+        {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                self.tracing_endpoint = trimmed.to_string();
+            }
+        }
+
+        if let Ok(val) = std::env::var("OBS_TRACE_SAMPLE_RATE")
+            .or_else(|_| std::env::var("OBS_TRACING_SAMPLE_RATE"))
+        {
+            if let Ok(r) = val.parse::<f64>() {
+                if (0.0..=1.0).contains(&r) {
+                    self.tracing_sample_rate = r;
+                }
+            }
+        }
+
+        if let Ok(val) = std::env::var("OBS_METRICS_ENABLED") {
+            self.metrics_enabled = val.eq_ignore_ascii_case("true") || val == "1";
+        }
+
+        if let Ok(val) = std::env::var("OBS_METRICS_ADDR") {
+            let trimmed = val.trim();
+            let addr = SocketAddr::from_str(trimmed).map_err(|e| {
+                crate::config::ConfigError::InvalidSocketAddr {
+                    key: "OBS_METRICS_ADDR",
+                    val: trimmed.to_string(),
+                    err: e.to_string(),
+                }
+            })?;
+            self.metrics_addr = addr;
+        }
+
+        if let Ok(val) = std::env::var("OBS_LOG_RAW_SDP") {
+            self.log_raw_sdp = val.eq_ignore_ascii_case("true") || val == "1";
+        }
+
+        Ok(())
+    }
+
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+        let _ = config.apply_env_overrides();
+        config
     }
 }
 

@@ -1,14 +1,17 @@
 use crate::domain::errors::SfuDomainError;
-use crate::ports::outbound::WorkerPoolPort;
+use crate::ports::outbound::{WorkerDeadCallback, WorkerPoolPort};
 use mediasoup::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+
+type OnDeadCallbacks = Arc<parking_lot::RwLock<Vec<WorkerDeadCallback>>>;
 
 pub struct WorkerPool {
     workers: Vec<Worker>,
     load_counts: Vec<Arc<AtomicUsize>>,
     resource_scores: Vec<Arc<AtomicUsize>>,
     dead_flags: Vec<Arc<AtomicBool>>,
+    on_dead_callbacks: OnDeadCallbacks,
 }
 
 impl WorkerPool {
@@ -24,6 +27,7 @@ impl WorkerPool {
         let mut load_counts = Vec::with_capacity(count);
         let mut resource_scores = Vec::with_capacity(count);
         let mut dead_flags = Vec::with_capacity(count);
+        let on_dead_callbacks: OnDeadCallbacks = Arc::new(parking_lot::RwLock::new(Vec::new()));
 
         for i in 0..count {
             let mut settings = WorkerSettings::default();
@@ -45,13 +49,20 @@ impl WorkerPool {
             let score_counter = Arc::new(AtomicUsize::new(0));
             let load_clone = load_counter.clone();
             let score_clone = score_counter.clone();
+            let callbacks_clone = on_dead_callbacks.clone();
 
             worker
                 .on_dead(move |_| {
                     tracing::error!(worker_index = i, "Mediasoup worker died unexpectedly!");
-                    is_dead_clone.store(true, Ordering::SeqCst);
+                    let was_alive = !is_dead_clone.swap(true, Ordering::SeqCst);
                     load_clone.store(0, Ordering::SeqCst);
                     score_clone.store(0, Ordering::SeqCst);
+                    if was_alive {
+                        let cbs = callbacks_clone.read().clone();
+                        for cb in cbs {
+                            cb(i);
+                        }
+                    }
                 })
                 .detach();
 
@@ -66,6 +77,7 @@ impl WorkerPool {
             load_counts,
             resource_scores,
             dead_flags,
+            on_dead_callbacks,
         })
     }
 
@@ -126,14 +138,22 @@ impl WorkerPoolPort for WorkerPool {
     }
 
     fn mark_dead(&self, index: usize) {
-        if let Some(flag) = self.dead_flags.get(index) {
-            flag.store(true, Ordering::SeqCst);
-        }
+        let was_alive = if let Some(flag) = self.dead_flags.get(index) {
+            !flag.swap(true, Ordering::SeqCst)
+        } else {
+            false
+        };
         if let Some(counter) = self.load_counts.get(index) {
             counter.store(0, Ordering::SeqCst);
         }
         if let Some(counter) = self.resource_scores.get(index) {
             counter.store(0, Ordering::SeqCst);
+        }
+        if was_alive {
+            let cbs = self.on_dead_callbacks.read().clone();
+            for cb in cbs {
+                cb(index);
+            }
         }
     }
 
@@ -201,5 +221,9 @@ impl WorkerPoolPort for WorkerPool {
 
     fn get_worker(&self, index: usize) -> Option<Worker> {
         self.workers.get(index).cloned()
+    }
+
+    fn add_on_dead_callback(&self, callback: WorkerDeadCallback) {
+        self.on_dead_callbacks.write().push(callback);
     }
 }

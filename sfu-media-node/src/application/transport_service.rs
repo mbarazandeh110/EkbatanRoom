@@ -712,13 +712,6 @@ pub(crate) fn cascade_close_producers_and_consumers(
                     &cid,
                     "cascade_closed",
                 );
-
-                if let Some((entry, p_worker_index)) = state
-                    .cleanup_piped_producer_if_last_consumer(&c.producer_id, &c.physical_router_id)
-                {
-                    worker_pool.sub_resource_score(p_worker_index, 1);
-                    worker_pool.sub_resource_score(entry.target_worker_index, 1);
-                }
             }
         }
     }

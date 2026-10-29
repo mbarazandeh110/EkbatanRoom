@@ -746,63 +746,7 @@ impl Config {
         }
 
         // Observability overrides
-        if let Ok(val) = std::env::var("OBS_LOG_LEVEL").or_else(|_| std::env::var("RUST_LOG")) {
-            let trimmed = val.trim();
-            if !trimmed.is_empty() {
-                self.observability.log_level = trimmed.to_string();
-            }
-        }
-
-        if let Ok(val) = std::env::var("OBS_LOG_FORMAT") {
-            let lower = val.trim().to_lowercase();
-            if lower == "json" || lower == "pretty" || lower == "text" {
-                self.observability.log_format = lower;
-            } else {
-                return Err(ConfigError::InvalidLogFormat(val));
-            }
-        }
-
-        if let Ok(val) = std::env::var("OBS_TRACING_ENABLED") {
-            self.observability.tracing_enabled = val.eq_ignore_ascii_case("true") || val == "1";
-        }
-
-        if let Ok(val) =
-            std::env::var("OBS_OTLP_ENDPOINT").or_else(|_| std::env::var("OBS_TRACING_ENDPOINT"))
-        {
-            let trimmed = val.trim();
-            if !trimmed.is_empty() {
-                self.observability.tracing_endpoint = trimmed.to_string();
-            }
-        }
-
-        if let Ok(val) = std::env::var("OBS_TRACE_SAMPLE_RATE")
-            .or_else(|_| std::env::var("OBS_TRACING_SAMPLE_RATE"))
-        {
-            if let Ok(r) = val.parse::<f64>() {
-                if (0.0..=1.0).contains(&r) {
-                    self.observability.tracing_sample_rate = r;
-                }
-            }
-        }
-
-        if let Ok(val) = std::env::var("OBS_METRICS_ENABLED") {
-            self.observability.metrics_enabled = val.eq_ignore_ascii_case("true") || val == "1";
-        }
-
-        if let Ok(val) = std::env::var("OBS_METRICS_ADDR") {
-            let trimmed = val.trim();
-            let addr =
-                SocketAddr::from_str(trimmed).map_err(|e| ConfigError::InvalidSocketAddr {
-                    key: "OBS_METRICS_ADDR",
-                    val: trimmed.to_string(),
-                    err: e.to_string(),
-                })?;
-            self.observability.metrics_addr = addr;
-        }
-
-        if let Ok(val) = std::env::var("OBS_LOG_RAW_SDP") {
-            self.observability.log_raw_sdp = val.eq_ignore_ascii_case("true") || val == "1";
-        }
+        self.observability.apply_env_overrides()?;
 
         Ok(())
     }

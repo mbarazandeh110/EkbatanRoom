@@ -7,7 +7,7 @@ use crate::domain::errors::SfuDomainError;
 use crate::domain::idempotency::IdempotencyCache;
 use crate::domain::validation;
 use crate::ports::inbound::*;
-use crate::ports::outbound::{MetricsPort, WorkerPoolPort};
+use crate::ports::outbound::{EventPublisherPort, MetricsPort, WorkerPoolPort};
 use async_trait::async_trait;
 use mediasoup::pipe_transport::{PipeTransportOptions, PipeTransportRemoteParameters};
 use mediasoup::prelude::*;
@@ -71,6 +71,7 @@ pub struct EnterprisePipeService {
     state: EngineState,
     metrics: Arc<dyn MetricsPort>,
     worker_pool: Arc<dyn WorkerPoolPort>,
+    event_publisher: Arc<dyn EventPublisherPort>,
     create_pipe_transport_cache: Arc<IdempotencyCache<CreatePipeTransportResult>>,
     pipe_produce_cache: Arc<IdempotencyCache<ProduceResult>>,
     pipe_consume_cache: Arc<IdempotencyCache<ConsumeResult>>,
@@ -82,6 +83,7 @@ impl EnterprisePipeService {
         state: EngineState,
         metrics: Arc<dyn MetricsPort>,
         worker_pool: Arc<dyn WorkerPoolPort>,
+        event_publisher: Arc<dyn EventPublisherPort>,
     ) -> Self {
         let create_pipe_transport_cache = Arc::new(IdempotencyCache::default());
         let pipe_produce_cache = Arc::new(IdempotencyCache::default());
@@ -96,6 +98,7 @@ impl EnterprisePipeService {
             state,
             metrics,
             worker_pool,
+            event_publisher,
             create_pipe_transport_cache,
             pipe_produce_cache,
             pipe_consume_cache,
@@ -393,12 +396,78 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         })
                         .collect();
 
+                    let is_closed = Arc::new(AtomicBool::new(false));
+                    let r_id = params.router_id.clone();
+                    let p_id = producer_id.clone();
+                    let peer_id = "inter-node-cascade".to_string();
+                    let state_ref = self.state.clone();
+                    let closed_ref = is_closed.clone();
+                    let last_score = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
+                    let event_publisher = self.event_publisher.clone();
+
+                    producer
+                        .on_score(move |scores| {
+                            if closed_ref.load(Ordering::SeqCst)
+                                || !state_ref.is_router_active(&r_id)
+                            {
+                                return;
+                            }
+
+                            let avg_score = if scores.is_empty() {
+                                10
+                            } else {
+                                (scores.iter().map(|s| s.score as u32).sum::<u32>())
+                                    / (scores.len() as u32)
+                            };
+
+                            let prev = last_score.swap(avg_score, Ordering::Relaxed);
+                            if prev == avg_score {
+                                return; // Skip if score hasn't changed (Hot-path throttling)
+                            }
+
+                            let all_scores = scores.iter().map(|s| s.score as u32).collect();
+
+                            event_publisher
+                                .publish_score(&r_id, &p_id, &peer_id, true, avg_score, all_scores);
+                        })
+                        .detach();
+
                     let worker_index = self
                         .state
                         .routers
                         .get(&params.router_id)
                         .map(|r| r.worker_index)
                         .unwrap_or(0);
+
+                    if params.kind == DomainMediaKind::Audio {
+                        let observer_opt =
+                            self.state.routers.get(&params.router_id).and_then(|r| {
+                                if worker_index == r.worker_index {
+                                    Some(r.audio_level_observer.clone())
+                                } else {
+                                    r.sub_routers
+                                        .get(&worker_index)
+                                        .map(|sub| sub.audio_level_observer.clone())
+                                }
+                            });
+                        if let Some(observer) = observer_opt {
+                            use mediasoup::rtp_observer::{
+                                RtpObserver, RtpObserverAddProducerOptions,
+                            };
+                            if let Err(e) = observer
+                                .add_producer(RtpObserverAddProducerOptions::new(producer.id()))
+                                .await
+                            {
+                                tracing::warn!(
+                                    router_id = %params.router_id,
+                                    producer_id = %producer_id,
+                                    worker_index = %worker_index,
+                                    error = %e,
+                                    "Failed to add pipe audio producer to AudioLevelObserver"
+                                );
+                            }
+                        }
+                    }
 
                     let item = ProducerItem {
                         producer,
@@ -408,7 +477,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         transport_id: params.pipe_transport_id.clone(),
                         peer_id: "inter-node-cascade".to_string(),
                         kind: params.kind,
-                        is_closed: Arc::new(AtomicBool::new(false)),
+                        is_closed,
                     };
 
                     self.state.producers.insert(producer_id.clone(), item);
@@ -501,7 +570,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         t_item.transport.clone()
                     };
 
-                    let (producer_physical_router_id, producer_worker_index) = {
+                    let (producer_physical_router_id, producer_worker_index, is_source_paused) = {
                         let p_item = self.state.producers.get(&params.producer_id).ok_or_else(|| {
                             SfuDomainError::NotFound(format!(
                                 "Producer '{}' not found",
@@ -523,7 +592,11 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                             )));
                         }
 
-                        (p_item.physical_router_id.clone(), p_item.worker_index)
+                        (
+                            p_item.physical_router_id.clone(),
+                            p_item.worker_index,
+                            p_item.producer.paused(),
+                        )
                     };
 
                     let main_worker_index = {
@@ -629,13 +702,6 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                                     ))
                                 })?;
 
-                            let is_source_paused = self
-                                .state
-                                .producers
-                                .get(&params.producer_id)
-                                .map(|p| p.producer.paused())
-                                .unwrap_or(false);
-
                             let pipe_producer = pipe_pair.pipe_producer.into_inner();
                             if is_source_paused {
                                 let _ = pipe_producer.pause().await;
@@ -668,8 +734,9 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         ))
                     })?;
 
-                    let consumer_options =
+                    let mut consumer_options =
                         ConsumerOptions::new(producer_id_obj, RtpCapabilities::default());
+                    consumer_options.paused = is_source_paused;
 
                     let consumer = pipe_transport
                         .consume(consumer_options)
@@ -721,6 +788,40 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         .unwrap_or_default();
                     let clock_rate = first_codec.map(|c| c.clock_rate().get()).unwrap_or(0);
 
+                    let is_closed = Arc::new(AtomicBool::new(false));
+                    let r_id = params.router_id.clone();
+                    let c_id = consumer_id.clone();
+                    let peer_id = "inter-node-cascade".to_string();
+                    let state_ref = self.state.clone();
+                    let closed_ref = is_closed.clone();
+                    let last_consumer_score = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
+                    let event_publisher = self.event_publisher.clone();
+
+                    consumer
+                        .on_score(move |score| {
+                            if closed_ref.load(Ordering::SeqCst)
+                                || !state_ref.is_router_active(&r_id)
+                            {
+                                return;
+                            }
+
+                            let s_val = score.score as u32;
+                            let prev = last_consumer_score.swap(s_val, Ordering::Relaxed);
+                            if prev == s_val {
+                                return;
+                            }
+
+                            event_publisher.publish_score(
+                                &r_id,
+                                &c_id,
+                                &peer_id,
+                                false,
+                                s_val,
+                                vec![s_val],
+                            );
+                        })
+                        .detach();
+
                     let item = ConsumerItem {
                         consumer,
                         router_id: params.router_id.clone(),
@@ -730,7 +831,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         producer_id: params.producer_id.clone(),
                         peer_id: "inter-node-cascade".to_string(),
                         kind: domain_kind,
-                        is_closed: Arc::new(AtomicBool::new(false)),
+                        is_closed,
                     };
 
                     self.state.consumers.insert(consumer_id.clone(), item);

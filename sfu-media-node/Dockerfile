@@ -75,9 +75,9 @@ EXPOSE 50051/tcp
 EXPOSE 9090/tcp
 EXPOSE 40000-49999/udp
 
-# Healthcheck via Prometheus metrics endpoint
+# Healthcheck via Prometheus metrics endpoint (skips check if metrics are disabled, extracts port dynamically)
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9090/metrics || exit 1
+    CMD sh -c 'PORT="${OBS_METRICS_ADDR##*:}"; PORT="${PORT:-9090}"; [ "$OBS_METRICS_ENABLED" = "false" ] || curl -f "http://localhost:${PORT}/metrics" || exit 1'
 
 # Run as non-root user
 USER 10001:10001

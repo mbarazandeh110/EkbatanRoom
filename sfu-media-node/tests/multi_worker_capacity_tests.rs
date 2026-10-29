@@ -937,8 +937,8 @@ async fn test_piped_producer_cleanup_on_last_sub_router_consumer_closed() {
         w1_score_before + 1 + 2
     ); // 1 pipe + 2 video consumer
 
-    // 5. Close the consumer on Worker 1. Since this was the ONLY consumer on Worker 1 for this producer,
-    // the PipedProducerEntry MUST be cleaned up and the worker scores decremented symmetrically!
+    // 5. Close the consumer on Worker 1. Consumer score is decremented,
+    // but PipedProducerEntry remains cached to prevent race conditions on subsequent consumer arrivals.
     service
         .close_resource(Request::new(proto::CloseResourceRequest {
             router_id: router_id.clone(),
@@ -948,17 +948,43 @@ async fn test_piped_producer_cleanup_on_last_sub_router_consumer_closed() {
         .await
         .unwrap();
 
-    // Verify pipe was cleaned up from state.piped_producers
+    assert!(
+        node.state
+            .piped_producers
+            .contains_key(&p1_prod.producer_id),
+        "Piped producer remains cached until producer or router closes"
+    );
+    assert_eq!(
+        node.worker_pool.worker_resource_score(0),
+        w0_score_before + 1
+    );
+    assert_eq!(
+        node.worker_pool.worker_resource_score(1),
+        w1_score_before + 1
+    );
+
+    // 6. Close the producer. Now PipedProducerEntry MUST be cleaned up and worker scores returned to baseline!
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: router_id.clone(),
+            resource_type: proto::ResourceType::Producer as i32,
+            resource_id: p1_prod.producer_id.clone(),
+        }))
+        .await
+        .unwrap();
+
     assert!(
         !node
             .state
             .piped_producers
             .contains_key(&p1_prod.producer_id),
-        "Piped producer must be removed when the last consumer on sub-router closes"
+        "Piped producer must be removed when the producer closes"
     );
 
-    // Verify worker scores returned to baseline before pipe
-    assert_eq!(node.worker_pool.worker_resource_score(0), w0_score_before);
+    assert_eq!(
+        node.worker_pool.worker_resource_score(0),
+        w0_score_before - 10
+    );
     assert_eq!(node.worker_pool.worker_resource_score(1), w1_score_before);
 
     let _ = node.shutdown(std::time::Duration::from_secs(1)).await;

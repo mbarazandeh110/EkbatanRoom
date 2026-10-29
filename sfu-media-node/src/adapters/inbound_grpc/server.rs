@@ -343,8 +343,17 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
             self.node.metrics.clone(),
             request,
             move |req| async move {
-                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
-                    tracing::Span::current().record("room_id", &room_id);
+                let router_id_for_lookup = if !req.router_id.is_empty() {
+                    &req.router_id
+                } else if req.resource_type() == proto::ResourceType::Router {
+                    &req.resource_id
+                } else {
+                    ""
+                };
+                if !router_id_for_lookup.is_empty() {
+                    if let Some(room_id) = node.state.get_room_id_for_router(router_id_for_lookup) {
+                        tracing::Span::current().record("room_id", &room_id);
+                    }
                 }
                 match req.resource_type() {
                     proto::ResourceType::Router => {

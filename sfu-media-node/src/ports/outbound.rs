@@ -1,5 +1,7 @@
 use mediasoup::worker::Worker;
 
+pub type WorkerDeadCallback = std::sync::Arc<dyn Fn(usize) + Send + Sync>;
+
 pub trait WorkerPoolPort: Send + Sync {
     fn get_least_loaded(&self) -> (usize, Worker);
     fn increment_load(&self, index: usize);
@@ -13,6 +15,7 @@ pub trait WorkerPoolPort: Send + Sync {
     fn worker_resource_score(&self, index: usize) -> usize;
     fn total_resource_score(&self) -> usize;
     fn get_worker(&self, index: usize) -> Option<Worker>;
+    fn add_on_dead_callback(&self, callback: WorkerDeadCallback);
 }
 
 #[derive(Debug, Clone)]

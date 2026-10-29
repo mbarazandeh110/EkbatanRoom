@@ -48,6 +48,13 @@ impl MediaNode {
         let metrics = Arc::new(PrometheusMetrics);
         let state = EngineState::default();
 
+        let state_dead = state.clone();
+        let metrics_dead = metrics.clone();
+        let event_hub_dead = event_hub.clone();
+        worker_pool.add_on_dead_callback(Arc::new(move |w_idx| {
+            state_dead.cleanup_dead_worker(w_idx, metrics_dead.as_ref(), event_hub_dead.as_ref());
+        }));
+
         let router_service = Arc::new(RouterService::new(
             state.clone(),
             worker_pool.clone(),
@@ -82,6 +89,7 @@ impl MediaNode {
                 state.clone(),
                 metrics.clone(),
                 worker_pool.clone(),
+                event_hub.clone(),
             ),
         );
 

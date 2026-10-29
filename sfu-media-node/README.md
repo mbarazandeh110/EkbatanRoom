@@ -6,7 +6,7 @@
 
 ## ۱. معماری و ویژگی‌های کلیدی
 
-- **طراحی شش‌ضلعی و تفکیک لایه‌ها (Hexagonal / Clean Architecture):** جداسازی کامل لایه‌های دامنه (`domain`)، موتور رسانه (`engine`)، و لایه انتقال ارتباطی (`transport/grpc`).
+- **طراحی شش‌ضلعی و تفکیک لایه‌ها (Hexagonal / Clean Architecture):** جداسازی کامل لایه‌های دامنه (`domain`)، پورت‌ها (`ports`)، لایه کاربرد (`application`)، و آداپتورها (`adapters`).
 - **استقلال کامل از سیگنالینگ و لایوکیت:** هسته رسانه تنها مفاهیم استاندارد Mediasoup و ORTC را پردازش می‌کند و هیچ وابستگی به SDP، JWT یا پروتکل‌های سیگنالینگ اختصاصی ندارد.
 - **اعتبارسنجی سخت‌گیرانه در مرز RPC (Boundary Validation):** تبدیل و اعتبارسنجی رشته‌های خام JSON ورودی (`rtp_parameters_json` و `rtp_capabilities_json`) در بدو ورود gRPC به ساختارهای تایپ‌شده `mediasoup` و بازگرداندن خطای `InvalidArgument` در صورت بروز هرگونه مغایرت.
 - **سیاست دقیق تکرارپذیری (Idempotency State Machine):**
@@ -31,8 +31,10 @@
 | `CreateRouter` | ساخت روتر جدید روی کم‌بارترین ورکر یا بازگرداندن روتر فعال موجود برای اتاق |
 | `CreateTransport` | ساخت `WebRtcTransport` جدید به همراه پارامترهای ICE، کاندیدها، فینگرپرینت‌های DTLS و SCTP (با پشتیبانی از Worker Spillover) |
 | `ConnectTransport` | اتصال ترنسپورت سمت SFU به فینگرپرینت‌ها و نقش DTLS کلاینت |
-| `CreatePipeTransport` | ایجاد `PipeTransport` جهت توزیع جریان رسانه به روترها/نودهای دیگر (Cascading) |
-| `ConnectPipeTransport` | اتصال `PipeTransport` به آدرس IP و پورت مقصد |
+| `CreatePipeTransport` | ایجاد `PipeTransport` جهت توزیع جریان رسانه بین نودها (Cascading - Enterprise) |
+| `ConnectPipeTransport` | اتصال `PipeTransport` به آدرس IP و پورت مقصد (Enterprise) |
+| `PipeProduce` | ایجاد پرودیوسر روی `PipeTransport` جهت دریافت استریم از نود دیگر (Enterprise) |
+| `PipeConsume` | ایجاد کانسومر روی `PipeTransport` جهت ارسال استریم به نود دیگر (Enterprise) |
 | `RestartIce` | تجدید اطلاعات احراز هویت ICE کاندیدها |
 | `Produce` | ایجاد پرودیوسر مدیا (صدا یا تصویر) با اعتبارسنجی پارامترهای RTP و اتصال به AudioLevelObserver متناظر |
 | `Consume` | ایجاد کانسومر مدیا با بررسی الزامی `router.can_consume` و Pipe خودکار بین ورکرهای داخلی در صورت سرریز |
@@ -49,12 +51,19 @@
 
 | نام متغیر | پیش‌فرض | توضیحات |
 | :--- | :--- | :--- |
+| `SFU_CONFIG_FILE` | - | مسیر فایل پیکربندی اختیاری YAML (مانند `config.yaml`) |
 | `MEDIASOUP_LISTEN_IP` | `0.0.0.0` | آدرس IP محلی که مدیاسوپ روی آن شنود می‌کند |
 | `MEDIASOUP_ANNOUNCED_IP` | `127.0.0.1` | آدرس IP عمومی برای اعلان در ICE کاندیدها (ضروری برای Docker/NAT) |
 | `RTC_MIN_PORT` | `40000` | ابتدای بازه پورت‌های UDP برای ترافیک RTC |
 | `RTC_MAX_PORT` | `49999` | انتهای بازه پورت‌های UDP برای ترافیک RTC |
 | `GRPC_PORT` | `50051` | پورت گوش فرا دادن سرور gRPC کنترلی |
 | `MEDIASOUP_WORKER_COUNT` | تعداد هسته‌های CPU | تعداد پروسه‌های ایزوله `mediasoup-worker` |
+| `MEDIASOUP_WORKER_LOG_LEVEL` | `error` | سطح لاگ ورکر C++ مدیاسوپ (`debug`, `warn`, `error`, `none`) |
+| `MEDIASOUP_WORKER_LOG_TAGS` | `info,ice,dtls,rtp,srtp,rtcp` | تگ‌های فیلتر لاگ پروسه ورکر مدیاسوپ |
+| `MEDIASOUP_WORKER_DTLS_CERT` | - | مسیر فایل گواهی سفارشی DTLS ورکر (اختیاری) |
+| `MEDIASOUP_WORKER_DTLS_KEY` | - | مسیر فایل کلید خصوصی سفارشی DTLS ورکر (اختیاری) |
+| `MEDIASOUP_WEBRTC_INITIAL_AVAILABLE_OUTGOING_BITRATE` | `600000` | بیت‌ریت اولیه ارسالی WebRTC بر حسب bps |
+| `MEDIASOUP_CODECS_START_BITRATE` | - | مقدار `google-start-bitrate` اولیه برای کدک‌های تصویری |
 | `SFU_WORKER_CAPACITY_WEIGHT` | `1000` | وزن ظرفیت اسمی هر ورکر جهت محاسبه درصد بار منابع فعال |
 | `SFU_WORKER_SPILLOVER_THRESHOLD_PERCENT` | `80.0` | درصد آستانه سرریز ورکر جهت ساخت Sub-Router روی کم‌بارترین ورکر دیگر |
 | `OBS_LOG_LEVEL` | `info` | سطح فیلتر لاگ‌های ساختاریافته (`trace`, `debug`, `info`, `warn`, `error`) |

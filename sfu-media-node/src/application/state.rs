@@ -227,6 +227,128 @@ impl EngineState {
             None
         }
     }
+
+    pub fn cleanup_dead_worker(
+        &self,
+        worker_index: usize,
+        metrics: &dyn crate::ports::outbound::MetricsPort,
+        event_publisher: &dyn crate::ports::outbound::EventPublisherPort,
+    ) {
+        // 1. Identify and close all transports on this worker
+        let dead_transports: Vec<(String, String, bool)> = self
+            .transports
+            .iter()
+            .filter(|entry| entry.value().worker_index == worker_index)
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    entry.value().router_id.clone(),
+                    entry.value().is_publisher,
+                )
+            })
+            .collect();
+
+        for (tid, router_id, is_publisher) in dead_transports {
+            if let Some((_, t)) = self.transports.remove(&tid) {
+                t.is_closed.store(true, std::sync::atomic::Ordering::SeqCst);
+                metrics.dec_active_transports(is_publisher);
+                if let Some(set) = self.router_transports.get_mut(&router_id) {
+                    set.remove(&tid);
+                }
+                event_publisher.publish_resource_closed(
+                    &router_id,
+                    "transport",
+                    &tid,
+                    "worker_died",
+                );
+            }
+        }
+
+        // 2. Identify and close all producers on this worker
+        let dead_producers: Vec<(String, String, crate::domain::entities::MediaKind)> = self
+            .producers
+            .iter()
+            .filter(|entry| entry.value().worker_index == worker_index)
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    entry.value().router_id.clone(),
+                    entry.value().kind,
+                )
+            })
+            .collect();
+
+        for (pid, router_id, kind) in dead_producers {
+            if let Some((_, p)) = self.producers.remove(&pid) {
+                p.is_closed.store(true, std::sync::atomic::Ordering::SeqCst);
+                metrics.dec_active_producers(&kind.to_string());
+                self.transport_producers.retain(|_, set| {
+                    set.remove(&pid);
+                    !set.is_empty()
+                });
+                self.piped_producers.remove(&pid);
+                event_publisher.publish_resource_closed(
+                    &router_id,
+                    "producer",
+                    &pid,
+                    "worker_died",
+                );
+
+                // Cascade close consumers connected to this producer
+                if let Some((_, c_ids)) = self.producer_consumers.remove(&pid) {
+                    for cid in c_ids {
+                        if let Some(c) = self.cascade_remove_consumer(&cid) {
+                            metrics.dec_active_consumers(&c.kind.to_string());
+                            event_publisher.publish_resource_closed(
+                                &router_id,
+                                "consumer",
+                                &cid,
+                                "worker_died",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Identify and close all consumers on this worker
+        let dead_consumers: Vec<(String, String, crate::domain::entities::MediaKind)> = self
+            .consumers
+            .iter()
+            .filter(|entry| entry.value().worker_index == worker_index)
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    entry.value().router_id.clone(),
+                    entry.value().kind,
+                )
+            })
+            .collect();
+
+        for (cid, router_id, kind) in dead_consumers {
+            if let Some(_c) = self.cascade_remove_consumer(&cid) {
+                metrics.dec_active_consumers(&kind.to_string());
+                event_publisher.publish_resource_closed(
+                    &router_id,
+                    "consumer",
+                    &cid,
+                    "worker_died",
+                );
+            }
+        }
+
+        // 4. Clean up any sub-routers on this worker in all routers
+        for r_entry in self.routers.iter() {
+            if let Some((_, sub)) = r_entry.value().sub_routers.remove(&worker_index) {
+                sub.is_closed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        // 5. Clean up peer affinity for this worker
+        self.peer_worker_affinity
+            .retain(|_, &mut w| w != worker_index);
+    }
 }
 
 #[cfg(test)]

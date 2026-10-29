@@ -109,7 +109,9 @@ impl RouterUseCase for RouterService {
                     let existing_active_router = {
                         if let Some(r_id) = self.state.room_to_router.get(room_id) {
                             self.state.routers.get(r_id.value()).and_then(|r| {
-                                if !r.is_closed.load(Ordering::SeqCst) {
+                                if !r.is_closed.load(Ordering::SeqCst)
+                                    && self.worker_pool.is_worker_alive(r.worker_index)
+                                {
                                     Some((r.router.clone(), r.worker_index))
                                 } else {
                                     None
