@@ -1,11 +1,11 @@
+use crate::domain::entities::*;
 use crate::ports::outbound::EventPublisherPort;
-use crate::proto::sfu::v1 as proto;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
 #[derive(Clone)]
 pub struct EventHub {
-    sender: broadcast::Sender<proto::NodeEvent>,
+    sender: broadcast::Sender<DomainNodeEvent>,
 }
 
 impl Default for EventHub {
@@ -20,7 +20,7 @@ impl EventHub {
         Self { sender }
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<proto::NodeEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<DomainNodeEvent> {
         self.sender.subscribe()
     }
 
@@ -42,28 +42,26 @@ impl EventPublisherPort for EventHub {
         score: u32,
         producer_scores: Vec<u32>,
     ) {
-        let event = proto::NodeEvent {
+        let event = DomainNodeEvent {
             router_id: router_id.to_string(),
             timestamp_ms: Self::now_ms(),
-            payload: Some(proto::node_event::Payload::MediaScore(
-                proto::MediaScoreEvent {
-                    resource_id: resource_id.to_string(),
-                    peer_id: peer_id.to_string(),
-                    is_producer,
-                    score,
-                    producer_scores,
-                },
-            )),
+            payload: Some(DomainNodeEventPayload::MediaScore(DomainMediaScoreEvent {
+                resource_id: resource_id.to_string(),
+                peer_id: peer_id.to_string(),
+                is_producer,
+                score,
+                producer_scores,
+            })),
         };
         let _ = self.sender.send(event);
     }
 
     fn publish_layer_change(&self, params: crate::ports::outbound::LayerChangeEventParams<'_>) {
-        let event = proto::NodeEvent {
+        let event = DomainNodeEvent {
             router_id: params.router_id.to_string(),
             timestamp_ms: Self::now_ms(),
-            payload: Some(proto::node_event::Payload::LayerChanged(
-                proto::LayerChangedEvent {
+            payload: Some(DomainNodeEventPayload::LayerChanged(
+                DomainLayerChangedEvent {
                     consumer_id: params.consumer_id.to_string(),
                     producer_id: params.producer_id.to_string(),
                     peer_id: params.peer_id.to_string(),
@@ -84,11 +82,11 @@ impl EventPublisherPort for EventHub {
         peer_id: &str,
         volume_dbfs: f32,
     ) {
-        let event = proto::NodeEvent {
+        let event = DomainNodeEvent {
             router_id: router_id.to_string(),
             timestamp_ms: Self::now_ms(),
-            payload: Some(proto::node_event::Payload::ActiveSpeaker(
-                proto::ActiveSpeakerEvent {
+            payload: Some(DomainNodeEventPayload::ActiveSpeaker(
+                DomainActiveSpeakerEvent {
                     producer_id: producer_id.to_string(),
                     peer_id: peer_id.to_string(),
                     volume_dbfs,
@@ -106,18 +104,18 @@ impl EventPublisherPort for EventHub {
         reason: &str,
     ) {
         let r_type = match resource_type_str.to_lowercase().as_str() {
-            "router" => proto::ResourceType::Router as i32,
-            "transport" => proto::ResourceType::Transport as i32,
-            "producer" => proto::ResourceType::Producer as i32,
-            "consumer" => proto::ResourceType::Consumer as i32,
-            _ => proto::ResourceType::Unspecified as i32,
+            "router" => DomainResourceType::Router,
+            "transport" => DomainResourceType::Transport,
+            "producer" => DomainResourceType::Producer,
+            "consumer" => DomainResourceType::Consumer,
+            _ => DomainResourceType::Unspecified,
         };
 
-        let event = proto::NodeEvent {
+        let event = DomainNodeEvent {
             router_id: router_id.to_string(),
             timestamp_ms: Self::now_ms(),
-            payload: Some(proto::node_event::Payload::ResourceClosed(
-                proto::ResourceClosedEvent {
+            payload: Some(DomainNodeEventPayload::ResourceClosed(
+                DomainResourceClosedEvent {
                     resource_type: r_type,
                     resource_id: resource_id.to_string(),
                     reason: reason.to_string(),
@@ -128,26 +126,10 @@ impl EventPublisherPort for EventHub {
     }
 
     fn publish_node_capacity(&self, info: &crate::domain::entities::NodeCapacityInfo) {
-        let metrics = proto::NodeCapacityMetrics {
-            total_capacity_weight: info.total_capacity_weight,
-            total_workers: info.total_workers,
-            alive_workers: info.alive_workers,
-            logical_load_percent: info.logical_load_percent,
-            cpu_usage_percent: info.cpu_usage_percent,
-            memory_usage_percent: info.memory_usage_percent,
-            max_worker_load_percent: info.max_worker_load_percent,
-            effective_load_percent: info.effective_load_percent,
-            active_routers: info.active_routers,
-            active_transports: info.active_transports,
-            active_producers: info.active_producers,
-            active_consumers: info.active_consumers,
-            is_draining: info.is_draining,
-            enterprise_cascading_enabled: info.enterprise_cascading_enabled,
-        };
-        let event = proto::NodeEvent {
+        let event = DomainNodeEvent {
             router_id: String::new(),
             timestamp_ms: Self::now_ms(),
-            payload: Some(proto::node_event::Payload::NodeCapacity(metrics)),
+            payload: Some(DomainNodeEventPayload::NodeCapacity(info.clone())),
         };
         let _ = self.sender.send(event);
     }

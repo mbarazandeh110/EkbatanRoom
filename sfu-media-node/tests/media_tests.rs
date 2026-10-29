@@ -288,7 +288,7 @@ async fn test_node_events_stream() {
 
     assert_eq!(received.router_id, r_resp.router_id);
     match received.payload.unwrap() {
-        proto::node_event::Payload::ResourceClosed(rc) => {
+        sfu_media_node::domain::DomainNodeEventPayload::ResourceClosed(rc) => {
             assert_eq!(rc.resource_id, tr.transport_id);
         }
         other => panic!("Expected ResourceClosed, got: {:?}", other),

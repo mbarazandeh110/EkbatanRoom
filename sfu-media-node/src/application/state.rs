@@ -170,6 +170,63 @@ impl EngineState {
             None
         }
     }
+
+    pub fn cleanup_piped_producer_if_last_consumer(
+        &self,
+        producer_id: &str,
+        target_router_id: &str,
+    ) -> Option<(PipedProducerEntry, usize)> {
+        let (p_physical_router_id, p_worker_index) = {
+            let p = self.producers.get(producer_id)?;
+            (p.physical_router_id.clone(), p.worker_index)
+        };
+
+        if p_physical_router_id == target_router_id {
+            return None;
+        }
+
+        let has_remaining = if let Some(c_ids) = self.producer_consumers.get(producer_id) {
+            c_ids.iter().any(|cid| {
+                self.consumers
+                    .get(cid.as_str())
+                    .map(|c| c.physical_router_id == target_router_id)
+                    .unwrap_or(false)
+            })
+        } else {
+            false
+        };
+
+        if has_remaining {
+            return None;
+        }
+
+        let removed = if let Some(mut entries) = self.piped_producers.get_mut(producer_id) {
+            entries
+                .iter()
+                .position(|e| e.target_router_id == target_router_id)
+                .map(|pos| entries.swap_remove(pos))
+        } else {
+            None
+        };
+
+        if let Some(entry) = removed {
+            let is_empty = self
+                .piped_producers
+                .get(producer_id)
+                .map(|e| e.is_empty())
+                .unwrap_or(false);
+            if is_empty {
+                self.piped_producers.remove(producer_id);
+            }
+
+            let sf_key = format!("{}:{}", producer_id, target_router_id);
+            self.pipe_singleflight.remove(&sf_key);
+
+            Some((entry, p_worker_index))
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

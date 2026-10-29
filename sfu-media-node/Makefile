@@ -2,7 +2,7 @@
 # Makefile for sfu-media-node (Rust Media Plane)
 # ==============================================================================
 
-.PHONY: all help build release check test test-unit test-lifecycle test-media test-observability test-refactoring test-capacity test-config fmt fmt-check lint run docker-build docker-run clean
+.PHONY: all help build release check test test-unit test-lifecycle test-media test-observability test-refactoring test-capacity test-config test-open-core test-all-features fmt fmt-check lint run docker-build docker-run clean
 
 IMAGE_NAME ?= ekbatan/sfu-media-node
 IMAGE_TAG ?= latest
@@ -11,7 +11,7 @@ help: ## Show this help message
 	@echo "Available targets:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-all: fmt-check lint test release ## Run formatting check, clippy, all tests, and release build
+all: fmt-check lint test test-all-features release ## Run formatting check, clippy, all tests (default & enterprise), and release build
 
 build: ## Compile debug binary
 	cargo build
@@ -46,14 +46,20 @@ test-capacity: ## Run multi-worker spillover and capacity metrics tests
 test-config: ## Run configuration and mediasoup tuning tests
 	cargo test --test config_and_mediasoup_tuning_tests
 
+test-open-core: ## Run Open-Core architecture and enterprise cascading tests
+	cargo test --test open_core_tests
+
+test-all-features: ## Run all tests with all features enabled (including enterprise)
+	cargo test --all-features
+
 fmt: ## Format Rust codebase using rustfmt
 	cargo fmt
 
 fmt-check: ## Check code formatting without applying changes
 	cargo fmt --check
 
-lint: ## Run Clippy linter with warnings denied
-	cargo clippy --all-targets -- -D warnings
+lint: ## Run Clippy linter with warnings denied across all features
+	cargo clippy --all-targets --all-features -- -D warnings
 
 run: ## Run the SFU media node locally
 	cargo run

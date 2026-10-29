@@ -104,3 +104,46 @@ router_codecs:
     let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
     let _ = std::fs::remove_file(file_path);
 }
+
+#[tokio::test]
+async fn test_yaml_observability_aliases_and_worker_count_zero() {
+    let yaml = r#"
+worker:
+  worker_count: 0
+  capacity_weight: 1200
+
+plain_transport:
+  max_send_message_size: 4000000
+  max_receive_message_size: 4000000
+  sctp_send_buffer_size: 6000000
+
+observability:
+  otlp_endpoint: "http://otel.internal:4317"
+  trace_sample_rate: 0.25
+  metrics_enabled: true
+  metrics_addr: "127.0.0.1:9095"
+"#;
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("alias_test_config.yaml");
+    std::fs::write(&file_path, yaml).unwrap();
+
+    let config = Config::try_from_file(&file_path).unwrap();
+    assert!(config.worker_count > 0);
+    assert_eq!(config.worker_capacity_weight, 1200);
+
+    assert_eq!(config.plain_transport.max_send_message_size, 4000000);
+    assert_eq!(config.plain_transport.sctp_send_buffer_size, 6000000);
+
+    assert_eq!(
+        config.observability.tracing_endpoint,
+        "http://otel.internal:4317"
+    );
+    assert!((config.observability.tracing_sample_rate - 0.25).abs() < f64::EPSILON);
+    assert_eq!(
+        config.observability.metrics_addr.to_string(),
+        "127.0.0.1:9095"
+    );
+
+    let _ = std::fs::remove_file(file_path);
+}

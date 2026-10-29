@@ -45,9 +45,11 @@ async fn test_router_close_event_emission() {
     // 3. Verify ResourceClosed event was emitted for the Router
     let received = timeout(Duration::from_secs(2), async {
         while let Ok(event) = rx.recv().await {
-            if let Some(proto::node_event::Payload::ResourceClosed(rc)) = event.payload {
+            if let Some(sfu_media_node::domain::DomainNodeEventPayload::ResourceClosed(rc)) =
+                event.payload
+            {
                 if rc.resource_id == router_id
-                    && rc.resource_type == proto::ResourceType::Router as i32
+                    && rc.resource_type == sfu_media_node::domain::DomainResourceType::Router
                 {
                     return true;
                 }
@@ -221,9 +223,11 @@ async fn test_producer_close_cascades_to_consumers_and_cleans_maps() {
     // 6. Verify ResourceClosed event was emitted for the Consumer
     let received_consumer_close = timeout(Duration::from_secs(2), async {
         while let Ok(event) = rx.recv().await {
-            if let Some(proto::node_event::Payload::ResourceClosed(rc)) = event.payload {
+            if let Some(sfu_media_node::domain::DomainNodeEventPayload::ResourceClosed(rc)) =
+                event.payload
+            {
                 if rc.resource_id == cons.consumer_id
-                    && rc.resource_type == proto::ResourceType::Consumer as i32
+                    && rc.resource_type == sfu_media_node::domain::DomainResourceType::Consumer
                 {
                     return true;
                 }
@@ -473,7 +477,9 @@ async fn test_close_router_validation_and_no_false_event() {
     // Drain/check events to ensure NO ResourceClosed event was emitted
     let received_false_event = timeout(Duration::from_millis(200), async {
         while let Ok(event) = rx.recv().await {
-            if let Some(proto::node_event::Payload::ResourceClosed(rc)) = event.payload {
+            if let Some(sfu_media_node::domain::DomainNodeEventPayload::ResourceClosed(rc)) =
+                event.payload
+            {
                 if rc.resource_id == "non-existent-router" {
                     return true;
                 }

@@ -814,3 +814,152 @@ async fn test_worker_death_resets_scores_and_prevents_capacity_spike() {
 
     let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
 }
+
+#[tokio::test]
+async fn test_piped_producer_cleanup_on_last_sub_router_consumer_closed() {
+    let node = Arc::new(MediaNode::new(multi_worker_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create Router on Room 1 (anchored to worker 0)
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-clean-pipe-r".to_string(),
+            room_id: "room-clean-pipe".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let router_id = r_resp.router_id;
+
+    // 2. Peer 1 on Worker 0 publishes video producer (weight 10 >= threshold 5)
+    let p1_pub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-clean-p1-pub".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-pub-0".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let vp8_rtp_params = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "payloadType": 96,
+                "clockRate": 90000,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 44444444 }],
+        "rtcp": { "cname": "video-clean", "reducedSize": true }
+    }"#;
+
+    let p1_prod = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-clean-prod".to_string(),
+            router_id: router_id.clone(),
+            transport_id: p1_pub.transport_id.clone(),
+            peer_id: "peer-pub-0".to_string(),
+            kind: "video".to_string(),
+            rtp_parameters_json: vp8_rtp_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 3. Peer 2 creates subscriber transport (spillover to worker 1)
+    let p2_sub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-clean-p2-sub".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-sub-1".to_string(),
+            is_publisher: false,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let p2_sub_item = node.state.transports.get(&p2_sub.transport_id).unwrap();
+    assert_eq!(p2_sub_item.worker_index, 1);
+    drop(p2_sub_item);
+
+    let w0_score_before = node.worker_pool.worker_resource_score(0);
+    let w1_score_before = node.worker_pool.worker_resource_score(1);
+
+    // 4. Peer 2 consumes Peer 1's producer across workers -> triggers pipe_to_router
+    let vp8_caps = r#"{
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "kind": "video",
+                "preferredPayloadType": 96,
+                "clockRate": 90000,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": []
+    }"#;
+
+    let consume_resp = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-clean-consume".to_string(),
+            router_id: router_id.clone(),
+            subscriber_transport_id: p2_sub.transport_id.clone(),
+            producer_id: p1_prod.producer_id.clone(),
+            rtp_capabilities_json: vp8_caps.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Verify pipe exists and score was incremented
+    assert!(node
+        .state
+        .piped_producers
+        .contains_key(&p1_prod.producer_id));
+    assert_eq!(
+        node.worker_pool.worker_resource_score(0),
+        w0_score_before + 1
+    );
+    assert_eq!(
+        node.worker_pool.worker_resource_score(1),
+        w1_score_before + 1 + 2
+    ); // 1 pipe + 2 video consumer
+
+    // 5. Close the consumer on Worker 1. Since this was the ONLY consumer on Worker 1 for this producer,
+    // the PipedProducerEntry MUST be cleaned up and the worker scores decremented symmetrically!
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: router_id.clone(),
+            resource_type: proto::ResourceType::Consumer as i32,
+            resource_id: consume_resp.consumer_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+    // Verify pipe was cleaned up from state.piped_producers
+    assert!(
+        !node
+            .state
+            .piped_producers
+            .contains_key(&p1_prod.producer_id),
+        "Piped producer must be removed when the last consumer on sub-router closes"
+    );
+
+    // Verify worker scores returned to baseline before pipe
+    assert_eq!(node.worker_pool.worker_resource_score(0), w0_score_before);
+    assert_eq!(node.worker_pool.worker_resource_score(1), w1_score_before);
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}

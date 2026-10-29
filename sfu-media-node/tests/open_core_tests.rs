@@ -317,5 +317,18 @@ async fn test_enterprise_edition_pipe_cascade_e2e() {
     assert!(!sub_consume_resp.consumer_id.is_empty());
     assert_eq!(sub_consume_resp.kind, "audio");
 
+    // Verify cascaded producer is properly registered in producer_consumers mapping
+    assert!(node
+        .state
+        .producer_consumers
+        .contains_key(&pipe_prod_resp.producer_id));
+    let cascaded_consumers = node
+        .state
+        .producer_consumers
+        .get(&pipe_prod_resp.producer_id)
+        .unwrap();
+    assert!(cascaded_consumers.contains(&sub_consume_resp.consumer_id));
+    drop(cascaded_consumers);
+
     let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
 }

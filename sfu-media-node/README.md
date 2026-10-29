@@ -124,6 +124,12 @@ make test-capacity
 # اجرای تست‌های اعتبارسنجی تنظیمات و پارامترهای Mediasoup
 make test-config
 
+# اجرای تست‌های معماری Open-Core و توزیع اتاق بین نودها (Enterprise Cascading)
+make test-open-core
+
+# اجرای تمامی تست‌ها با تمام فیچرها (حالت تجاری / Enterprise)
+make test-all-features
+
 # اجرای سرور به صورت محلی
 make run
 ```
@@ -218,6 +224,7 @@ docker run --rm -it \
 │   ├── application/            # لایه هماهنگ‌کننده یوزکیس‌ها (Application Layer)
 │   │   ├── media_node.rs       # Facade و Composition Root سرور مدیا
 │   │   ├── media_service.rs    # منطق تولید، مصرف و لایه‌بندی مدیا
+│   │   ├── pipe_service.rs     # مدیریت PipeTransport بین نودها (Open-Core & Cascading)
 │   │   ├── router_service.rs   # مدیریت روترها و پیشگیری از شرایط مسابقه
 │   │   ├── state.rs            # نگهداری ایزوله و بدون ددلاک وضعیت نود
 │   │   ├── system_sampler.rs   # نمونه‌برداری بلادرنگ CPU و بار سیستم
@@ -241,7 +248,7 @@ docker run --rm -it \
 │   │   ├── tracing_extractor.rs# استخراج W3C traceparent و x-request-id
 │   │   └── mod.rs
 │   ├── ports/                  # اینترفیس‌های مرزی هگزاگونال (Ports)
-│   │   ├── inbound.rs          # Use-Case Traitها (RouterUseCase, TransportUseCase, MediaUseCase)
+│   │   ├── inbound.rs          # Use-Case Traitها (RouterUseCase, TransportUseCase, MediaUseCase, InterNodePipeUseCase)
 │   │   ├── mod.rs
 │   │   └── outbound.rs         # اینترفیس‌های آداپتورهای خروجی (WorkerPoolPort, EventPublisherPort, MetricsPort)
 │   └── proto.rs                # ماژول تولیدشده از protobuf
@@ -252,6 +259,7 @@ docker run --rm -it \
     ├── media_tests.rs          # آزمون‌های Produce/Consume، لایه‌ها، آمار و رویدادها
     ├── multi_worker_capacity_tests.rs # آزمون‌های Multi-Worker Spillover، سرریز، Pipe و ظرفیت نود
     ├── observability_tests.rs  # آزمون‌های استخراج W3C TraceContext و متریک‌های پرومتئوس
+    ├── open_core_tests.rs      # آزمون‌های معماری Open-Core، سرریز و انتقال رسانه بین‌نودی
     └── refactoring_verification_tests.rs # آزمون‌های حذف آبشاری، رویدادهای زامبی و ایمنی ورکر
 ```
 

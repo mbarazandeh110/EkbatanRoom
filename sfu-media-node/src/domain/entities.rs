@@ -83,3 +83,62 @@ pub struct NodeCapacityInfo {
     pub is_draining: bool,
     pub enterprise_cascading_enabled: bool,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DomainResourceType {
+    Unspecified,
+    Router,
+    Transport,
+    Producer,
+    Consumer,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DomainMediaScoreEvent {
+    pub resource_id: String,
+    pub peer_id: String,
+    pub is_producer: bool,
+    pub score: u32,
+    pub producer_scores: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainLayerChangedEvent {
+    pub consumer_id: String,
+    pub producer_id: String,
+    pub peer_id: String,
+    pub preferred_spatial_layer: i32,
+    pub current_spatial_layer: i32,
+    pub preferred_temporal_layer: i32,
+    pub current_temporal_layer: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DomainActiveSpeakerEvent {
+    pub producer_id: String,
+    pub peer_id: String,
+    pub volume_dbfs: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainResourceClosedEvent {
+    pub resource_type: DomainResourceType,
+    pub resource_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DomainNodeEventPayload {
+    MediaScore(DomainMediaScoreEvent),
+    LayerChanged(DomainLayerChangedEvent),
+    ActiveSpeaker(DomainActiveSpeakerEvent),
+    ResourceClosed(DomainResourceClosedEvent),
+    NodeCapacity(NodeCapacityInfo),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DomainNodeEvent {
+    pub router_id: String,
+    pub timestamp_ms: i64,
+    pub payload: Option<DomainNodeEventPayload>,
+}

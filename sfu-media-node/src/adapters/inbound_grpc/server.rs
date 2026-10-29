@@ -474,11 +474,11 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
             Ok(event) => {
                 let is_passthrough = matches!(
                     event.payload,
-                    Some(proto::node_event::Payload::ResourceClosed(_))
-                        | Some(proto::node_event::Payload::NodeCapacity(_))
+                    Some(crate::domain::entities::DomainNodeEventPayload::ResourceClosed(_))
+                        | Some(crate::domain::entities::DomainNodeEventPayload::NodeCapacity(_))
                 );
                 if is_passthrough || node_ref.is_router_active(&event.router_id) {
-                    Some(Ok(event))
+                    Some(Ok(mapper::to_proto_node_event(event)))
                 } else {
                     tracing::debug!(
                         router_id = %event.router_id,

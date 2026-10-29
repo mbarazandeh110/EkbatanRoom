@@ -81,6 +81,7 @@ impl MediaNode {
                 config.clone(),
                 state.clone(),
                 metrics.clone(),
+                worker_pool.clone(),
             ),
         );
 

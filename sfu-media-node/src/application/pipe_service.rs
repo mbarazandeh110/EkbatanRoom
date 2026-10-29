@@ -1,39 +1,21 @@
-use crate::domain::errors::SfuDomainError;
-use crate::ports::inbound::*;
-use async_trait::async_trait;
-
-#[cfg(feature = "enterprise")]
-use crate::config::Config;
-#[cfg(feature = "enterprise")]
-use crate::domain::entities::{MediaKind as DomainMediaKind, SimulcastEncodingInfo};
-
-#[cfg(feature = "enterprise")]
 use crate::application::state::{ConsumerItem, EngineState, PipeTransportItem, ProducerItem};
-#[cfg(feature = "enterprise")]
+use crate::config::Config;
+use crate::domain::entities::{MediaKind as DomainMediaKind, SimulcastEncodingInfo};
+use crate::domain::errors::SfuDomainError;
 use crate::domain::idempotency::IdempotencyCache;
-#[cfg(feature = "enterprise")]
 use crate::domain::validation;
-#[cfg(feature = "enterprise")]
-use crate::ports::outbound::MetricsPort;
-#[cfg(feature = "enterprise")]
+use crate::ports::inbound::*;
+use crate::ports::outbound::{MetricsPort, WorkerPoolPort};
+use async_trait::async_trait;
 use mediasoup::pipe_transport::{PipeTransportOptions, PipeTransportRemoteParameters};
-#[cfg(feature = "enterprise")]
 use mediasoup::prelude::*;
-#[cfg(feature = "enterprise")]
 use mediasoup::transport::Transport;
-#[cfg(feature = "enterprise")]
 use mediasoup::types::scalability_modes::ScalabilityMode;
-#[cfg(feature = "enterprise")]
 use mediasoup::types::srtp_parameters::SrtpParameters;
-#[cfg(feature = "enterprise")]
 use std::net::IpAddr;
-#[cfg(feature = "enterprise")]
 use std::str::FromStr;
-#[cfg(feature = "enterprise")]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "enterprise")]
 use std::sync::Arc;
-#[cfg(feature = "enterprise")]
 use std::time::Duration;
 
 pub struct CommunityDisabledPipeService;
@@ -81,19 +63,23 @@ impl InterNodePipeUseCase for CommunityDisabledPipeService {
     }
 }
 
-#[cfg(feature = "enterprise")]
 pub struct EnterprisePipeService {
     config: Config,
     state: EngineState,
     metrics: Arc<dyn MetricsPort>,
+    worker_pool: Arc<dyn WorkerPoolPort>,
     create_pipe_transport_cache: Arc<IdempotencyCache<CreatePipeTransportResult>>,
     pipe_produce_cache: Arc<IdempotencyCache<ProduceResult>>,
     pipe_consume_cache: Arc<IdempotencyCache<ConsumeResult>>,
 }
 
-#[cfg(feature = "enterprise")]
 impl EnterprisePipeService {
-    pub fn new(config: Config, state: EngineState, metrics: Arc<dyn MetricsPort>) -> Self {
+    pub fn new(
+        config: Config,
+        state: EngineState,
+        metrics: Arc<dyn MetricsPort>,
+        worker_pool: Arc<dyn WorkerPoolPort>,
+    ) -> Self {
         let create_pipe_transport_cache = Arc::new(IdempotencyCache::default());
         let pipe_produce_cache = Arc::new(IdempotencyCache::default());
         let pipe_consume_cache = Arc::new(IdempotencyCache::default());
@@ -106,6 +92,7 @@ impl EnterprisePipeService {
             config,
             state,
             metrics,
+            worker_pool,
             create_pipe_transport_cache,
             pipe_produce_cache,
             pipe_consume_cache,
@@ -113,7 +100,6 @@ impl EnterprisePipeService {
     }
 }
 
-#[cfg(feature = "enterprise")]
 #[async_trait]
 impl InterNodePipeUseCase for EnterprisePipeService {
     async fn create_pipe_transport(
@@ -426,6 +412,17 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         .entry(params.pipe_transport_id.clone())
                         .or_default()
                         .insert(producer_id.clone());
+                    self.state
+                        .producer_consumers
+                        .entry(producer_id.clone())
+                        .or_default();
+
+                    let p_weight = if params.kind == DomainMediaKind::Audio {
+                        2
+                    } else {
+                        10
+                    };
+                    self.worker_pool.add_resource_score(worker_index, p_weight);
 
                     self.metrics.inc_active_producers(kind_str);
 
@@ -589,6 +586,13 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         .entry(params.producer_id.clone())
                         .or_default()
                         .insert(consumer_id.clone());
+
+                    let c_weight = if domain_kind == DomainMediaKind::Audio {
+                        1
+                    } else {
+                        2
+                    };
+                    self.worker_pool.add_resource_score(worker_index, c_weight);
 
                     self.metrics.inc_active_consumers(kind_str);
 

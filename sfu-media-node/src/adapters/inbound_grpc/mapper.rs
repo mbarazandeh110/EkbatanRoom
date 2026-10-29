@@ -407,3 +407,58 @@ pub fn from_pipe_consume_request(
         producer_id: req.producer_id,
     })
 }
+
+pub fn to_proto_node_event(event: DomainNodeEvent) -> proto::NodeEvent {
+    let payload = event.payload.map(|p| match p {
+        DomainNodeEventPayload::MediaScore(s) => {
+            proto::node_event::Payload::MediaScore(proto::MediaScoreEvent {
+                resource_id: s.resource_id,
+                peer_id: s.peer_id,
+                is_producer: s.is_producer,
+                score: s.score,
+                producer_scores: s.producer_scores,
+            })
+        }
+        DomainNodeEventPayload::LayerChanged(l) => {
+            proto::node_event::Payload::LayerChanged(proto::LayerChangedEvent {
+                consumer_id: l.consumer_id,
+                producer_id: l.producer_id,
+                peer_id: l.peer_id,
+                preferred_spatial_layer: l.preferred_spatial_layer,
+                current_spatial_layer: l.current_spatial_layer,
+                preferred_temporal_layer: l.preferred_temporal_layer,
+                current_temporal_layer: l.current_temporal_layer,
+            })
+        }
+        DomainNodeEventPayload::ActiveSpeaker(a) => {
+            proto::node_event::Payload::ActiveSpeaker(proto::ActiveSpeakerEvent {
+                producer_id: a.producer_id,
+                peer_id: a.peer_id,
+                volume_dbfs: a.volume_dbfs,
+            })
+        }
+        DomainNodeEventPayload::ResourceClosed(r) => {
+            let r_type = match r.resource_type {
+                DomainResourceType::Router => proto::ResourceType::Router as i32,
+                DomainResourceType::Transport => proto::ResourceType::Transport as i32,
+                DomainResourceType::Producer => proto::ResourceType::Producer as i32,
+                DomainResourceType::Consumer => proto::ResourceType::Consumer as i32,
+                DomainResourceType::Unspecified => proto::ResourceType::Unspecified as i32,
+            };
+            proto::node_event::Payload::ResourceClosed(proto::ResourceClosedEvent {
+                resource_type: r_type,
+                resource_id: r.resource_id,
+                reason: r.reason,
+            })
+        }
+        DomainNodeEventPayload::NodeCapacity(info) => {
+            proto::node_event::Payload::NodeCapacity(to_node_capacity_metrics(info))
+        }
+    });
+
+    proto::NodeEvent {
+        router_id: event.router_id,
+        timestamp_ms: event.timestamp_ms,
+        payload,
+    }
+}

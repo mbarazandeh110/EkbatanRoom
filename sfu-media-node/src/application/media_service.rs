@@ -954,6 +954,17 @@ impl MediaUseCase for MediaService {
                         consumer_id,
                         "consumer_closed",
                     );
+
+                    if let Some((entry, p_worker_index)) =
+                        self.state.cleanup_piped_producer_if_last_consumer(
+                            &item.producer_id,
+                            &item.physical_router_id,
+                        )
+                    {
+                        self.worker_pool.sub_resource_score(p_worker_index, 1);
+                        self.worker_pool
+                            .sub_resource_score(entry.target_worker_index, 1);
+                    }
                 }
                 Ok(())
             }

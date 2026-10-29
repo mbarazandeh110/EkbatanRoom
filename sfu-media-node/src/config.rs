@@ -318,7 +318,9 @@ pub struct RawObservabilityConfig {
     pub log_level: Option<String>,
     pub log_format: Option<String>,
     pub tracing_enabled: Option<bool>,
+    #[serde(alias = "otlp_endpoint")]
     pub tracing_endpoint: Option<String>,
+    #[serde(alias = "trace_sample_rate")]
     pub tracing_sample_rate: Option<f64>,
     pub metrics_enabled: Option<bool>,
     pub metrics_addr: Option<String>,
@@ -448,6 +450,10 @@ impl Config {
             if let Some(count) = w.worker_count {
                 if count > 0 {
                     self.worker_count = count;
+                } else {
+                    self.worker_count = std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(1);
                 }
             }
             if let Some(cap) = w.capacity_weight {
@@ -660,6 +666,25 @@ impl Config {
         if let Ok(s) = std::env::var("MEDIASOUP_SCTP_SEND_BUFFER_SIZE") {
             if let Ok(val) = s.trim().parse::<u32>() {
                 self.webrtc_transport.sctp_send_buffer_size = val;
+            }
+        }
+
+        // PlainTransport env overrides
+        if let Ok(s) = std::env::var("MEDIASOUP_PLAIN_MAX_SEND_MESSAGE_SIZE") {
+            if let Ok(val) = s.trim().parse::<u32>() {
+                self.plain_transport.max_send_message_size = val;
+            }
+        }
+
+        if let Ok(s) = std::env::var("MEDIASOUP_PLAIN_MAX_RECEIVE_MESSAGE_SIZE") {
+            if let Ok(val) = s.trim().parse::<u32>() {
+                self.plain_transport.max_receive_message_size = val;
+            }
+        }
+
+        if let Ok(s) = std::env::var("MEDIASOUP_PLAIN_SCTP_SEND_BUFFER_SIZE") {
+            if let Ok(val) = s.trim().parse::<u32>() {
+                self.plain_transport.sctp_send_buffer_size = val;
             }
         }
 
