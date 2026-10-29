@@ -495,5 +495,62 @@ a=ssrc:5555 cname:test-cname
 	}
 }
 
+func TestSDPMapper_PreservePrimaryMediaSSRC_REQ021(t *testing.T) {
+	offerWithFID := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=video 9 UDP/TLS/RTP/SAVPF 96 97
+c=IN IP4 0.0.0.0
+a=mid:video-0
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:96 VP8/90000
+a=rtpmap:97 rtx/90000
+a=fmtp:97 apt=96
+a=ssrc-group:FID 814331902 3655270929
+a=ssrc:814331902 cname:BOx/v2pfypsuv0kf
+a=ssrc:814331902 msid:4da05d30-0011-4571-86af-1f2f009d6bfd fdacb0d6-9dc0-4d87-b0e5-a58aca45b299
+a=ssrc:3655270929 cname:BOx/v2pfypsuv0kf
+a=ssrc:3655270929 msid:4da05d30-0011-4571-86af-1f2f009d6bfd fdacb0d6-9dc0-4d87-b0e5-a58aca45b299
+`
+
+	parsed, err := livekit.ParsePublisherOffer(offerWithFID)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+
+	if len(parsed.Tracks) != 1 {
+		t.Fatalf("expected 1 video track, got %d", len(parsed.Tracks))
+	}
+
+	track := parsed.Tracks[0]
+	if track.Kind != domain.TrackKindVideo {
+		t.Fatalf("expected video track, got %s", track.Kind)
+	}
+
+	// SSRC must be the primary media SSRC (814331902), NOT the RTX SSRC (3655270929)
+	if track.SSRC != 814331902 {
+		t.Fatalf("expected primary media SSRC 814331902, got %d", track.SSRC)
+	}
+	if track.RTXSSRC != 3655270929 {
+		t.Fatalf("expected RTX SSRC 3655270929, got %d", track.RTXSSRC)
+	}
+	if track.CName != "BOx/v2pfypsuv0kf" {
+		t.Fatalf("expected CName BOx/v2pfypsuv0kf, got %s", track.CName)
+	}
+
+	// Verify encodings in RtpParametersJSON
+	expectedMediaSSRCJSON := `"ssrc":814331902`
+	expectedRtxSSRCJSON := `"rtx":{"ssrc":3655270929}`
+	if !strings.Contains(track.RtpParametersJSON, expectedMediaSSRCJSON) {
+		t.Fatalf("expected RtpParametersJSON to contain %s, got: %s", expectedMediaSSRCJSON, track.RtpParametersJSON)
+	}
+	if !strings.Contains(track.RtpParametersJSON, expectedRtxSSRCJSON) {
+		t.Fatalf("expected RtpParametersJSON to contain %s, got: %s", expectedRtxSSRCJSON, track.RtpParametersJSON)
+	}
+}
+
 
 

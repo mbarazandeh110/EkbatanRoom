@@ -99,29 +99,47 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 
 		mid, _ := md.Attribute("mid")
 
-		// Extract SSRC and CName
+		// Extract SSRC and CName (REQ-021: preserve primary media SSRC and map RTX SSRC per RFC 5576 / RFC 4588)
 		var ssrc uint32
 		var rtxSSRC uint32
 		cname := "default"
 
+		// 1. Scan for a=ssrc-group:FID <mediaSSRC> <rtxSSRC> first
 		for _, attr := range md.Attributes {
-			if attr.Key == "ssrc" {
-				parts := strings.Split(attr.Value, " ")
-				if len(parts) >= 1 {
-					val, err := strconv.ParseUint(parts[0], 10, 32)
-					if err == nil && ssrc == 0 {
-						ssrc = uint32(val)
+			if attr.Key == "ssrc-group" {
+				fields := strings.Fields(attr.Value)
+				if len(fields) >= 3 && strings.EqualFold(fields[0], "FID") {
+					if mediaVal, err := strconv.ParseUint(fields[1], 10, 32); err == nil {
+						ssrc = uint32(mediaVal)
+					}
+					if rtxVal, err := strconv.ParseUint(fields[2], 10, 32); err == nil {
+						rtxSSRC = uint32(rtxVal)
 					}
 				}
-				if len(parts) >= 2 && strings.HasPrefix(parts[1], "cname:") {
-					cname = strings.TrimPrefix(parts[1], "cname:")
-				}
 			}
-			if attr.Key == "ssrc-group" && strings.HasPrefix(attr.Value, "FID ") {
-				parts := strings.Split(attr.Value, " ")
-				if len(parts) >= 3 {
-					if rtxVal, err := strconv.ParseUint(parts[2], 10, 32); err == nil {
-						rtxSSRC = uint32(rtxVal)
+		}
+
+		// 2. Scan a=ssrc attributes for primary SSRC (if not in FID group) and CName
+		for _, attr := range md.Attributes {
+			if attr.Key == "ssrc" {
+				parts := strings.Fields(attr.Value)
+				if len(parts) >= 1 {
+					val, err := strconv.ParseUint(parts[0], 10, 32)
+					if err == nil {
+						parsedSSRC := uint32(val)
+						// If primary ssrc is not yet identified, pick the first SSRC that is not rtxSSRC
+						if ssrc == 0 && (rtxSSRC == 0 || parsedSSRC != rtxSSRC) {
+							ssrc = parsedSSRC
+						}
+						// Extract CNAME (preferring CNAME associated with primary media SSRC)
+						if len(parts) >= 2 && strings.HasPrefix(parts[1], "cname:") {
+							cn := strings.TrimPrefix(parts[1], "cname:")
+							if ssrc != 0 && parsedSSRC == ssrc {
+								cname = cn
+							} else if cname == "default" {
+								cname = cn
+							}
+						}
 					}
 				}
 			}

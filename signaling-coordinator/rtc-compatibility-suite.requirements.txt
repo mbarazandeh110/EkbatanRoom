@@ -949,7 +949,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-021
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -1000,6 +1000,12 @@ STATUS: OPEN
    - This ensures Mediasoup's `Producer` associates inbound video RTP packets with the media encoding, successfully creating the `RtpStream` and forwarding video to subscribers.
 
 4. RESOLUTION & ARCHITECTURAL TRIAGE:
-   - Decision: PENDING
+   - Decision: ACCEPTED & IMPLEMENTED
    - Architectural Justification:
-   - Modified Files & Added Tests:
+     1. [REQ-021]: In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`), prioritized extraction of primary media SSRC and RTX SSRC from `a=ssrc-group:FID <mediaSSRC> <rtxSSRC>` per RFC 5576 Section 4.1 and RFC 4588. When parsing subsequent `a=ssrc:` lines, guarded `parsedTrack.SSRC` so that RTX SSRC or secondary SSRC lines never overwrite the primary media SSRC.
+     2. In `rtpParams["encodings"]` and `domain.TrackPublishCommand.SSRC`, the primary media SSRC is strictly preserved, and RTX SSRC is mapped into `encodings[0]["rtx"] = {"ssrc": rtxSSRC}`. This allows Mediasoup's `Producer` to accurately match incoming video RTP packets against the primary media stream, resolving `no stream found for received packet` drops and unblocking video forwarding to subscriber transports.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added two-pass FID and SSRC parsing logic to extract media and RTX SSRCs and avoid overwriting in `ParsePublisherOffer`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added `TestSDPMapper_PreservePrimaryMediaSSRC_REQ021`.
+   - Verification: All 36 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
+===================================================================
