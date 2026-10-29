@@ -649,6 +649,7 @@ impl Config {
 
         if let Ok(s) = std::env::var("MEDIASOUP_DTLS_CERT")
             .or_else(|_| std::env::var("MEDIASOUP_DTLS_CERTIFICATE_FILE"))
+            .or_else(|_| std::env::var("MEDIASOUP_WORKER_DTLS_CERT"))
         {
             let trimmed = s.trim();
             if !trimmed.is_empty() {
@@ -658,6 +659,7 @@ impl Config {
 
         if let Ok(s) = std::env::var("MEDIASOUP_DTLS_KEY")
             .or_else(|_| std::env::var("MEDIASOUP_DTLS_PRIVATE_KEY_FILE"))
+            .or_else(|_| std::env::var("MEDIASOUP_WORKER_DTLS_KEY"))
         {
             let trimmed = s.trim();
             if !trimmed.is_empty() {
@@ -666,7 +668,9 @@ impl Config {
         }
 
         // WebRtcTransport env overrides
-        if let Ok(s) = std::env::var("MEDIASOUP_INITIAL_AVAILABLE_OUTGOING_BITRATE") {
+        if let Ok(s) = std::env::var("MEDIASOUP_INITIAL_AVAILABLE_OUTGOING_BITRATE")
+            .or_else(|_| std::env::var("MEDIASOUP_WEBRTC_INITIAL_AVAILABLE_OUTGOING_BITRATE"))
+        {
             if let Ok(val) = s.trim().parse::<u64>() {
                 self.webrtc_transport.initial_available_outgoing_bitrate = val;
             }
@@ -871,6 +875,35 @@ pub(crate) mod tests {
                 })
             ));
         });
+    }
+
+    #[test]
+    fn test_readme_env_var_aliases() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("MEDIASOUP_WORKER_DTLS_CERT", "/tmp/cert.pem");
+        std::env::set_var("MEDIASOUP_WORKER_DTLS_KEY", "/tmp/key.pem");
+        std::env::set_var(
+            "MEDIASOUP_WEBRTC_INITIAL_AVAILABLE_OUTGOING_BITRATE",
+            "850000",
+        );
+
+        let cfg = Config::try_from_env().unwrap();
+        assert_eq!(
+            cfg.worker_settings.dtls_certificate_file.as_deref(),
+            Some("/tmp/cert.pem")
+        );
+        assert_eq!(
+            cfg.worker_settings.dtls_private_key_file.as_deref(),
+            Some("/tmp/key.pem")
+        );
+        assert_eq!(
+            cfg.webrtc_transport.initial_available_outgoing_bitrate,
+            850000
+        );
+
+        std::env::remove_var("MEDIASOUP_WORKER_DTLS_CERT");
+        std::env::remove_var("MEDIASOUP_WORKER_DTLS_KEY");
+        std::env::remove_var("MEDIASOUP_WEBRTC_INITIAL_AVAILABLE_OUTGOING_BITRATE");
     }
 
     #[test]

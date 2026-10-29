@@ -1,4 +1,5 @@
 use opentelemetry::global;
+use opentelemetry::trace::{SpanId, TraceContextExt};
 use tonic::metadata::MetadataMap;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -59,9 +60,15 @@ pub fn attach_trace_context(span: &tracing::Span, metadata: &MetadataMap) -> Ext
     if let Some(ref trace_id) = extracted.trace_id {
         span.record("trace_id", trace_id.as_str());
     }
-    if let Some(ref parent_span_id) = extracted.parent_span_id {
+
+    let local_otel_span_id = span.context().span().span_context().span_id();
+    if local_otel_span_id != SpanId::INVALID {
+        let local_id_str = local_otel_span_id.to_string();
+        span.record("span_id", local_id_str.as_str());
+    } else if let Some(ref parent_span_id) = extracted.parent_span_id {
         span.record("span_id", parent_span_id.as_str());
     }
+
     if let Some(ref request_id) = extracted.request_id {
         span.record("request_id", request_id.as_str());
     }

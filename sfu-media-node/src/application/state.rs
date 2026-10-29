@@ -1,7 +1,7 @@
 use crate::domain::entities::MediaKind;
 use dashmap::{DashMap, DashSet};
 use mediasoup::prelude::*;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use mediasoup::audio_level_observer::AudioLevelObserver;
@@ -40,6 +40,7 @@ pub struct TransportItem {
 pub struct PipeTransportItem {
     pub transport: PipeTransport,
     pub router_id: String,
+    pub worker_index: usize,
     pub is_closed: Arc<AtomicBool>,
 }
 
@@ -147,7 +148,7 @@ impl EngineState {
     pub fn is_router_active(&self, router_id: &str) -> bool {
         self.routers
             .get(router_id)
-            .map(|r| !r.is_closed.load(std::sync::atomic::Ordering::SeqCst))
+            .map(|r| !r.is_closed.load(Ordering::SeqCst))
             .unwrap_or(false)
     }
 
@@ -157,8 +158,7 @@ impl EngineState {
 
     pub fn cascade_remove_consumer(&self, consumer_id: &str) -> Option<ConsumerItem> {
         if let Some((_, item)) = self.consumers.remove(consumer_id) {
-            item.is_closed
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            item.is_closed.store(true, Ordering::SeqCst);
             if let Some(set) = self.transport_consumers.get(&item.transport_id) {
                 set.remove(consumer_id);
             }
@@ -231,10 +231,11 @@ impl EngineState {
     pub fn cleanup_dead_worker(
         &self,
         worker_index: usize,
+        worker_pool: &dyn crate::ports::outbound::WorkerPoolPort,
         metrics: &dyn crate::ports::outbound::MetricsPort,
         event_publisher: &dyn crate::ports::outbound::EventPublisherPort,
     ) {
-        // 1. Identify and close all transports on this worker
+        // 1. Identify and close all WebRtcTransports on this worker
         let dead_transports: Vec<(String, String, bool)> = self
             .transports
             .iter()
@@ -250,7 +251,7 @@ impl EngineState {
 
         for (tid, router_id, is_publisher) in dead_transports {
             if let Some((_, t)) = self.transports.remove(&tid) {
-                t.is_closed.store(true, std::sync::atomic::Ordering::SeqCst);
+                t.is_closed.store(true, Ordering::SeqCst);
                 metrics.dec_active_transports(is_publisher);
                 if let Some(set) = self.router_transports.get_mut(&router_id) {
                     set.remove(&tid);
@@ -264,8 +265,32 @@ impl EngineState {
             }
         }
 
+        // 1b. Identify and close all PipeTransports on this worker
+        let dead_pipe_transports: Vec<(String, String)> = self
+            .pipe_transports
+            .iter()
+            .filter(|entry| entry.value().worker_index == worker_index)
+            .map(|entry| (entry.key().clone(), entry.value().router_id.clone()))
+            .collect();
+
+        for (ptid, router_id) in dead_pipe_transports {
+            if let Some((_, pt)) = self.pipe_transports.remove(&ptid) {
+                pt.is_closed.store(true, Ordering::SeqCst);
+                metrics.dec_active_transports(false);
+                if let Some(set) = self.router_pipe_transports.get_mut(&router_id) {
+                    set.remove(&ptid);
+                }
+                event_publisher.publish_resource_closed(
+                    &router_id,
+                    "transport",
+                    &ptid,
+                    "worker_died",
+                );
+            }
+        }
+
         // 2. Identify and close all producers on this worker
-        let dead_producers: Vec<(String, String, crate::domain::entities::MediaKind)> = self
+        let dead_producers: Vec<(String, String, MediaKind)> = self
             .producers
             .iter()
             .filter(|entry| entry.value().worker_index == worker_index)
@@ -280,13 +305,20 @@ impl EngineState {
 
         for (pid, router_id, kind) in dead_producers {
             if let Some((_, p)) = self.producers.remove(&pid) {
-                p.is_closed.store(true, std::sync::atomic::Ordering::SeqCst);
+                p.is_closed.store(true, Ordering::SeqCst);
                 metrics.dec_active_producers(&kind.to_string());
                 self.transport_producers.retain(|_, set| {
                     set.remove(&pid);
                     !set.is_empty()
                 });
-                self.piped_producers.remove(&pid);
+                if let Some((_, piped_entries)) = self.piped_producers.remove(&pid) {
+                    for entry in piped_entries {
+                        worker_pool.sub_resource_score(entry.target_worker_index, 1);
+                    }
+                }
+                self.pipe_singleflight
+                    .retain(|k, _| !k.starts_with(&format!("{}:", pid)));
+
                 event_publisher.publish_resource_closed(
                     &router_id,
                     "producer",
@@ -294,10 +326,12 @@ impl EngineState {
                     "worker_died",
                 );
 
-                // Cascade close consumers connected to this producer
+                // Cascade close consumers connected to this producer (even on other alive workers)
                 if let Some((_, c_ids)) = self.producer_consumers.remove(&pid) {
                     for cid in c_ids {
                         if let Some(c) = self.cascade_remove_consumer(&cid) {
+                            let c_weight = if c.kind == MediaKind::Audio { 1 } else { 2 };
+                            worker_pool.sub_resource_score(c.worker_index, c_weight);
                             metrics.dec_active_consumers(&c.kind.to_string());
                             event_publisher.publish_resource_closed(
                                 &router_id,
@@ -312,7 +346,7 @@ impl EngineState {
         }
 
         // 3. Identify and close all consumers on this worker
-        let dead_consumers: Vec<(String, String, crate::domain::entities::MediaKind)> = self
+        let dead_consumers: Vec<(String, String, MediaKind)> = self
             .consumers
             .iter()
             .filter(|entry| entry.value().worker_index == worker_index)
@@ -326,8 +360,13 @@ impl EngineState {
             .collect();
 
         for (cid, router_id, kind) in dead_consumers {
-            if let Some(_c) = self.cascade_remove_consumer(&cid) {
+            if let Some(c) = self.cascade_remove_consumer(&cid) {
                 metrics.dec_active_consumers(&kind.to_string());
+                if let Some((_piped_entry, pub_worker_idx)) = self
+                    .cleanup_piped_producer_if_last_consumer(&c.producer_id, &c.physical_router_id)
+                {
+                    worker_pool.sub_resource_score(pub_worker_idx, 1);
+                }
                 event_publisher.publish_resource_closed(
                     &router_id,
                     "consumer",
@@ -337,17 +376,71 @@ impl EngineState {
             }
         }
 
-        // 4. Clean up any sub-routers on this worker in all routers
+        // 3b. Clean up any remaining piped_producers entries targeting the dead worker
+        let mut empty_piped_keys = Vec::new();
+        for mut entry in self.piped_producers.iter_mut() {
+            let pid = entry.key().clone();
+            let pub_worker_opt = self.producers.get(&pid).map(|p| p.worker_index);
+            let vec = entry.value_mut();
+            let mut i = 0;
+            while i < vec.len() {
+                if vec[i].target_worker_index == worker_index {
+                    let removed = vec.swap_remove(i);
+                    if let Some(pub_w) = pub_worker_opt {
+                        worker_pool.sub_resource_score(pub_w, 1);
+                    }
+                    let sf_key = format!("{}:{}", pid, removed.target_router_id);
+                    self.pipe_singleflight.remove(&sf_key);
+                } else {
+                    i += 1;
+                }
+            }
+            if vec.is_empty() {
+                empty_piped_keys.push(pid);
+            }
+        }
+        for k in empty_piped_keys {
+            self.piped_producers.remove(&k);
+        }
+
+        // 4. Clean up sub-routers on this worker, and identify primary routers living on this worker
+        let mut dead_primary_routers = Vec::new();
         for r_entry in self.routers.iter() {
             if let Some((_, sub)) = r_entry.value().sub_routers.remove(&worker_index) {
-                sub.is_closed
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                sub.is_closed.store(true, Ordering::SeqCst);
+            }
+            if r_entry.value().worker_index == worker_index {
+                dead_primary_routers.push(r_entry.key().clone());
             }
         }
 
-        // 5. Clean up peer affinity for this worker
+        for router_id in dead_primary_routers {
+            if let Some((_, r_item)) = self.routers.remove(&router_id) {
+                r_item.is_closed.store(true, Ordering::SeqCst);
+                self.room_to_router.remove(&r_item.room_id);
+                self.room_singleflight.remove(&r_item.room_id);
+
+                for sub_entry in r_item.sub_routers.iter() {
+                    sub_entry.value().is_closed.store(true, Ordering::SeqCst);
+                    worker_pool.decrement_load(sub_entry.value().worker_index);
+                }
+                r_item.sub_routers.clear();
+
+                metrics.dec_active_routers();
+                event_publisher.publish_resource_closed(
+                    &router_id,
+                    "router",
+                    &router_id,
+                    "worker_died",
+                );
+            }
+        }
+
+        // 5. Clean up peer affinity and sub-router singleflights for this worker
         self.peer_worker_affinity
             .retain(|_, &mut w| w != worker_index);
+        self.sub_router_singleflight
+            .retain(|k, _| k.1 != worker_index);
     }
 }
 

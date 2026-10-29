@@ -8,7 +8,7 @@ use crate::ports::inbound::{
     ConnectTransportParams, CreateTransportParams, CreateTransportResult, RestartIceResult,
     TransportUseCase,
 };
-use crate::ports::outbound::{EventPublisherPort, MetricsPort};
+use crate::ports::outbound::{EventPublisherPort, MetricsPort, WorkerPoolPort};
 use async_trait::async_trait;
 use dashmap::DashSet;
 use mediasoup::prelude::*;
@@ -17,8 +17,6 @@ use mediasoup::webrtc_transport::WebRtcTransportRemoteParameters;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-
-use crate::ports::outbound::WorkerPoolPort;
 
 pub struct TransportService {
     config: Config,
@@ -606,6 +604,9 @@ impl TransportUseCase for TransportService {
             }
 
             p_item.is_closed.store(true, Ordering::SeqCst);
+            self.worker_pool.sub_resource_score(p_item.worker_index, 1);
+            self.metrics.dec_active_transports(false);
+
             if let Some(set) = self.state.router_pipe_transports.get_mut(router_id) {
                 set.remove(transport_id);
             }
@@ -706,6 +707,15 @@ pub(crate) fn cascade_close_producers_and_consumers(
                 };
                 worker_pool.sub_resource_score(c.worker_index, c_weight);
                 metrics.dec_active_consumers(&c.kind.to_string());
+
+                // Clean up intra-node pipe if this was the last consumer on the target physical router
+                if let Some((piped_entry, pub_worker_idx)) = state
+                    .cleanup_piped_producer_if_last_consumer(&c.producer_id, &c.physical_router_id)
+                {
+                    worker_pool.sub_resource_score(pub_worker_idx, 1);
+                    worker_pool.sub_resource_score(piped_entry.target_worker_index, 1);
+                }
+
                 event_publisher.publish_resource_closed(
                     router_id,
                     "consumer",

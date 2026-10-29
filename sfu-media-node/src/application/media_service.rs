@@ -948,6 +948,19 @@ impl MediaUseCase for MediaService {
                     self.worker_pool
                         .sub_resource_score(item.worker_index, c_weight);
                     self.metrics.dec_active_consumers(&item.kind.to_string());
+
+                    // Clean up intra-node pipe if this was the last consumer on the target physical router
+                    if let Some((piped_entry, pub_worker_idx)) =
+                        self.state.cleanup_piped_producer_if_last_consumer(
+                            &item.producer_id,
+                            &item.physical_router_id,
+                        )
+                    {
+                        self.worker_pool.sub_resource_score(pub_worker_idx, 1);
+                        self.worker_pool
+                            .sub_resource_score(piped_entry.target_worker_index, 1);
+                    }
+
                     self.event_publisher.publish_resource_closed(
                         router_id,
                         "consumer",

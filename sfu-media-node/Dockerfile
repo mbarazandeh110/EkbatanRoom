@@ -3,7 +3,7 @@
 # ==============================================================================
 
 # --- Stage 1: Builder ---
-FROM rust:1-bookworm AS builder
+FROM rust:1.85.0-bookworm AS builder
 
 WORKDIR /usr/src/app
 
@@ -75,9 +75,9 @@ EXPOSE 50051/tcp
 EXPOSE 9090/tcp
 EXPOSE 40000-49999/udp
 
-# Healthcheck via Prometheus metrics endpoint (skips check if metrics are disabled, extracts port dynamically)
+# Healthcheck: checks /metrics if enabled, otherwise verifies the process is alive and listening on GRPC_PORT
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
-    CMD sh -c 'PORT="${OBS_METRICS_ADDR##*:}"; PORT="${PORT:-9090}"; [ "$OBS_METRICS_ENABLED" = "false" ] || curl -f "http://localhost:${PORT}/metrics" || exit 1'
+    CMD sh -c 'if [ "$OBS_METRICS_ENABLED" != "false" ]; then PORT="${OBS_METRICS_ADDR##*:}"; PORT="${PORT:-9090}"; curl -sf "http://127.0.0.1:${PORT}/metrics" >/dev/null || exit 1; else HEX_PORT=$(printf "%04X" "${GRPC_PORT:-50051}"); grep -qi ":${HEX_PORT} " /proc/net/tcp /proc/net/tcp6 || exit 1; fi'
 
 # Run as non-root user
 USER 10001:10001

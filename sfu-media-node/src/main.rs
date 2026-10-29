@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::Server;
 
-async fn wait_for_shutdown() {
+async fn wait_for_shutdown(media_node: Arc<MediaNode>) {
     let ctrl_c = async {
         if let Err(err) = tokio::signal::ctrl_c().await {
             tracing::error!("Failed to install Ctrl+C signal handler: {err}");
@@ -31,12 +31,14 @@ async fn wait_for_shutdown() {
 
     tokio::select! {
         _ = ctrl_c => {
-            tracing::info!("Received Ctrl+C (SIGINT), initiating graceful shutdown");
+            tracing::info!("Received Ctrl+C (SIGINT), marking node as draining and initiating graceful shutdown");
         },
         _ = terminate => {
-            tracing::info!("Received SIGTERM, initiating graceful shutdown");
+            tracing::info!("Received SIGTERM, marking node as draining and initiating graceful shutdown");
         },
     }
+
+    media_node.start_draining();
 }
 
 #[tokio::main]
@@ -67,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::builder()
         .add_service(SfuMediaEngineServiceServer::new(service))
-        .serve_with_shutdown(grpc_addr, wait_for_shutdown())
+        .serve_with_shutdown(grpc_addr, wait_for_shutdown(media_node.clone()))
         .await?;
 
     tracing::info!("gRPC server stopped. Cleaning up media node resources...");

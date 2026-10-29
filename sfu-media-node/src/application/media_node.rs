@@ -11,6 +11,7 @@ use crate::observability::metrics::PrometheusMetrics;
 use crate::ports::inbound::RouterUseCase;
 use crate::ports::outbound::{EventPublisherPort, MetricsPort, WorkerPoolPort};
 use mediasoup::worker_manager::WorkerManager;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,10 +50,16 @@ impl MediaNode {
         let state = EngineState::default();
 
         let state_dead = state.clone();
+        let worker_pool_dead = worker_pool.clone();
         let metrics_dead = metrics.clone();
         let event_hub_dead = event_hub.clone();
         worker_pool.add_on_dead_callback(Arc::new(move |w_idx| {
-            state_dead.cleanup_dead_worker(w_idx, metrics_dead.as_ref(), event_hub_dead.as_ref());
+            state_dead.cleanup_dead_worker(
+                w_idx,
+                worker_pool_dead.as_ref(),
+                metrics_dead.as_ref(),
+                event_hub_dead.as_ref(),
+            );
         }));
 
         let router_service = Arc::new(RouterService::new(
@@ -170,13 +177,26 @@ impl MediaNode {
         )
     }
 
+    /// Marks the node as draining immediately and broadcasts updated capacity metrics to coordinators.
+    pub fn start_draining(&self) {
+        let was_draining = self.state.is_draining.swap(true, Ordering::SeqCst);
+        if !was_draining {
+            let info = self.get_node_capacity_info();
+            self.metrics.update_node_capacity(
+                info.total_capacity_weight,
+                info.logical_load_percent,
+                info.cpu_usage_percent,
+                info.effective_load_percent,
+            );
+            self.event_hub.publish_node_capacity(&info);
+        }
+    }
+
     /// Performs bounded graceful shutdown, closing all active routers and cascading resources cleanly.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), SfuDomainError> {
         tracing::info!("Initiating bounded graceful shutdown of MediaNode...");
 
-        self.state
-            .is_draining
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.start_draining();
 
         if let Some(handle) = &self.capacity_task_abort {
             handle.abort();
@@ -249,11 +269,10 @@ pub fn compute_node_capacity(
         max_worker_load_percent,
         effective_load_percent,
         active_routers: state.routers.len() as u32,
-        active_transports: state.transports.len() as u32,
+        active_transports: (state.transports.len() + state.pipe_transports.len()) as u32,
         active_producers: state.producers.len() as u32,
         active_consumers: state.consumers.len() as u32,
-        is_draining: state.is_draining.load(std::sync::atomic::Ordering::SeqCst)
-            || alive_workers == 0,
+        is_draining: state.is_draining.load(Ordering::SeqCst) || alive_workers == 0,
         enterprise_cascading_enabled,
     }
 }

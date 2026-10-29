@@ -134,7 +134,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                 &params.request_id,
                 &payload_bytes,
                 || async {
-                    let router = {
+                    let (router, worker_index) = {
                         let r_item =
                             self.state.routers.get(&params.router_id).ok_or_else(|| {
                                 SfuDomainError::NotFound(format!(
@@ -150,7 +150,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                             )));
                         }
 
-                        r_item.router.clone()
+                        (r_item.router.clone(), r_item.worker_index)
                     };
 
                     let listen_info = ListenInfo {
@@ -185,6 +185,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     let item = PipeTransportItem {
                         transport,
                         router_id: params.router_id.clone(),
+                        worker_index,
                         is_closed: Arc::new(AtomicBool::new(false)),
                     };
 
@@ -196,6 +197,9 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         .entry(params.router_id.clone())
                         .or_default()
                         .insert(pipe_transport_id.clone());
+
+                    self.worker_pool.add_resource_score(worker_index, 1);
+                    self.metrics.inc_active_transports(false);
 
                     Ok(CreatePipeTransportResult {
                         pipe_transport_id,

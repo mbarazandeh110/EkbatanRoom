@@ -269,6 +269,8 @@ impl RouterUseCase for RouterService {
                 for pid in pipe_ids {
                     if let Some((_, pt)) = self.state.pipe_transports.remove(&pid) {
                         pt.is_closed.store(true, Ordering::SeqCst);
+                        self.worker_pool.sub_resource_score(pt.worker_index, 1);
+                        self.metrics.dec_active_transports(false);
                     }
                     self.event_publisher.publish_resource_closed(
                         router_id,

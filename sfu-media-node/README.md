@@ -13,14 +13,14 @@
   - جدول کش Thread-Safe با TTL پیش‌فرض ۶۰ ثانیه به همراه هش SHA-256 از بدنه درخواست.
   - پشتیبانی از قفل وضعیت در حال اجرا (`In-Flight`) جهت پیشگیری از ساخت منابع تکراری در درخواست‌های همزمان.
   - تشخیص ناسازگاری Payload با خطای `AlreadyExists` در صورت ارسال داده متفاوت با شناسه یکسان.
-  - پاکسازی خودکار کلید در صورت بروز خطا برای مجاز بودن تلاش مجدد (Retry).
-- **پاکسازی آبشاری منابع (Cascading Cleanup):** بستن یک `Router` در متد `CloseResource` به صورت خودکار تمام `Transport`ها، `Producer`ها و `Consumer`های وابسته را از حافظه آزاد می‌سازد.
+  - پاکسازی خودکار کلید در صورت بروز خطا یا لغو درخواست (Cancellation) برای مجاز بودن تلاش مجدد (Retry).
+- **پاکسازی آبشاری منابع (Cascading Cleanup):** بستن یک `Router` در متد `CloseResource` به صورت خودکار تمام `Transport`ها، `PipeTransport`ها، `Producer`ها و `Consumer`های وابسته را از حافظه آزاد می‌سازد. همچنین بستن آخرین `Consumer` روی یک روتر فرعی (`Sub-Router`)، به صورت خودکار Pipe داخلی بین ورکرها را آزاد می‌کند.
 - **جلوگیری از رویدادهای زامبی (Zombie Events Prevention):** بررسی برخط وضعیت فعال بودن اتاق پیش از انتشار هر رویداد در استریم `WatchNodeEvents`.
 - **کدک‌های استاندارد رسانه:**
   - **صوتی:** `audio/opus` (48000Hz, 2ch) همراه با بازخورد RTCP (`nack`, `transport-cc`).
-  - **تصویری:** `video/VP8` (90000Hz) و `video/H264` (`packetization-mode=1`, `profile-level-id=42e01f`) با فیدبک‌های کامل (`nack`, `nack pli`, `ccm fir`, `goog-remb`, `transport-cc`).
-- **مدیریت استخر ورکرها (Worker Pool):** توزیع بار میان پروسه‌های ورکر بر مبنای الگوریتم کم‌بارترین ورکر (Least-Loaded Selection).
-- **انطباق با اصول دوازده عاملی (Twelve-Factor App):** خاموش‌سازی نرم و ایمن در برابر سیگنال‌های `SIGINT` و `SIGTERM` و اجرای کانتینر تحت کاربر غیرریشه.
+  - **تصویری:** `video/VP8` (90000Hz) و `video/H264` (`packetization-mode=1`, `profile-level-id=42e01f`) با فیدبک‌های کامل (`nack`, `nack pli`, `ccm fir`, `goog-remb`, `transport-cc`) و قابلیت فعال‌سازی اختیاری `video/VP9`.
+- **مدیریت استخر ورکرها (Worker Pool):** توزیع بار میان پروسه‌های ورکر بر مبنای الگوریتم کم‌بارترین ورکر (Least-Loaded Selection) و سرریز خودکار اتاق‌های بزرگ بین ورکرهای داخلی نود (Intra-Node Multi-Worker Spillover).
+- **انطباق با اصول دوازده عاملی (Twelve-Factor App):** ورود فوری به حالت `is_draining` و خاموش‌سازی نرم و ایمن در برابر سیگنال‌های `SIGINT` و `SIGTERM` و اجرای کانتینر تحت کاربر غیرریشه.
 
 ---
 
@@ -58,21 +58,21 @@
 | `RTC_MAX_PORT` | `49999` | انتهای بازه پورت‌های UDP برای ترافیک RTC |
 | `GRPC_PORT` | `50051` | پورت گوش فرا دادن سرور gRPC کنترلی |
 | `MEDIASOUP_WORKER_COUNT` | تعداد هسته‌های CPU | تعداد پروسه‌های ایزوله `mediasoup-worker` |
-| `MEDIASOUP_WORKER_LOG_LEVEL` | `error` | سطح لاگ ورکر C++ مدیاسوپ (`debug`, `warn`, `error`, `none`) |
-| `MEDIASOUP_WORKER_LOG_TAGS` | `info,ice,dtls,rtp,srtp,rtcp` | تگ‌های فیلتر لاگ پروسه ورکر مدیاسوپ |
-| `MEDIASOUP_WORKER_DTLS_CERT` | - | مسیر فایل گواهی سفارشی DTLS ورکر (اختیاری) |
-| `MEDIASOUP_WORKER_DTLS_KEY` | - | مسیر فایل کلید خصوصی سفارشی DTLS ورکر (اختیاری) |
-| `MEDIASOUP_WEBRTC_INITIAL_AVAILABLE_OUTGOING_BITRATE` | `600000` | بیت‌ریت اولیه ارسالی WebRTC بر حسب bps |
-| `MEDIASOUP_CODECS_START_BITRATE` | - | مقدار `google-start-bitrate` اولیه برای کدک‌های تصویری |
+| `MEDIASOUP_WORKER_LOG_LEVEL` | `warn` | سطح لاگ ورکر C++ مدیاسوپ (`debug`, `warn`, `error`, `none`) |
+| `MEDIASOUP_WORKER_LOG_TAGS` | `info,ice,dtls,rtp,srtp,rtcp,rtx,bwe,score` | تگ‌های فیلتر لاگ پروسه ورکر مدیاسوپ |
+| `MEDIASOUP_DTLS_CERT` | - | مسیر فایل گواهی سفارشی DTLS ورکر (پشتیبانی از `MEDIASOUP_WORKER_DTLS_CERT`) |
+| `MEDIASOUP_DTLS_KEY` | - | مسیر فایل کلید خصوصی سفارشی DTLS ورکر (پشتیبانی از `MEDIASOUP_WORKER_DTLS_KEY`) |
+| `MEDIASOUP_INITIAL_AVAILABLE_OUTGOING_BITRATE` | `1000000` | بیت‌ریت اولیه ارسالی WebRTC بر حسب bps (پشتیبانی از `MEDIASOUP_WEBRTC_INITIAL_AVAILABLE_OUTGOING_BITRATE`) |
+| `MEDIASOUP_CODECS_START_BITRATE` | `1000` | مقدار `x-google-start-bitrate` اولیه برای کدک‌های تصویری |
 | `SFU_WORKER_CAPACITY_WEIGHT` | `1000` | وزن ظرفیت اسمی هر ورکر جهت محاسبه درصد بار منابع فعال |
 | `SFU_WORKER_SPILLOVER_THRESHOLD_PERCENT` | `80.0` | درصد آستانه سرریز ورکر جهت ساخت Sub-Router روی کم‌بارترین ورکر دیگر |
 | `OBS_LOG_LEVEL` | `info` | سطح فیلتر لاگ‌های ساختاریافته (`trace`, `debug`, `info`, `warn`, `error`) |
-| `OBS_LOG_FORMAT` | `json` | قالب خروجی لاگ‌ها (`json` برای لاگ سرورها، `text` برای توسعه محلی) |
+| `OBS_LOG_FORMAT` | `json` | قالب خروجی لاگ‌ها (`json` برای سرورها، `pretty` یا `text` برای توسعه محلی) |
 | `OBS_TRACING_ENABLED` | `false` | فعال‌سازی ردیابی توزیع‌شده OpenTelemetry OTLP |
 | `OBS_OTLP_ENDPOINT` | `http://localhost:4317` | آدرس کالکتور OpenTelemetry OTLP gRPC (پشتیبانی ثانویه از `OBS_TRACING_ENDPOINT`) |
 | `OBS_TRACE_SAMPLE_RATE` | `0.1` | نرخ نمونه‌برداری تریسینگ توزیع‌شده (پشتیبانی ثانویه از `OBS_TRACING_SAMPLE_RATE`) |
 | `OBS_METRICS_ENABLED` | `true` | فعال‌سازی سرور HTTP سبک پرومتئوس برای اندپوینت `/metrics` |
-| `OBS_METRICS_ADDR` | `0.0.0.0:9090` | آدرس و پورت شنود سرور متریک‌های پرومتئوس/ویکتوریا‌متریکس |
+| `OBS_METRICS_ADDR` | `0.0.0.0:9090` | آدرس و پورت شنود سرور متریک‌های پرومتئوس/ویکتوریامتریکس |
 | `OBS_LOG_RAW_SDP` | `false` | ثبت خطوط خام کاندیدهای SDP فقط در سطح دیباگ (برای مانیتورینگ امن) |
 
 ---
@@ -155,7 +155,7 @@ make run
    - ردیابی توزیع‌شده با صادرکننده استاندارد OTLP gRPC (`OBS_TRACING_ENABLED=true` و `OBS_OTLP_ENDPOINT`). در حالت غیرفعال، لایه تریسینگ به رجیستری متصل نمی‌شود تا سربار پردازشی صفر باشد.
    - اندپوینت مستقل پرومتئوس `/metrics` روی `OBS_METRICS_ADDR` (پیش‌فرض `0.0.0.0:9090`).
 2. **محافظت از مسیر پرتکرار رسانه (Media Hot-Path Protection):**
-   - هیچ‌گونه لاگ یا Span به ازای هر بسته RTP یا کال‌بک‌های سطح صدا تولید نمی‌شود.
+   - هیچ‌گونه لاگ یا Span به ازای هر بسته RTP یا کال‌بک‌های سطح صدا تولید نمی‌شود و رویدادهای امتیاز کیفیت (on_score) تنها در صورت تغییر مقدار منتشر می‌شوند.
 3. **گارد سخت‌گیرانه کاردینالیتی متریک‌ها (Metric Cardinality Guard):**
    - متریک‌های استاندارد ثبت‌شده:
      - `sfu_active_routers` (Gauge)
@@ -271,4 +271,3 @@ docker run --rm -it \
     ├── open_core_tests.rs      # آزمون‌های معماری Open-Core، سرریز و انتقال رسانه بین‌نودی
     └── refactoring_verification_tests.rs # آزمون‌های حذف آبشاری، رویدادهای زامبی و ایمنی ورکر
 ```
-

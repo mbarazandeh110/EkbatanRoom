@@ -499,6 +499,7 @@ async fn test_sub_router_audio_observer_and_pipe_transport_cleanup() {
             sfu_media_node::application::state::PipeTransportItem {
                 transport: pt,
                 router_id: router_id.clone(),
+                worker_index: 0,
                 is_closed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
@@ -707,12 +708,34 @@ async fn test_dead_primary_worker_spillover() {
     node.worker_pool.mark_dead(0);
     assert!(!node.worker_pool.is_worker_alive(0));
 
-    // 3. New peer creates transport on this router
-    // Even though worker 0 is primary, because it is dead, transport must fallback to worker 1
+    // Old router on dead worker 0 is closed and cleaned up from memory
+    let old_t_err = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-t-dead-worker-fail".to_string(),
+            router_id: r_resp.router_id.clone(),
+            peer_id: "peer-fallback-fail".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(old_t_err.code(), tonic::Code::NotFound);
+
+    // 3. New peer joins/creates router for this room -> seamlessly recreates on alive worker 1
+    let r2_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-dead-worker-2".to_string(),
+            room_id: "room-dead-worker".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(r2_resp.worker_index, 1);
+
     let t_resp = service
         .create_transport(Request::new(proto::CreateTransportRequest {
             request_id: "req-t-dead-worker".to_string(),
-            router_id: r_resp.router_id.clone(),
+            router_id: r2_resp.router_id.clone(),
             peer_id: "peer-fallback".to_string(),
             is_publisher: true,
             enable_sctp: false,
@@ -937,8 +960,8 @@ async fn test_piped_producer_cleanup_on_last_sub_router_consumer_closed() {
         w1_score_before + 1 + 2
     ); // 1 pipe + 2 video consumer
 
-    // 5. Close the consumer on Worker 1. Consumer score is decremented,
-    // but PipedProducerEntry remains cached to prevent race conditions on subsequent consumer arrivals.
+    // 5. Close the consumer on Worker 1. Because it was the last consumer on this Sub-Router,
+    // cleanup_piped_producer_if_last_consumer immediately cleans up the intra-node pipe and returns scores to baseline.
     service
         .close_resource(Request::new(proto::CloseResourceRequest {
             router_id: router_id.clone(),
@@ -949,19 +972,14 @@ async fn test_piped_producer_cleanup_on_last_sub_router_consumer_closed() {
         .unwrap();
 
     assert!(
-        node.state
+        !node
+            .state
             .piped_producers
             .contains_key(&p1_prod.producer_id),
-        "Piped producer remains cached until producer or router closes"
+        "Piped producer must be removed when the last consumer on the sub-router closes"
     );
-    assert_eq!(
-        node.worker_pool.worker_resource_score(0),
-        w0_score_before + 1
-    );
-    assert_eq!(
-        node.worker_pool.worker_resource_score(1),
-        w1_score_before + 1
-    );
+    assert_eq!(node.worker_pool.worker_resource_score(0), w0_score_before);
+    assert_eq!(node.worker_pool.worker_resource_score(1), w1_score_before);
 
     // 6. Close the producer. Now PipedProducerEntry MUST be cleaned up and worker scores returned to baseline!
     service
