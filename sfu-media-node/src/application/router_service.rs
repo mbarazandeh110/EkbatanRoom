@@ -268,6 +268,20 @@ impl RouterUseCase for RouterService {
                     if let Some((_, pt)) = self.state.pipe_transports.remove(&pid) {
                         pt.is_closed.store(true, Ordering::SeqCst);
                     }
+                    self.event_publisher.publish_resource_closed(
+                        router_id,
+                        "transport",
+                        &pid,
+                        "cascade_closed",
+                    );
+                    crate::application::transport_service::cascade_close_producers_and_consumers(
+                        &self.state,
+                        self.worker_pool.as_ref(),
+                        self.metrics.as_ref(),
+                        self.event_publisher.as_ref(),
+                        router_id,
+                        &pid,
+                    );
                 }
             }
         }

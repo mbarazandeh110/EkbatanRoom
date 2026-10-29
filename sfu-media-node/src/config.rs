@@ -22,6 +22,16 @@ pub enum ConfigError {
     #[error("Failed to parse integer configuration '{key}': {err}")]
     ParseIntError { key: &'static str, err: String },
 
+    #[error("Invalid log format '{0}': must be 'json', 'pretty', or 'text'")]
+    InvalidLogFormat(String),
+
+    #[error("Invalid socket address for '{key}': '{val}' ({err})")]
+    InvalidSocketAddr {
+        key: &'static str,
+        val: String,
+        err: String,
+    },
+
     #[error("Failed to read configuration file '{path}': {err}")]
     FileReadError { path: String, err: String },
 
@@ -497,7 +507,12 @@ impl Config {
                 self.observability.log_level = lvl;
             }
             if let Some(fmt) = obs.log_format {
-                self.observability.log_format = fmt;
+                let lower = fmt.trim().to_lowercase();
+                if lower == "json" || lower == "pretty" || lower == "text" {
+                    self.observability.log_format = lower;
+                } else {
+                    return Err(ConfigError::InvalidLogFormat(fmt));
+                }
             }
             if let Some(tr) = obs.tracing_enabled {
                 self.observability.tracing_enabled = tr;
@@ -512,9 +527,14 @@ impl Config {
                 self.observability.metrics_enabled = me;
             }
             if let Some(addr_str) = obs.metrics_addr {
-                if let Ok(addr) = SocketAddr::from_str(&addr_str) {
-                    self.observability.metrics_addr = addr;
-                }
+                let trimmed = addr_str.trim();
+                let addr =
+                    SocketAddr::from_str(trimmed).map_err(|e| ConfigError::InvalidSocketAddr {
+                        key: "metrics_addr",
+                        val: trimmed.to_string(),
+                        err: e.to_string(),
+                    })?;
+                self.observability.metrics_addr = addr;
             }
             if let Some(sdp) = obs.log_raw_sdp {
                 self.observability.log_raw_sdp = sdp;
@@ -587,7 +607,20 @@ impl Config {
         }
 
         if let Ok(s) = std::env::var("SFU_WORKER_CAPACITY_WEIGHT") {
-            self.worker_capacity_weight = s.trim().parse::<u32>().unwrap_or(1000).max(1);
+            let weight = s
+                .trim()
+                .parse::<u32>()
+                .map_err(|e| ConfigError::ParseIntError {
+                    key: "SFU_WORKER_CAPACITY_WEIGHT",
+                    err: e.to_string(),
+                })?;
+            if weight == 0 {
+                return Err(ConfigError::ParseIntError {
+                    key: "SFU_WORKER_CAPACITY_WEIGHT",
+                    err: "must be greater than 0".to_string(),
+                });
+            }
+            self.worker_capacity_weight = weight;
         }
 
         if let Ok(s) = std::env::var("SFU_WORKER_SPILLOVER_THRESHOLD_PERCENT") {
@@ -721,9 +754,11 @@ impl Config {
         }
 
         if let Ok(val) = std::env::var("OBS_LOG_FORMAT") {
-            let lower = val.to_lowercase();
+            let lower = val.trim().to_lowercase();
             if lower == "json" || lower == "pretty" || lower == "text" {
                 self.observability.log_format = lower;
+            } else {
+                return Err(ConfigError::InvalidLogFormat(val));
             }
         }
 
@@ -755,9 +790,14 @@ impl Config {
         }
 
         if let Ok(val) = std::env::var("OBS_METRICS_ADDR") {
-            if let Ok(addr) = SocketAddr::from_str(val.trim()) {
-                self.observability.metrics_addr = addr;
-            }
+            let trimmed = val.trim();
+            let addr =
+                SocketAddr::from_str(trimmed).map_err(|e| ConfigError::InvalidSocketAddr {
+                    key: "OBS_METRICS_ADDR",
+                    val: trimmed.to_string(),
+                    err: e.to_string(),
+                })?;
+            self.observability.metrics_addr = addr;
         }
 
         if let Ok(val) = std::env::var("OBS_LOG_RAW_SDP") {
@@ -769,10 +809,10 @@ impl Config {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn test_default_config() {
@@ -839,6 +879,53 @@ mod tests {
         with_env_var("MEDIASOUP_WORKER_COUNT", "0", || {
             let res = Config::try_from_env();
             assert!(matches!(res, Err(ConfigError::InvalidWorkerCount)));
+        });
+    }
+
+    #[test]
+    fn test_invalid_worker_capacity_weight() {
+        with_env_var("SFU_WORKER_CAPACITY_WEIGHT", "not-a-number", || {
+            let res = Config::try_from_env();
+            assert!(matches!(
+                res,
+                Err(ConfigError::ParseIntError {
+                    key: "SFU_WORKER_CAPACITY_WEIGHT",
+                    ..
+                })
+            ));
+        });
+
+        with_env_var("SFU_WORKER_CAPACITY_WEIGHT", "0", || {
+            let res = Config::try_from_env();
+            assert!(matches!(
+                res,
+                Err(ConfigError::ParseIntError {
+                    key: "SFU_WORKER_CAPACITY_WEIGHT",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn test_invalid_log_format() {
+        with_env_var("OBS_LOG_FORMAT", "invalid_format", || {
+            let res = Config::try_from_env();
+            assert!(matches!(res, Err(ConfigError::InvalidLogFormat(_))));
+        });
+    }
+
+    #[test]
+    fn test_invalid_metrics_addr() {
+        with_env_var("OBS_METRICS_ADDR", "not-a-socket-addr", || {
+            let res = Config::try_from_env();
+            assert!(matches!(
+                res,
+                Err(ConfigError::InvalidSocketAddr {
+                    key: "OBS_METRICS_ADDR",
+                    ..
+                })
+            ));
         });
     }
 

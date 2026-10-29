@@ -16,7 +16,16 @@ pub struct ObservabilityConfig {
 
 impl Default for ObservabilityConfig {
     fn default() -> Self {
-        Self::from_env()
+        Self {
+            log_level: "info".to_string(),
+            log_format: "json".to_string(),
+            tracing_enabled: false,
+            tracing_endpoint: "http://localhost:4317".to_string(),
+            tracing_sample_rate: 0.1,
+            metrics_enabled: true,
+            metrics_addr: SocketAddr::from(([0, 0, 0, 0], 9090)),
+            log_raw_sdp: false,
+        }
     }
 }
 
@@ -85,13 +94,11 @@ impl ObservabilityConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static OBS_ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::config::tests::ENV_LOCK;
 
     #[test]
     fn test_default_observability_config() {
-        let _guard = OBS_ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         let config = ObservabilityConfig::default();
         assert_eq!(config.log_level, "info");
         assert_eq!(config.log_format, "json");
@@ -105,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_observability_config_from_env() {
-        let _guard = OBS_ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
 
         let original_vars: Vec<(&str, Option<String>)> = vec![
             ("OBS_LOG_LEVEL", std::env::var("OBS_LOG_LEVEL").ok()),

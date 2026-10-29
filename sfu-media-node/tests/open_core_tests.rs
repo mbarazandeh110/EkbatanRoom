@@ -330,5 +330,280 @@ async fn test_enterprise_edition_pipe_cascade_e2e() {
     assert!(cascaded_consumers.contains(&sub_consume_resp.consumer_id));
     drop(cascaded_consumers);
 
+    // 9. Close pt2 PipeTransport and verify cascading cleanup removes producer and consumer without leaks
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r2.router_id.clone(),
+            resource_type: proto::ResourceType::Transport as i32,
+            resource_id: pt2.pipe_transport_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+    assert!(!node
+        .state
+        .pipe_transports
+        .contains_key(&pt2.pipe_transport_id));
+    assert!(!node
+        .state
+        .producers
+        .contains_key(&pipe_prod_resp.producer_id));
+    assert!(!node
+        .state
+        .consumers
+        .contains_key(&sub_consume_resp.consumer_id));
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}
+
+#[cfg(feature = "enterprise")]
+#[tokio::test]
+async fn test_enterprise_pipe_produce_idempotency_conflict_on_kind_or_params() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-idemp-pipe".to_string(),
+            room_id: "room-idemp-pipe".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let pt = service
+        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+            request_id: "req-pt-idemp-pipe".to_string(),
+            router_id: r.router_id.clone(),
+            enable_srtp: false,
+            enable_rtx: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let opus_params = r#"{
+        "mid": "0",
+        "codecs": [{
+            "mimeType": "audio/opus",
+            "payloadType": 111,
+            "clockRate": 48000,
+            "channels": 2,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 77777 }],
+        "rtcp": { "cname": "audio-test", "reducedSize": true }
+    }"#;
+
+    // First produce succeeds
+    let _prod1 = service
+        .pipe_produce(Request::new(proto::PipeProduceRequest {
+            request_id: "req-pipe-produce-same-id".to_string(),
+            router_id: r.router_id.clone(),
+            pipe_transport_id: pt.pipe_transport_id.clone(),
+            source_producer_id: "77777777-7777-7777-7777-777777777777".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Second produce with identical payload returns cached result (Idempotent hit)
+    let prod_idemp = service
+        .pipe_produce(Request::new(proto::PipeProduceRequest {
+            request_id: "req-pipe-produce-same-id".to_string(),
+            router_id: r.router_id.clone(),
+            pipe_transport_id: pt.pipe_transport_id.clone(),
+            source_producer_id: "77777777-7777-7777-7777-777777777777".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        prod_idemp.producer_id,
+        "77777777-7777-7777-7777-777777777777"
+    );
+
+    // Third produce with same request_id but different kind -> AlreadyExists (IdempotencyConflict)
+    let err_conflict_kind = service
+        .pipe_produce(Request::new(proto::PipeProduceRequest {
+            request_id: "req-pipe-produce-same-id".to_string(),
+            router_id: r.router_id.clone(),
+            pipe_transport_id: pt.pipe_transport_id.clone(),
+            source_producer_id: "77777777-7777-7777-7777-777777777777".to_string(),
+            kind: "video".to_string(),
+            rtp_parameters_json: opus_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err_conflict_kind.code(), tonic::Code::AlreadyExists);
+
+    let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
+}
+
+#[cfg(feature = "enterprise")]
+#[tokio::test]
+async fn test_enterprise_pipe_consume_sub_router_spillover() {
+    let mut config = test_config();
+    config.worker_count = 2;
+    config.worker_capacity_weight = 10;
+    config.worker_spillover_threshold_percent = 50.0;
+
+    let node = Arc::new(MediaNode::new(config).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-spill".to_string(),
+            room_id: "room-spill".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 1. Peer 1 on Worker 0 publishes video (adds 10 points load -> Worker 0 reaches 100% capacity)
+    let p1_pub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-p1-spill-pub".to_string(),
+            router_id: r.router_id.clone(),
+            peer_id: "peer-1".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let vp8_rtp_params = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "payloadType": 96,
+                "clockRate": 90000,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 99999999 }],
+        "rtcp": { "cname": "video-spill", "reducedSize": true }
+    }"#;
+
+    let _p1_prod = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-p1-prod-fill".to_string(),
+            router_id: r.router_id.clone(),
+            transport_id: p1_pub.transport_id.clone(),
+            peer_id: "peer-1".to_string(),
+            kind: "video".to_string(),
+            rtp_parameters_json: vp8_rtp_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 2. Peer 2 arrives -> Spills over to Worker 1 and creates publisher transport and Sub-Router on Worker 1!
+    let p2_pub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-p2-spill-pub".to_string(),
+            router_id: r.router_id.clone(),
+            peer_id: "peer-2".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let p2_transport_item = node.state.transports.get(&p2_pub.transport_id).unwrap();
+    assert_eq!(p2_transport_item.worker_index, 1);
+    assert_ne!(p2_transport_item.physical_router_id, r.router_id);
+    drop(p2_transport_item);
+
+    let opus_rtp_params = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "audio/opus",
+                "payloadType": 111,
+                "clockRate": 48000,
+                "channels": 2,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 88888888 }],
+        "rtcp": { "cname": "audio-spill-sub", "reducedSize": true }
+    }"#;
+
+    let p2_prod = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-p2-spill-prod".to_string(),
+            router_id: r.router_id.clone(),
+            transport_id: p2_pub.transport_id.clone(),
+            peer_id: "peer-2".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_rtp_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let p2_prod_item = node.state.producers.get(&p2_prod.producer_id).unwrap();
+    assert_eq!(p2_prod_item.worker_index, 1);
+    assert_ne!(p2_prod_item.physical_router_id, r.router_id);
+    drop(p2_prod_item);
+
+    // 3. Create PipeTransport on the room's main router (Worker 0)
+    let pt = service
+        .create_pipe_transport(Request::new(proto::CreatePipeTransportRequest {
+            request_id: "req-pt-main-router".to_string(),
+            router_id: r.router_id.clone(),
+            enable_srtp: false,
+            enable_rtx: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 4. PipeConsume Peer 2's producer (which lives on Worker 1's Sub-Router)!
+    // EnterprisePipeService must transparently pipe the stream from Worker 1's Sub-Router
+    // to Worker 0's main router before calling pipe_transport.consume.
+    let pipe_consume_resp = service
+        .pipe_consume(Request::new(proto::PipeConsumeRequest {
+            request_id: "req-pc-sub-router".to_string(),
+            router_id: r.router_id.clone(),
+            pipe_transport_id: pt.pipe_transport_id.clone(),
+            producer_id: p2_prod.producer_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!pipe_consume_resp.consumer_id.is_empty());
+    assert_eq!(pipe_consume_resp.producer_id, p2_prod.producer_id);
+    assert_eq!(pipe_consume_resp.kind, "audio");
+
+    // Verify transparent piped producer entry was created for main router
+    let piped = node
+        .state
+        .piped_producers
+        .get(&p2_prod.producer_id)
+        .unwrap();
+    assert!(piped.iter().any(|e| e.target_router_id == r.router_id));
+    drop(piped);
+
     let _ = node.shutdown(std::time::Duration::from_secs(1)).await;
 }

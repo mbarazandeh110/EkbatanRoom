@@ -616,6 +616,15 @@ impl TransportUseCase for TransportService {
                 transport_id,
                 "pipe_transport_closed",
             );
+
+            cascade_close_producers_and_consumers(
+                &self.state,
+                self.worker_pool.as_ref(),
+                self.metrics.as_ref(),
+                self.event_publisher.as_ref(),
+                router_id,
+                transport_id,
+            );
         }
 
         Ok(())

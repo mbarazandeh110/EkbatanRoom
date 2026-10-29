@@ -1,4 +1,6 @@
-use crate::application::state::{ConsumerItem, EngineState, PipeTransportItem, ProducerItem};
+use crate::application::state::{
+    ConsumerItem, EngineState, PipeTransportItem, PipedProducerEntry, ProducerItem,
+};
 use crate::config::Config;
 use crate::domain::entities::{MediaKind as DomainMediaKind, SimulcastEncodingInfo};
 use crate::domain::errors::SfuDomainError;
@@ -9,6 +11,7 @@ use crate::ports::outbound::{MetricsPort, WorkerPoolPort};
 use async_trait::async_trait;
 use mediasoup::pipe_transport::{PipeTransportOptions, PipeTransportRemoteParameters};
 use mediasoup::prelude::*;
+use mediasoup::router::PipeToRouterOptions;
 use mediasoup::transport::Transport;
 use mediasoup::types::scalability_modes::ScalabilityMode;
 use mediasoup::types::srtp_parameters::SrtpParameters;
@@ -292,12 +295,14 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         validation::validate_not_empty("producer_id", &params.producer_id)?;
 
         let payload_bytes = format!(
-            "{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}",
             params.request_id,
             params.router_id,
             params.pipe_transport_id,
             params.producer_id,
-            params.paused
+            params.kind,
+            params.paused,
+            params.raw_rtp_parameters_json
         )
         .into_bytes();
 
@@ -496,6 +501,166 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         t_item.transport.clone()
                     };
 
+                    let (producer_physical_router_id, producer_worker_index) = {
+                        let p_item = self.state.producers.get(&params.producer_id).ok_or_else(|| {
+                            SfuDomainError::NotFound(format!(
+                                "Producer '{}' not found",
+                                params.producer_id
+                            ))
+                        })?;
+
+                        if p_item.is_closed.load(Ordering::SeqCst) {
+                            return Err(SfuDomainError::NotFound(format!(
+                                "Producer '{}' is closed",
+                                params.producer_id
+                            )));
+                        }
+
+                        if p_item.router_id != params.router_id {
+                            return Err(SfuDomainError::NotFound(format!(
+                                "Producer '{}' does not belong to router '{}'",
+                                params.producer_id, params.router_id
+                            )));
+                        }
+
+                        (p_item.physical_router_id.clone(), p_item.worker_index)
+                    };
+
+                    let main_worker_index = {
+                        let r_item = self.state.routers.get(&params.router_id).ok_or_else(|| {
+                            SfuDomainError::NotFound(format!(
+                                "Router '{}' not found",
+                                params.router_id
+                            ))
+                        })?;
+
+                        if r_item.is_closed.load(Ordering::SeqCst) {
+                            return Err(SfuDomainError::NotFound(format!(
+                                "Router '{}' is closed",
+                                params.router_id
+                            )));
+                        }
+
+                        r_item.worker_index
+                    };
+
+                    // If producer was created on a Sub-Router, pipe it to main router where pipe_transport lives
+                    if producer_physical_router_id != params.router_id {
+                        let singleflight_key =
+                            format!("{}:{}", params.producer_id, params.router_id);
+                        let lock = self
+                            .state
+                            .pipe_singleflight
+                            .entry(singleflight_key.clone())
+                            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                            .clone();
+
+                        let _guard = lock.lock().await;
+                        let _key_guard = crate::application::state::SingleflightKeyGuard::new(
+                            self.state.pipe_singleflight.clone(),
+                            singleflight_key.clone(),
+                        );
+
+                        let already_piped = self
+                            .state
+                            .piped_producers
+                            .get(&params.producer_id)
+                            .map(|entries| {
+                                entries
+                                    .iter()
+                                    .any(|e| e.target_router_id == params.router_id)
+                            })
+                            .unwrap_or(false);
+
+                        if !already_piped {
+                            let (pub_router, target_router) = {
+                                let r_item = self
+                                    .state
+                                    .routers
+                                    .get(&params.router_id)
+                                    .ok_or_else(|| {
+                                        SfuDomainError::NotFound(format!(
+                                            "Router '{}' not found",
+                                            params.router_id
+                                        ))
+                                    })?;
+
+                                if r_item.is_closed.load(Ordering::SeqCst) {
+                                    return Err(SfuDomainError::NotFound(format!(
+                                        "Router '{}' is closed",
+                                        params.router_id
+                                    )));
+                                }
+
+                                let pub_r = if producer_worker_index == r_item.worker_index {
+                                    r_item.router.clone()
+                                } else {
+                                    r_item
+                                        .sub_routers
+                                        .get(&producer_worker_index)
+                                        .map(|s| s.router.clone())
+                                        .ok_or_else(|| {
+                                            SfuDomainError::NotFound(format!(
+                                                "Sub-router on worker {producer_worker_index} not found"
+                                            ))
+                                        })?
+                                };
+
+                                let target_r = r_item.router.clone();
+                                (pub_r, target_r)
+                            };
+
+                            let producer_id_obj: ProducerId =
+                                params.producer_id.parse().map_err(|e| {
+                                    SfuDomainError::InvalidArgument(format!(
+                                        "Invalid producer_id: {e}"
+                                    ))
+                                })?;
+
+                            let pipe_pair = pub_router
+                                .pipe_producer_to_router(
+                                    producer_id_obj,
+                                    PipeToRouterOptions::new(target_router),
+                                )
+                                .await
+                                .map_err(|e| {
+                                    SfuDomainError::Mediasoup(format!(
+                                        "Failed to pipe producer to main router: {e}"
+                                    ))
+                                })?;
+
+                            let is_source_paused = self
+                                .state
+                                .producers
+                                .get(&params.producer_id)
+                                .map(|p| p.producer.paused())
+                                .unwrap_or(false);
+
+                            let pipe_producer = pipe_pair.pipe_producer.into_inner();
+                            if is_source_paused {
+                                let _ = pipe_producer.pause().await;
+                            }
+
+                            self.worker_pool
+                                .add_resource_score(producer_worker_index, 1);
+                            self.worker_pool
+                                .add_resource_score(main_worker_index, 1);
+
+                            let entry = PipedProducerEntry {
+                                pipe_consumer: pipe_pair.pipe_consumer,
+                                pipe_producer,
+                                target_router_id: params.router_id.clone(),
+                                target_worker_index: main_worker_index,
+                            };
+
+                            self.state
+                                .piped_producers
+                                .entry(params.producer_id.clone())
+                                .or_default()
+                                .push(entry);
+                        }
+                    }
+
                     let producer_id_obj: ProducerId = params.producer_id.parse().map_err(|e| {
                         SfuDomainError::InvalidArgument(format!(
                             "Invalid producer_id '{}': {e}",
@@ -556,18 +721,11 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         .unwrap_or_default();
                     let clock_rate = first_codec.map(|c| c.clock_rate().get()).unwrap_or(0);
 
-                    let worker_index = self
-                        .state
-                        .routers
-                        .get(&params.router_id)
-                        .map(|r| r.worker_index)
-                        .unwrap_or(0);
-
                     let item = ConsumerItem {
                         consumer,
                         router_id: params.router_id.clone(),
                         physical_router_id: params.router_id.clone(),
-                        worker_index,
+                        worker_index: main_worker_index,
                         transport_id: params.pipe_transport_id.clone(),
                         producer_id: params.producer_id.clone(),
                         peer_id: "inter-node-cascade".to_string(),
@@ -592,7 +750,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     } else {
                         2
                     };
-                    self.worker_pool.add_resource_score(worker_index, c_weight);
+                    self.worker_pool.add_resource_score(main_worker_index, c_weight);
 
                     self.metrics.inc_active_consumers(kind_str);
 

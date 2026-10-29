@@ -32,8 +32,15 @@ COPY Cargo.toml Cargo.lock* build.rs ./
 COPY proto ./proto
 COPY src ./src
 
-# Build release binary
-RUN cargo build --release --locked
+# Optional Cargo features (e.g. enterprise) can be passed via --build-arg CARGO_FEATURES=enterprise
+ARG CARGO_FEATURES=""
+
+# Build release binary (Community edition default, or Enterprise when requested)
+RUN if [ -n "$CARGO_FEATURES" ]; then \
+        cargo build --release --locked --features "$CARGO_FEATURES"; \
+    else \
+        cargo build --release --locked; \
+    fi
 
 # --- Stage 2: Minimal Runtime ---
 FROM debian:bookworm-slim
@@ -41,6 +48,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libstdc++6 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create unprivileged application user and group
@@ -66,6 +74,10 @@ ENV MEDIASOUP_LISTEN_IP=0.0.0.0 \
 EXPOSE 50051/tcp
 EXPOSE 9090/tcp
 EXPOSE 40000-49999/udp
+
+# Healthcheck via Prometheus metrics endpoint
+HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:9090/metrics || exit 1
 
 # Run as non-root user
 USER 10001:10001
