@@ -29,4 +29,12 @@ var (
 
 	// ErrNegotiationGlare indicates a renegotiation collision occurred.
 	ErrNegotiationGlare = errors.New("negotiation glare: waiting for answer")
+
+	// Licensing and Cluster Limit Errors
+	ErrLicenseInvalidToken     = errors.New("invalid license token format")
+	ErrLicenseInvalidSignature = errors.New("invalid license signature")
+	ErrLicenseExpired          = errors.New("license has expired")
+	ErrMaxRoomsExceeded        = errors.New("cluster limit exceeded: maximum concurrent rooms reached")
+	ErrMaxPeersExceeded        = errors.New("cluster limit exceeded: maximum concurrent peers reached")
+	ErrMaxNodesExceeded        = errors.New("cluster limit exceeded: maximum SFU nodes reached")
 )

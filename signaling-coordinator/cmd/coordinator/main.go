@@ -51,6 +51,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  LIVEKIT_PING_TIMEOUT     Ping timeout seconds (default: 20)\n")
 		fmt.Fprintf(os.Stderr, "  LIVEKIT_SERVER_VERSION   Reported server version (default: 1.53.0)\n")
 		fmt.Fprintf(os.Stderr, "  RTC_ICE_SERVERS          ICE servers (JSON array or comma-separated URLs)\n")
+		fmt.Fprintf(os.Stderr, "  EKBATAN_LICENSE_KEY      Commercial Ed25519 license token\n")
+		fmt.Fprintf(os.Stderr, "  EKBATAN_LICENSE_PUBLIC_KEY Public key hex override for license verification\n")
 		fmt.Fprintf(os.Stderr, "  OBS_LOG_LEVEL            Logging level: debug, info, warn, error (default: info)\n")
 		fmt.Fprintf(os.Stderr, "  OBS_LOG_FORMAT           Logging format: json, text (default: json)\n")
 		fmt.Fprintf(os.Stderr, "  OBS_LOG_RAW_SDP          Log raw SDP offer/answer if level=debug (default: false)\n")
@@ -118,15 +120,28 @@ func main() {
 	sfuClient := sfuv1.NewSfuMediaEngineServiceClient(conn)
 	mediaNodeAdapter := media_node_grpc.NewMediaNodeClient(sfuClient, cfg.SFU.RequestTimeout)
 
-	// 4. Assemble Application layer with Constructor DI
+	// 4. Initialize License Manager & Node Registry
+	licenseMgr, err := application.NewLicenseManager(cfg.License.Key, cfg.License.PublicKey)
+	if err != nil {
+		slog.Error("failed to initialize license manager", "error", err)
+		os.Exit(1)
+	}
+
+	nodeRegistry := application.NewNodeRegistry("coordinator-main", licenseMgr)
+	if _, err := nodeRegistry.RegisterNode(context.Background(), "sfu-primary", mediaNodeAdapter); err != nil {
+		slog.Warn("could not establish event stream with SFU media node at startup", "error", err)
+	}
+
+	// 5. Assemble Application layer with Constructor DI
 	roomManager := application.NewRoomManager(
 		mediaNodeAdapter,
 		mediaNodeAdapter,
 		mediaNodeAdapter,
 		cfg.RTC.IceServers,
+		licenseMgr,
 	)
 
-	// 5. Assemble Inbound Adapters (Dual Gateway)
+	// 6. Assemble Inbound Adapters (Dual Gateway)
 	liveKitHandler := livekit.NewLiveKitWSHandler(roomManager, livekit.ResponderConfig{
 		PingInterval:  cfg.LiveKit.PingInterval,
 		PingTimeout:   cfg.LiveKit.PingTimeout,

@@ -19,6 +19,7 @@ type RoomManager struct {
 	transportPort   ports.TransportEnginePort
 	mediaStreamPort ports.MediaStreamPort
 	iceServers      []domain.IceServer
+	licenseMgr      *LicenseManager
 }
 
 // NewRoomManager creates a new RoomManager with constructor-injected ports.
@@ -27,32 +28,22 @@ func NewRoomManager(
 	transportPort ports.TransportEnginePort,
 	mediaStreamPort ports.MediaStreamPort,
 	iceServers []domain.IceServer,
+	licenseMgr ...*LicenseManager,
 ) *RoomManager {
+	var lm *LicenseManager
+	if len(licenseMgr) > 0 && licenseMgr[0] != nil {
+		lm = licenseMgr[0]
+	} else {
+		lm, _ = NewLicenseManager("")
+	}
 	return &RoomManager{
 		rooms:           make(map[string]*RoomActor),
 		routerPort:      routerPort,
 		transportPort:   transportPort,
 		mediaStreamPort: mediaStreamPort,
 		iceServers:      iceServers,
+		licenseMgr:      lm,
 	}
-}
-
-func (m *RoomManager) getOrCreateRoomActor(roomID string) *RoomActor {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	actor, exists := m.rooms[roomID]
-	if !exists {
-		actor = NewRoomActor(
-			roomID,
-			m.routerPort,
-			m.transportPort,
-			m.mediaStreamPort,
-			m.iceServers,
-		)
-		m.rooms[roomID] = actor
-	}
-	return actor
 }
 
 func (m *RoomManager) getRoomActor(roomID string) (*RoomActor, error) {
@@ -66,13 +57,85 @@ func (m *RoomManager) getRoomActor(roomID string) (*RoomActor, error) {
 	return actor, nil
 }
 
+// ActiveRoomsCount returns the current number of active rooms.
+func (m *RoomManager) ActiveRoomsCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.rooms)
+}
+
+// ActivePeersCount returns the total number of connected peers across all rooms.
+func (m *RoomManager) ActivePeersCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	total := 0
+	for _, actor := range m.rooms {
+		total += actor.ParticipantCount()
+	}
+	return total
+}
+
 func (m *RoomManager) Join(
 	ctx context.Context,
 	roomID, participantID, participantName string,
 	responder ports.PeerResponderPort,
 ) (*domain.JoinResult, error) {
-	actor := m.getOrCreateRoomActor(roomID)
-	return actor.Join(ctx, participantID, participantName, responder)
+	m.mu.Lock()
+	actor, exists := m.rooms[roomID]
+	isNewRoom := !exists
+
+	// 1. Enforce max_concurrent_rooms if creating a new room
+	if isNewRoom && m.licenseMgr != nil {
+		if err := m.licenseMgr.CheckCanCreateRoom(len(m.rooms)); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+	}
+
+	// 2. Count total active peers to enforce max_concurrent_peers
+	totalPeers := 0
+	for _, a := range m.rooms {
+		totalPeers += a.ParticipantCount()
+	}
+
+	isNewPeer := true
+	if !isNewRoom {
+		if _, ok := actor.GetSession(participantID); ok {
+			isNewPeer = false
+		}
+	}
+
+	if isNewPeer && m.licenseMgr != nil {
+		if err := m.licenseMgr.CheckCanJoinPeer(totalPeers); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+	}
+
+	if isNewRoom {
+		actor = NewRoomActor(
+			roomID,
+			m.routerPort,
+			m.transportPort,
+			m.mediaStreamPort,
+			m.iceServers,
+		)
+		m.rooms[roomID] = actor
+	}
+	m.mu.Unlock()
+
+	res, err := actor.Join(ctx, participantID, participantName, responder)
+	if err != nil {
+		m.mu.Lock()
+		if isNewRoom && actor.ParticipantCount() == 0 {
+			delete(m.rooms, roomID)
+			_ = actor.Close(ctx)
+		}
+		m.mu.Unlock()
+		return nil, err
+	}
+	return res, nil
 }
 
 func (m *RoomManager) Leave(ctx context.Context, roomID, participantID string) error {
@@ -80,7 +143,17 @@ func (m *RoomManager) Leave(ctx context.Context, roomID, participantID string) e
 	if err != nil {
 		return err
 	}
-	return actor.Leave(ctx, participantID)
+	leaveErr := actor.Leave(ctx, participantID)
+
+	// Clean up empty room so room quota is immediately reclaimed
+	m.mu.Lock()
+	if actor.ParticipantCount() == 0 {
+		delete(m.rooms, roomID)
+		_ = actor.Close(ctx)
+	}
+	m.mu.Unlock()
+
+	return leaveErr
 }
 
 func (m *RoomManager) PublishTracks(

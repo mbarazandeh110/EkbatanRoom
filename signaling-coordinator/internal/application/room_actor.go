@@ -239,6 +239,12 @@ func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) error
 	return nil
 }
 
+func (a *RoomActor) ParticipantCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.sessions)
+}
+
 func (a *RoomActor) GetSession(participantID string) (*ParticipantSession, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -28,3 +28,10 @@ type MediaStreamPort interface {
 	SetConsumerPreferredLayers(ctx context.Context, cmd *domain.SetPreferredLayersCommand) error
 	CloseResource(ctx context.Context, routerID string, resourceType domain.ResourceType, resourceID string) error
 }
+
+// NodeLifecyclePort defines the outbound operations for media node monitoring and licensing.
+type NodeLifecyclePort interface {
+	ApplyLicense(ctx context.Context, licenseToken string) (*domain.ApplyLicenseResult, error)
+	GetNodeCapacity(ctx context.Context) (*domain.NodeCapacityInfo, error)
+	WatchNodeEvents(ctx context.Context, coordinatorID, licenseToken string) (<-chan *domain.NodeEvent, error)
+}

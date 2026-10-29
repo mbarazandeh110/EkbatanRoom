@@ -1,0 +1,25 @@
+{
+  "license_id": "lic_01j9x8k2m4p6q8r0s2t4v6w8y0",
+  "customer_name": "Bank Melli Iran",
+  "tier": "enterprise",
+  "issued_at": 1761696000,
+  "expires_at": 1793232000,
+  "grace_period_days": 7,
+  "cluster_limits": {
+    "max_sfu_nodes": 5,
+    "max_workers_per_node": 0,
+    "max_concurrent_rooms": 500,
+    "max_concurrent_peers": 5000,
+    "max_peers_per_room": 1000
+  },
+  "features": {
+    "inter_node_cascading": true,
+    "recording_egress": true,
+    "data_channels": true,
+    "simulcast": true
+  },
+  "restrictions": {
+    "allowed_domains": ["meet.bmi.ir", "*.bmi.ir"],
+    "cluster_id": "prod-tehran-dc1"
+  }
+}

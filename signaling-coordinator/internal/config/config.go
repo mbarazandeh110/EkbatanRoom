@@ -21,7 +21,14 @@ type Config struct {
 	SFU       SFUConfig        `json:"sfu" yaml:"sfu"`
 	LiveKit   LiveKitConfig    `json:"livekit" yaml:"livekit"`
 	RTC       RTCConfig        `json:"rtc" yaml:"rtc"`
+	License   LicenseConfig    `json:"license" yaml:"license"`
 	Telemetry telemetry.Config `json:"telemetry" yaml:"telemetry"`
+}
+
+// LicenseConfig holds licensing keys and public key overrides.
+type LicenseConfig struct {
+	Key       string `json:"key" yaml:"key"`
+	PublicKey string `json:"public_key" yaml:"public_key"`
 }
 
 // ServerConfig defines HTTP and WebSocket server parameters.
@@ -74,6 +81,10 @@ func DefaultConfig() Config {
 					URLs: []string{"stun:stun.l.google.com:19302"},
 				},
 			},
+		},
+		License: LicenseConfig{
+			Key:       "",
+			PublicKey: "",
 		},
 		Telemetry: telemetry.Config{
 			LogLevel:        "info",
@@ -193,6 +204,14 @@ func applyEnvOverrides(cfg *Config) {
 				cfg.RTC.IceServers = []domain.IceServer{{URLs: urls}}
 			}
 		}
+	}
+
+	// License (EKBATAN_LICENSE_*)
+	if v := os.Getenv("EKBATAN_LICENSE_KEY"); v != "" {
+		cfg.License.Key = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("EKBATAN_LICENSE_PUBLIC_KEY"); v != "" {
+		cfg.License.PublicKey = strings.TrimSpace(v)
 	}
 
 	// Telemetry (OBS_*)

@@ -33,19 +33,22 @@ const (
 	SfuMediaEngineService_GetNodeCapacity_FullMethodName            = "/rtc.sfu.v1.SfuMediaEngineService/GetNodeCapacity"
 	SfuMediaEngineService_CreatePipeTransport_FullMethodName        = "/rtc.sfu.v1.SfuMediaEngineService/CreatePipeTransport"
 	SfuMediaEngineService_ConnectPipeTransport_FullMethodName       = "/rtc.sfu.v1.SfuMediaEngineService/ConnectPipeTransport"
+	SfuMediaEngineService_PipeProduce_FullMethodName                = "/rtc.sfu.v1.SfuMediaEngineService/PipeProduce"
+	SfuMediaEngineService_PipeConsume_FullMethodName                = "/rtc.sfu.v1.SfuMediaEngineService/PipeConsume"
+	SfuMediaEngineService_ApplyLicense_FullMethodName               = "/rtc.sfu.v1.SfuMediaEngineService/ApplyLicense"
 )
 
 // SfuMediaEngineServiceClient is the client API for SfuMediaEngineService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type SfuMediaEngineServiceClient interface {
-	// ۱. مدیریت چرخه حیات Router (تک‌واحد در گام اول، قابل گسترش به چند Worker)
+	// ۱. مدیریت چرخه حیات Router (در نسخه متن‌باز به صورت خودکار روی چند Worker داخلی مقیاس‌پذیر می‌شود)
 	CreateRouter(ctx context.Context, in *CreateRouterRequest, opts ...grpc.CallOption) (*CreateRouterResponse, error)
-	// ۲. مدیریت WebRtcTransport (شامل پشتیبانی از SCTP و تنظیمات شبکه/NAT)
+	// ۲. مدیریت WebRtcTransport
 	CreateTransport(ctx context.Context, in *CreateTransportRequest, opts ...grpc.CallOption) (*CreateTransportResponse, error)
 	ConnectTransport(ctx context.Context, in *ConnectTransportRequest, opts ...grpc.CallOption) (*ConnectTransportResponse, error)
 	RestartIce(ctx context.Context, in *RestartIceRequest, opts ...grpc.CallOption) (*RestartIceResponse, error)
-	// ۳. مدیریت Producer و Consumer (با اعتبارسنجی JSON در مرز RPC و بررسی canConsume)
+	// ۳. مدیریت Producer و Consumer
 	Produce(ctx context.Context, in *ProduceRequest, opts ...grpc.CallOption) (*ProduceResponse, error)
 	Consume(ctx context.Context, in *ConsumeRequest, opts ...grpc.CallOption) (*ConsumeResponse, error)
 	SetMediaPaused(ctx context.Context, in *SetMediaPausedRequest, opts ...grpc.CallOption) (*SetMediaPausedResponse, error)
@@ -54,12 +57,16 @@ type SfuMediaEngineServiceClient interface {
 	CloseResource(ctx context.Context, in *CloseResourceRequest, opts ...grpc.CallOption) (*CloseResourceResponse, error)
 	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error)
 	WatchNodeEvents(ctx context.Context, in *WatchNodeEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[NodeEvent], error)
-	// ۵. استعلام مستقیم ظرفیت و وزن نود (در بدو اتصال Coordinator یا Health Check)
+	// ۵. استعلام ظرفیت، وزن و بار ترکیبی نود (موجود در هر دو نسخه Community و Enterprise)
 	GetNodeCapacity(ctx context.Context, in *GetNodeCapacityRequest, opts ...grpc.CallOption) (*NodeCapacityMetrics, error)
-	// ۶. مدیریت PipeTransport بین‌نودی (فقط برای زمانی که نود به Hard Threshold می‌رسد و اتاق بین دو سرور Cascade می‌شود)
-	// توجه: Pipe بین ورکرهای داخل یک نود کاملاً خودکار و پنهان در داخل sfu-media-node انجام می‌شود و نیازی به RPC ندارد.
+	// ۶. [ENTERPRISE EDITION ONLY] مدیریت PipeTransport بین‌نودی برای توزیع یک اتاق روی چند سرور
+	// در نسخه Community این متدها کد خطای UNIMPLEMENTED برمی‌گردانند.
 	CreatePipeTransport(ctx context.Context, in *CreatePipeTransportRequest, opts ...grpc.CallOption) (*CreatePipeTransportResponse, error)
 	ConnectPipeTransport(ctx context.Context, in *ConnectPipeTransportRequest, opts ...grpc.CallOption) (*ConnectPipeTransportResponse, error)
+	PipeProduce(ctx context.Context, in *PipeProduceRequest, opts ...grpc.CallOption) (*ProduceResponse, error)
+	PipeConsume(ctx context.Context, in *PipeConsumeRequest, opts ...grpc.CallOption) (*ConsumeResponse, error)
+	// ۷. [LICENSING] اعمال یا تمدید پویای کلید لایسنس تجاری
+	ApplyLicense(ctx context.Context, in *ApplyLicenseRequest, opts ...grpc.CallOption) (*ApplyLicenseResponse, error)
 }
 
 type sfuMediaEngineServiceClient struct {
@@ -219,17 +226,47 @@ func (c *sfuMediaEngineServiceClient) ConnectPipeTransport(ctx context.Context, 
 	return out, nil
 }
 
+func (c *sfuMediaEngineServiceClient) PipeProduce(ctx context.Context, in *PipeProduceRequest, opts ...grpc.CallOption) (*ProduceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProduceResponse)
+	err := c.cc.Invoke(ctx, SfuMediaEngineService_PipeProduce_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sfuMediaEngineServiceClient) PipeConsume(ctx context.Context, in *PipeConsumeRequest, opts ...grpc.CallOption) (*ConsumeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConsumeResponse)
+	err := c.cc.Invoke(ctx, SfuMediaEngineService_PipeConsume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sfuMediaEngineServiceClient) ApplyLicense(ctx context.Context, in *ApplyLicenseRequest, opts ...grpc.CallOption) (*ApplyLicenseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyLicenseResponse)
+	err := c.cc.Invoke(ctx, SfuMediaEngineService_ApplyLicense_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SfuMediaEngineServiceServer is the server API for SfuMediaEngineService service.
 // All implementations must embed UnimplementedSfuMediaEngineServiceServer
 // for forward compatibility.
 type SfuMediaEngineServiceServer interface {
-	// ۱. مدیریت چرخه حیات Router (تک‌واحد در گام اول، قابل گسترش به چند Worker)
+	// ۱. مدیریت چرخه حیات Router (در نسخه متن‌باز به صورت خودکار روی چند Worker داخلی مقیاس‌پذیر می‌شود)
 	CreateRouter(context.Context, *CreateRouterRequest) (*CreateRouterResponse, error)
-	// ۲. مدیریت WebRtcTransport (شامل پشتیبانی از SCTP و تنظیمات شبکه/NAT)
+	// ۲. مدیریت WebRtcTransport
 	CreateTransport(context.Context, *CreateTransportRequest) (*CreateTransportResponse, error)
 	ConnectTransport(context.Context, *ConnectTransportRequest) (*ConnectTransportResponse, error)
 	RestartIce(context.Context, *RestartIceRequest) (*RestartIceResponse, error)
-	// ۳. مدیریت Producer و Consumer (با اعتبارسنجی JSON در مرز RPC و بررسی canConsume)
+	// ۳. مدیریت Producer و Consumer
 	Produce(context.Context, *ProduceRequest) (*ProduceResponse, error)
 	Consume(context.Context, *ConsumeRequest) (*ConsumeResponse, error)
 	SetMediaPaused(context.Context, *SetMediaPausedRequest) (*SetMediaPausedResponse, error)
@@ -238,12 +275,16 @@ type SfuMediaEngineServiceServer interface {
 	CloseResource(context.Context, *CloseResourceRequest) (*CloseResourceResponse, error)
 	GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error)
 	WatchNodeEvents(*WatchNodeEventsRequest, grpc.ServerStreamingServer[NodeEvent]) error
-	// ۵. استعلام مستقیم ظرفیت و وزن نود (در بدو اتصال Coordinator یا Health Check)
+	// ۵. استعلام ظرفیت، وزن و بار ترکیبی نود (موجود در هر دو نسخه Community و Enterprise)
 	GetNodeCapacity(context.Context, *GetNodeCapacityRequest) (*NodeCapacityMetrics, error)
-	// ۶. مدیریت PipeTransport بین‌نودی (فقط برای زمانی که نود به Hard Threshold می‌رسد و اتاق بین دو سرور Cascade می‌شود)
-	// توجه: Pipe بین ورکرهای داخل یک نود کاملاً خودکار و پنهان در داخل sfu-media-node انجام می‌شود و نیازی به RPC ندارد.
+	// ۶. [ENTERPRISE EDITION ONLY] مدیریت PipeTransport بین‌نودی برای توزیع یک اتاق روی چند سرور
+	// در نسخه Community این متدها کد خطای UNIMPLEMENTED برمی‌گردانند.
 	CreatePipeTransport(context.Context, *CreatePipeTransportRequest) (*CreatePipeTransportResponse, error)
 	ConnectPipeTransport(context.Context, *ConnectPipeTransportRequest) (*ConnectPipeTransportResponse, error)
+	PipeProduce(context.Context, *PipeProduceRequest) (*ProduceResponse, error)
+	PipeConsume(context.Context, *PipeConsumeRequest) (*ConsumeResponse, error)
+	// ۷. [LICENSING] اعمال یا تمدید پویای کلید لایسنس تجاری
+	ApplyLicense(context.Context, *ApplyLicenseRequest) (*ApplyLicenseResponse, error)
 	mustEmbedUnimplementedSfuMediaEngineServiceServer()
 }
 
@@ -295,6 +336,15 @@ func (UnimplementedSfuMediaEngineServiceServer) CreatePipeTransport(context.Cont
 }
 func (UnimplementedSfuMediaEngineServiceServer) ConnectPipeTransport(context.Context, *ConnectPipeTransportRequest) (*ConnectPipeTransportResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ConnectPipeTransport not implemented")
+}
+func (UnimplementedSfuMediaEngineServiceServer) PipeProduce(context.Context, *PipeProduceRequest) (*ProduceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PipeProduce not implemented")
+}
+func (UnimplementedSfuMediaEngineServiceServer) PipeConsume(context.Context, *PipeConsumeRequest) (*ConsumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PipeConsume not implemented")
+}
+func (UnimplementedSfuMediaEngineServiceServer) ApplyLicense(context.Context, *ApplyLicenseRequest) (*ApplyLicenseResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyLicense not implemented")
 }
 func (UnimplementedSfuMediaEngineServiceServer) mustEmbedUnimplementedSfuMediaEngineServiceServer() {}
 func (UnimplementedSfuMediaEngineServiceServer) testEmbeddedByValue()                               {}
@@ -562,6 +612,60 @@ func _SfuMediaEngineService_ConnectPipeTransport_Handler(srv interface{}, ctx co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SfuMediaEngineService_PipeProduce_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PipeProduceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SfuMediaEngineServiceServer).PipeProduce(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SfuMediaEngineService_PipeProduce_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SfuMediaEngineServiceServer).PipeProduce(ctx, req.(*PipeProduceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SfuMediaEngineService_PipeConsume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PipeConsumeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SfuMediaEngineServiceServer).PipeConsume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SfuMediaEngineService_PipeConsume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SfuMediaEngineServiceServer).PipeConsume(ctx, req.(*PipeConsumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SfuMediaEngineService_ApplyLicense_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyLicenseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SfuMediaEngineServiceServer).ApplyLicense(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SfuMediaEngineService_ApplyLicense_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SfuMediaEngineServiceServer).ApplyLicense(ctx, req.(*ApplyLicenseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SfuMediaEngineService_ServiceDesc is the grpc.ServiceDesc for SfuMediaEngineService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -620,6 +724,18 @@ var SfuMediaEngineService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConnectPipeTransport",
 			Handler:    _SfuMediaEngineService_ConnectPipeTransport_Handler,
+		},
+		{
+			MethodName: "PipeProduce",
+			Handler:    _SfuMediaEngineService_PipeProduce_Handler,
+		},
+		{
+			MethodName: "PipeConsume",
+			Handler:    _SfuMediaEngineService_PipeConsume_Handler,
+		},
+		{
+			MethodName: "ApplyLicense",
+			Handler:    _SfuMediaEngineService_ApplyLicense_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

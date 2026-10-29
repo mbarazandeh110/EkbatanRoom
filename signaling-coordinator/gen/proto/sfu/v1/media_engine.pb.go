@@ -137,9 +137,11 @@ type NodeCapacityMetrics struct {
 	ActiveProducers  uint32 `protobuf:"varint,11,opt,name=active_producers,json=activeProducers,proto3" json:"active_producers,omitempty"`
 	ActiveConsumers  uint32 `protobuf:"varint,12,opt,name=active_consumers,json=activeConsumers,proto3" json:"active_consumers,omitempty"`
 	// آیا نود در حال خاموش شدن نرم (Graceful Draining) است؟
-	IsDraining    bool `protobuf:"varint,13,opt,name=is_draining,json=isDraining,proto3" json:"is_draining,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	IsDraining                 bool   `protobuf:"varint,13,opt,name=is_draining,json=isDraining,proto3" json:"is_draining,omitempty"`
+	EnterpriseCascadingEnabled bool   `protobuf:"varint,14,opt,name=enterprise_cascading_enabled,json=enterpriseCascadingEnabled,proto3" json:"enterprise_cascading_enabled,omitempty"` // مشخص می‌کند آیا این نود با قابلیت Enterprise بالا آمده است یا خیر
+	LicenseTier                string `protobuf:"bytes,15,opt,name=license_tier,json=licenseTier,proto3" json:"license_tier,omitempty"`                                                 // "community" | "enterprise"
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *NodeCapacityMetrics) Reset() {
@@ -261,6 +263,20 @@ func (x *NodeCapacityMetrics) GetIsDraining() bool {
 		return x.IsDraining
 	}
 	return false
+}
+
+func (x *NodeCapacityMetrics) GetEnterpriseCascadingEnabled() bool {
+	if x != nil {
+		return x.EnterpriseCascadingEnabled
+	}
+	return false
+}
+
+func (x *NodeCapacityMetrics) GetLicenseTier() string {
+	if x != nil {
+		return x.LicenseTier
+	}
+	return ""
 }
 
 // پیام‌های مربوط به PipeTransport بین دو نود مجزا (Inter-Node Cascading)
@@ -2079,6 +2095,7 @@ func (x *GetStatsResponse) GetCurrentTemporalLayer() int32 {
 type WatchNodeEventsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CoordinatorId string                 `protobuf:"bytes,1,opt,name=coordinator_id,json=coordinatorId,proto3" json:"coordinator_id,omitempty"`
+	LicenseToken  string                 `protobuf:"bytes,2,opt,name=license_token,json=licenseToken,proto3" json:"license_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2116,6 +2133,13 @@ func (*WatchNodeEventsRequest) Descriptor() ([]byte, []int) {
 func (x *WatchNodeEventsRequest) GetCoordinatorId() string {
 	if x != nil {
 		return x.CoordinatorId
+	}
+	return ""
+}
+
+func (x *WatchNodeEventsRequest) GetLicenseToken() string {
+	if x != nil {
+		return x.LicenseToken
 	}
 	return ""
 }
@@ -2554,13 +2578,301 @@ func (x *ResourceClosedEvent) GetReason() string {
 	return ""
 }
 
+type PipeProduceRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	RequestId         string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	RouterId          string                 `protobuf:"bytes,2,opt,name=router_id,json=routerId,proto3" json:"router_id,omitempty"`
+	PipeTransportId   string                 `protobuf:"bytes,3,opt,name=pipe_transport_id,json=pipeTransportId,proto3" json:"pipe_transport_id,omitempty"`
+	SourceProducerId  string                 `protobuf:"bytes,4,opt,name=source_producer_id,json=sourceProducerId,proto3" json:"source_producer_id,omitempty"` // شناسه Producer در نود مبدا
+	Kind              string                 `protobuf:"bytes,5,opt,name=kind,proto3" json:"kind,omitempty"`
+	RtpParametersJson string                 `protobuf:"bytes,6,opt,name=rtp_parameters_json,json=rtpParametersJson,proto3" json:"rtp_parameters_json,omitempty"`
+	Paused            bool                   `protobuf:"varint,7,opt,name=paused,proto3" json:"paused,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *PipeProduceRequest) Reset() {
+	*x = PipeProduceRequest{}
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PipeProduceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PipeProduceRequest) ProtoMessage() {}
+
+func (x *PipeProduceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PipeProduceRequest.ProtoReflect.Descriptor instead.
+func (*PipeProduceRequest) Descriptor() ([]byte, []int) {
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *PipeProduceRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *PipeProduceRequest) GetRouterId() string {
+	if x != nil {
+		return x.RouterId
+	}
+	return ""
+}
+
+func (x *PipeProduceRequest) GetPipeTransportId() string {
+	if x != nil {
+		return x.PipeTransportId
+	}
+	return ""
+}
+
+func (x *PipeProduceRequest) GetSourceProducerId() string {
+	if x != nil {
+		return x.SourceProducerId
+	}
+	return ""
+}
+
+func (x *PipeProduceRequest) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *PipeProduceRequest) GetRtpParametersJson() string {
+	if x != nil {
+		return x.RtpParametersJson
+	}
+	return ""
+}
+
+func (x *PipeProduceRequest) GetPaused() bool {
+	if x != nil {
+		return x.Paused
+	}
+	return false
+}
+
+type PipeConsumeRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	RequestId       string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	RouterId        string                 `protobuf:"bytes,2,opt,name=router_id,json=routerId,proto3" json:"router_id,omitempty"`
+	PipeTransportId string                 `protobuf:"bytes,3,opt,name=pipe_transport_id,json=pipeTransportId,proto3" json:"pipe_transport_id,omitempty"`
+	ProducerId      string                 `protobuf:"bytes,4,opt,name=producer_id,json=producerId,proto3" json:"producer_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *PipeConsumeRequest) Reset() {
+	*x = PipeConsumeRequest{}
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PipeConsumeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PipeConsumeRequest) ProtoMessage() {}
+
+func (x *PipeConsumeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PipeConsumeRequest.ProtoReflect.Descriptor instead.
+func (*PipeConsumeRequest) Descriptor() ([]byte, []int) {
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *PipeConsumeRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *PipeConsumeRequest) GetRouterId() string {
+	if x != nil {
+		return x.RouterId
+	}
+	return ""
+}
+
+func (x *PipeConsumeRequest) GetPipeTransportId() string {
+	if x != nil {
+		return x.PipeTransportId
+	}
+	return ""
+}
+
+func (x *PipeConsumeRequest) GetProducerId() string {
+	if x != nil {
+		return x.ProducerId
+	}
+	return ""
+}
+
+type ApplyLicenseRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LicenseToken  string                 `protobuf:"bytes,1,opt,name=license_token,json=licenseToken,proto3" json:"license_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyLicenseRequest) Reset() {
+	*x = ApplyLicenseRequest{}
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyLicenseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyLicenseRequest) ProtoMessage() {}
+
+func (x *ApplyLicenseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyLicenseRequest.ProtoReflect.Descriptor instead.
+func (*ApplyLicenseRequest) Descriptor() ([]byte, []int) {
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ApplyLicenseRequest) GetLicenseToken() string {
+	if x != nil {
+		return x.LicenseToken
+	}
+	return ""
+}
+
+type ApplyLicenseResponse struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	IsValid            bool                   `protobuf:"varint,1,opt,name=is_valid,json=isValid,proto3" json:"is_valid,omitempty"`
+	LicenseTier        string                 `protobuf:"bytes,2,opt,name=license_tier,json=licenseTier,proto3" json:"license_tier,omitempty"`                         // "community" | "enterprise"
+	ExpiresAtTimestamp int64                  `protobuf:"varint,3,opt,name=expires_at_timestamp,json=expiresAtTimestamp,proto3" json:"expires_at_timestamp,omitempty"` // Unix timestamp in seconds (0 = perpetual)
+	Features           []string               `protobuf:"bytes,4,rep,name=features,proto3" json:"features,omitempty"`
+	IssuedTo           string                 `protobuf:"bytes,5,opt,name=issued_to,json=issuedTo,proto3" json:"issued_to,omitempty"`
+	ErrorMessage       string                 `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *ApplyLicenseResponse) Reset() {
+	*x = ApplyLicenseResponse{}
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyLicenseResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyLicenseResponse) ProtoMessage() {}
+
+func (x *ApplyLicenseResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_sfu_v1_media_engine_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyLicenseResponse.ProtoReflect.Descriptor instead.
+func (*ApplyLicenseResponse) Descriptor() ([]byte, []int) {
+	return file_proto_sfu_v1_media_engine_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *ApplyLicenseResponse) GetIsValid() bool {
+	if x != nil {
+		return x.IsValid
+	}
+	return false
+}
+
+func (x *ApplyLicenseResponse) GetLicenseTier() string {
+	if x != nil {
+		return x.LicenseTier
+	}
+	return ""
+}
+
+func (x *ApplyLicenseResponse) GetExpiresAtTimestamp() int64 {
+	if x != nil {
+		return x.ExpiresAtTimestamp
+	}
+	return 0
+}
+
+func (x *ApplyLicenseResponse) GetFeatures() []string {
+	if x != nil {
+		return x.Features
+	}
+	return nil
+}
+
+func (x *ApplyLicenseResponse) GetIssuedTo() string {
+	if x != nil {
+		return x.IssuedTo
+	}
+	return ""
+}
+
+func (x *ApplyLicenseResponse) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
 var File_proto_sfu_v1_media_engine_proto protoreflect.FileDescriptor
 
 const file_proto_sfu_v1_media_engine_proto_rawDesc = "" +
 	"\n" +
 	"\x1fproto/sfu/v1/media_engine.proto\x12\n" +
 	"rtc.sfu.v1\"\x18\n" +
-	"\x16GetNodeCapacityRequest\"\xdb\x04\n" +
+	"\x16GetNodeCapacityRequest\"\xc0\x05\n" +
 	"\x13NodeCapacityMetrics\x122\n" +
 	"\x15total_capacity_weight\x18\x01 \x01(\rR\x13totalCapacityWeight\x12#\n" +
 	"\rtotal_workers\x18\x02 \x01(\rR\ftotalWorkers\x12#\n" +
@@ -2576,7 +2888,9 @@ const file_proto_sfu_v1_media_engine_proto_rawDesc = "" +
 	"\x10active_producers\x18\v \x01(\rR\x0factiveProducers\x12)\n" +
 	"\x10active_consumers\x18\f \x01(\rR\x0factiveConsumers\x12\x1f\n" +
 	"\vis_draining\x18\r \x01(\bR\n" +
-	"isDraining\"\x98\x01\n" +
+	"isDraining\x12@\n" +
+	"\x1centerprise_cascading_enabled\x18\x0e \x01(\bR\x1aenterpriseCascadingEnabled\x12!\n" +
+	"\flicense_tier\x18\x0f \x01(\tR\vlicenseTier\"\x98\x01\n" +
 	"\x1aCreatePipeTransportRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1b\n" +
@@ -2732,9 +3046,10 @@ const file_proto_sfu_v1_media_engine_proto_rawDesc = "" +
 	"\fpackets_sent\x18\x04 \x01(\x04R\vpacketsSent\x12)\n" +
 	"\x10packets_received\x18\x05 \x01(\x04R\x0fpacketsReceived\x122\n" +
 	"\x15current_spatial_layer\x18\x06 \x01(\x05R\x13currentSpatialLayer\x124\n" +
-	"\x16current_temporal_layer\x18\a \x01(\x05R\x14currentTemporalLayer\"?\n" +
+	"\x16current_temporal_layer\x18\a \x01(\x05R\x14currentTemporalLayer\"d\n" +
 	"\x16WatchNodeEventsRequest\x12%\n" +
-	"\x0ecoordinator_id\x18\x01 \x01(\tR\rcoordinatorId\"\xb9\x03\n" +
+	"\x0ecoordinator_id\x18\x01 \x01(\tR\rcoordinatorId\x12#\n" +
+	"\rlicense_token\x18\x02 \x01(\tR\flicenseToken\"\xb9\x03\n" +
 	"\tNodeEvent\x12\x1b\n" +
 	"\trouter_id\x18\x01 \x01(\tR\brouterId\x12!\n" +
 	"\ftimestamp_ms\x18\x02 \x01(\x03R\vtimestampMs\x12G\n" +
@@ -2773,13 +3088,38 @@ const file_proto_sfu_v1_media_engine_proto_rawDesc = "" +
 	"\rresource_type\x18\x01 \x01(\x0e2\x18.rtc.sfu.v1.ResourceTypeR\fresourceType\x12\x1f\n" +
 	"\vresource_id\x18\x02 \x01(\tR\n" +
 	"resourceId\x12\x16\n" +
-	"\x06reason\x18\x03 \x01(\tR\x06reason*\x9c\x01\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\x86\x02\n" +
+	"\x12PipeProduceRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1b\n" +
+	"\trouter_id\x18\x02 \x01(\tR\brouterId\x12*\n" +
+	"\x11pipe_transport_id\x18\x03 \x01(\tR\x0fpipeTransportId\x12,\n" +
+	"\x12source_producer_id\x18\x04 \x01(\tR\x10sourceProducerId\x12\x12\n" +
+	"\x04kind\x18\x05 \x01(\tR\x04kind\x12.\n" +
+	"\x13rtp_parameters_json\x18\x06 \x01(\tR\x11rtpParametersJson\x12\x16\n" +
+	"\x06paused\x18\a \x01(\bR\x06paused\"\x9d\x01\n" +
+	"\x12PipeConsumeRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1b\n" +
+	"\trouter_id\x18\x02 \x01(\tR\brouterId\x12*\n" +
+	"\x11pipe_transport_id\x18\x03 \x01(\tR\x0fpipeTransportId\x12\x1f\n" +
+	"\vproducer_id\x18\x04 \x01(\tR\n" +
+	"producerId\":\n" +
+	"\x13ApplyLicenseRequest\x12#\n" +
+	"\rlicense_token\x18\x01 \x01(\tR\flicenseToken\"\xe4\x01\n" +
+	"\x14ApplyLicenseResponse\x12\x19\n" +
+	"\bis_valid\x18\x01 \x01(\bR\aisValid\x12!\n" +
+	"\flicense_tier\x18\x02 \x01(\tR\vlicenseTier\x120\n" +
+	"\x14expires_at_timestamp\x18\x03 \x01(\x03R\x12expiresAtTimestamp\x12\x1a\n" +
+	"\bfeatures\x18\x04 \x03(\tR\bfeatures\x12\x1b\n" +
+	"\tissued_to\x18\x05 \x01(\tR\bissuedTo\x12#\n" +
+	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage*\x9c\x01\n" +
 	"\fResourceType\x12\x1d\n" +
 	"\x19RESOURCE_TYPE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14RESOURCE_TYPE_ROUTER\x10\x01\x12\x1b\n" +
 	"\x17RESOURCE_TYPE_TRANSPORT\x10\x02\x12\x1a\n" +
 	"\x16RESOURCE_TYPE_PRODUCER\x10\x03\x12\x1a\n" +
-	"\x16RESOURCE_TYPE_CONSUMER\x10\x042\xe8\t\n" +
+	"\x16RESOURCE_TYPE_CONSUMER\x10\x042\xd3\v\n" +
 	"\x15SfuMediaEngineService\x12Q\n" +
 	"\fCreateRouter\x12\x1f.rtc.sfu.v1.CreateRouterRequest\x1a .rtc.sfu.v1.CreateRouterResponse\x12Z\n" +
 	"\x0fCreateTransport\x12\".rtc.sfu.v1.CreateTransportRequest\x1a#.rtc.sfu.v1.CreateTransportResponse\x12]\n" +
@@ -2795,7 +3135,10 @@ const file_proto_sfu_v1_media_engine_proto_rawDesc = "" +
 	"\x0fWatchNodeEvents\x12\".rtc.sfu.v1.WatchNodeEventsRequest\x1a\x15.rtc.sfu.v1.NodeEvent0\x01\x12V\n" +
 	"\x0fGetNodeCapacity\x12\".rtc.sfu.v1.GetNodeCapacityRequest\x1a\x1f.rtc.sfu.v1.NodeCapacityMetrics\x12f\n" +
 	"\x13CreatePipeTransport\x12&.rtc.sfu.v1.CreatePipeTransportRequest\x1a'.rtc.sfu.v1.CreatePipeTransportResponse\x12i\n" +
-	"\x14ConnectPipeTransport\x12'.rtc.sfu.v1.ConnectPipeTransportRequest\x1a(.rtc.sfu.v1.ConnectPipeTransportResponseB;Z9ekbatan-room/signaling-coordinator/gen/proto/sfu/v1;sfuv1b\x06proto3"
+	"\x14ConnectPipeTransport\x12'.rtc.sfu.v1.ConnectPipeTransportRequest\x1a(.rtc.sfu.v1.ConnectPipeTransportResponse\x12J\n" +
+	"\vPipeProduce\x12\x1e.rtc.sfu.v1.PipeProduceRequest\x1a\x1b.rtc.sfu.v1.ProduceResponse\x12J\n" +
+	"\vPipeConsume\x12\x1e.rtc.sfu.v1.PipeConsumeRequest\x1a\x1b.rtc.sfu.v1.ConsumeResponse\x12Q\n" +
+	"\fApplyLicense\x12\x1f.rtc.sfu.v1.ApplyLicenseRequest\x1a .rtc.sfu.v1.ApplyLicenseResponseB;Z9ekbatan-room/signaling-coordinator/gen/proto/sfu/v1;sfuv1b\x06proto3"
 
 var (
 	file_proto_sfu_v1_media_engine_proto_rawDescOnce sync.Once
@@ -2810,7 +3153,7 @@ func file_proto_sfu_v1_media_engine_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_sfu_v1_media_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_sfu_v1_media_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_proto_sfu_v1_media_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
 var file_proto_sfu_v1_media_engine_proto_goTypes = []any{
 	(ResourceType)(0),                          // 0: rtc.sfu.v1.ResourceType
 	(*GetNodeCapacityRequest)(nil),             // 1: rtc.sfu.v1.GetNodeCapacityRequest
@@ -2848,6 +3191,10 @@ var file_proto_sfu_v1_media_engine_proto_goTypes = []any{
 	(*MediaScoreEvent)(nil),                    // 33: rtc.sfu.v1.MediaScoreEvent
 	(*LayerChangedEvent)(nil),                  // 34: rtc.sfu.v1.LayerChangedEvent
 	(*ResourceClosedEvent)(nil),                // 35: rtc.sfu.v1.ResourceClosedEvent
+	(*PipeProduceRequest)(nil),                 // 36: rtc.sfu.v1.PipeProduceRequest
+	(*PipeConsumeRequest)(nil),                 // 37: rtc.sfu.v1.PipeConsumeRequest
+	(*ApplyLicenseRequest)(nil),                // 38: rtc.sfu.v1.ApplyLicenseRequest
+	(*ApplyLicenseResponse)(nil),               // 39: rtc.sfu.v1.ApplyLicenseResponse
 }
 var file_proto_sfu_v1_media_engine_proto_depIdxs = []int32{
 	10, // 0: rtc.sfu.v1.CreateTransportResponse.ice_candidates:type_name -> rtc.sfu.v1.IceCandidateInfo
@@ -2878,22 +3225,28 @@ var file_proto_sfu_v1_media_engine_proto_depIdxs = []int32{
 	1,  // 25: rtc.sfu.v1.SfuMediaEngineService.GetNodeCapacity:input_type -> rtc.sfu.v1.GetNodeCapacityRequest
 	3,  // 26: rtc.sfu.v1.SfuMediaEngineService.CreatePipeTransport:input_type -> rtc.sfu.v1.CreatePipeTransportRequest
 	5,  // 27: rtc.sfu.v1.SfuMediaEngineService.ConnectPipeTransport:input_type -> rtc.sfu.v1.ConnectPipeTransportRequest
-	8,  // 28: rtc.sfu.v1.SfuMediaEngineService.CreateRouter:output_type -> rtc.sfu.v1.CreateRouterResponse
-	12, // 29: rtc.sfu.v1.SfuMediaEngineService.CreateTransport:output_type -> rtc.sfu.v1.CreateTransportResponse
-	14, // 30: rtc.sfu.v1.SfuMediaEngineService.ConnectTransport:output_type -> rtc.sfu.v1.ConnectTransportResponse
-	16, // 31: rtc.sfu.v1.SfuMediaEngineService.RestartIce:output_type -> rtc.sfu.v1.RestartIceResponse
-	19, // 32: rtc.sfu.v1.SfuMediaEngineService.Produce:output_type -> rtc.sfu.v1.ProduceResponse
-	21, // 33: rtc.sfu.v1.SfuMediaEngineService.Consume:output_type -> rtc.sfu.v1.ConsumeResponse
-	23, // 34: rtc.sfu.v1.SfuMediaEngineService.SetMediaPaused:output_type -> rtc.sfu.v1.SetMediaPausedResponse
-	25, // 35: rtc.sfu.v1.SfuMediaEngineService.SetConsumerPreferredLayers:output_type -> rtc.sfu.v1.SetConsumerPreferredLayersResponse
-	27, // 36: rtc.sfu.v1.SfuMediaEngineService.CloseResource:output_type -> rtc.sfu.v1.CloseResourceResponse
-	29, // 37: rtc.sfu.v1.SfuMediaEngineService.GetStats:output_type -> rtc.sfu.v1.GetStatsResponse
-	31, // 38: rtc.sfu.v1.SfuMediaEngineService.WatchNodeEvents:output_type -> rtc.sfu.v1.NodeEvent
-	2,  // 39: rtc.sfu.v1.SfuMediaEngineService.GetNodeCapacity:output_type -> rtc.sfu.v1.NodeCapacityMetrics
-	4,  // 40: rtc.sfu.v1.SfuMediaEngineService.CreatePipeTransport:output_type -> rtc.sfu.v1.CreatePipeTransportResponse
-	6,  // 41: rtc.sfu.v1.SfuMediaEngineService.ConnectPipeTransport:output_type -> rtc.sfu.v1.ConnectPipeTransportResponse
-	28, // [28:42] is the sub-list for method output_type
-	14, // [14:28] is the sub-list for method input_type
+	36, // 28: rtc.sfu.v1.SfuMediaEngineService.PipeProduce:input_type -> rtc.sfu.v1.PipeProduceRequest
+	37, // 29: rtc.sfu.v1.SfuMediaEngineService.PipeConsume:input_type -> rtc.sfu.v1.PipeConsumeRequest
+	38, // 30: rtc.sfu.v1.SfuMediaEngineService.ApplyLicense:input_type -> rtc.sfu.v1.ApplyLicenseRequest
+	8,  // 31: rtc.sfu.v1.SfuMediaEngineService.CreateRouter:output_type -> rtc.sfu.v1.CreateRouterResponse
+	12, // 32: rtc.sfu.v1.SfuMediaEngineService.CreateTransport:output_type -> rtc.sfu.v1.CreateTransportResponse
+	14, // 33: rtc.sfu.v1.SfuMediaEngineService.ConnectTransport:output_type -> rtc.sfu.v1.ConnectTransportResponse
+	16, // 34: rtc.sfu.v1.SfuMediaEngineService.RestartIce:output_type -> rtc.sfu.v1.RestartIceResponse
+	19, // 35: rtc.sfu.v1.SfuMediaEngineService.Produce:output_type -> rtc.sfu.v1.ProduceResponse
+	21, // 36: rtc.sfu.v1.SfuMediaEngineService.Consume:output_type -> rtc.sfu.v1.ConsumeResponse
+	23, // 37: rtc.sfu.v1.SfuMediaEngineService.SetMediaPaused:output_type -> rtc.sfu.v1.SetMediaPausedResponse
+	25, // 38: rtc.sfu.v1.SfuMediaEngineService.SetConsumerPreferredLayers:output_type -> rtc.sfu.v1.SetConsumerPreferredLayersResponse
+	27, // 39: rtc.sfu.v1.SfuMediaEngineService.CloseResource:output_type -> rtc.sfu.v1.CloseResourceResponse
+	29, // 40: rtc.sfu.v1.SfuMediaEngineService.GetStats:output_type -> rtc.sfu.v1.GetStatsResponse
+	31, // 41: rtc.sfu.v1.SfuMediaEngineService.WatchNodeEvents:output_type -> rtc.sfu.v1.NodeEvent
+	2,  // 42: rtc.sfu.v1.SfuMediaEngineService.GetNodeCapacity:output_type -> rtc.sfu.v1.NodeCapacityMetrics
+	4,  // 43: rtc.sfu.v1.SfuMediaEngineService.CreatePipeTransport:output_type -> rtc.sfu.v1.CreatePipeTransportResponse
+	6,  // 44: rtc.sfu.v1.SfuMediaEngineService.ConnectPipeTransport:output_type -> rtc.sfu.v1.ConnectPipeTransportResponse
+	19, // 45: rtc.sfu.v1.SfuMediaEngineService.PipeProduce:output_type -> rtc.sfu.v1.ProduceResponse
+	21, // 46: rtc.sfu.v1.SfuMediaEngineService.PipeConsume:output_type -> rtc.sfu.v1.ConsumeResponse
+	39, // 47: rtc.sfu.v1.SfuMediaEngineService.ApplyLicense:output_type -> rtc.sfu.v1.ApplyLicenseResponse
+	31, // [31:48] is the sub-list for method output_type
+	14, // [14:31] is the sub-list for method input_type
 	14, // [14:14] is the sub-list for extension type_name
 	14, // [14:14] is the sub-list for extension extendee
 	0,  // [0:14] is the sub-list for field type_name
@@ -2917,7 +3270,7 @@ func file_proto_sfu_v1_media_engine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_sfu_v1_media_engine_proto_rawDesc), len(file_proto_sfu_v1_media_engine_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   35,
+			NumMessages:   39,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

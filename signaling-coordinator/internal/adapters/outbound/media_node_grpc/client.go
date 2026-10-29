@@ -17,6 +17,7 @@ var (
 	_ ports.RouterEnginePort    = (*MediaNodeClient)(nil)
 	_ ports.TransportEnginePort = (*MediaNodeClient)(nil)
 	_ ports.MediaStreamPort     = (*MediaNodeClient)(nil)
+	_ ports.NodeLifecyclePort   = (*MediaNodeClient)(nil)
 )
 
 // MediaNodeClient implements outbound media engine ports via gRPC.
@@ -337,4 +338,103 @@ func (c *MediaNodeClient) CloseResource(ctx context.Context, routerID string, re
 		return fmt.Errorf("grpc close resource failed (resource_id=%s): %w", resourceID, err)
 	}
 	return nil
+}
+
+// NodeLifecyclePort implementation
+
+func (c *MediaNodeClient) ApplyLicense(ctx context.Context, licenseToken string) (*domain.ApplyLicenseResult, error) {
+	callCtx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	res, err := c.client.ApplyLicense(callCtx, &sfuv1.ApplyLicenseRequest{
+		LicenseToken: licenseToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("grpc apply license failed: %w", err)
+	}
+
+	return &domain.ApplyLicenseResult{
+		IsValid:            res.GetIsValid(),
+		LicenseTier:        res.GetLicenseTier(),
+		ExpiresAtTimestamp: res.GetExpiresAtTimestamp(),
+		Features:           res.GetFeatures(),
+		IssuedTo:           res.GetIssuedTo(),
+		ErrorMessage:       res.GetErrorMessage(),
+	}, nil
+}
+
+func (c *MediaNodeClient) GetNodeCapacity(ctx context.Context) (*domain.NodeCapacityInfo, error) {
+	callCtx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	metrics, err := c.client.GetNodeCapacity(callCtx, &sfuv1.GetNodeCapacityRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("grpc get node capacity failed: %w", err)
+	}
+
+	return mapProtoCapacity(metrics), nil
+}
+
+func (c *MediaNodeClient) WatchNodeEvents(ctx context.Context, coordinatorID, licenseToken string) (<-chan *domain.NodeEvent, error) {
+	stream, err := c.client.WatchNodeEvents(ctx, &sfuv1.WatchNodeEventsRequest{
+		CoordinatorId: coordinatorID,
+		LicenseToken:  licenseToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("grpc watch node events failed: %w", err)
+	}
+
+	eventsChan := make(chan *domain.NodeEvent, 64)
+	go func() {
+		defer close(eventsChan)
+		for {
+			protoEvt, err := stream.Recv()
+			if err != nil {
+				return
+			}
+			if protoEvt == nil {
+				continue
+			}
+
+			evt := &domain.NodeEvent{
+				RouterID:    protoEvt.GetRouterId(),
+				TimestampMS: protoEvt.GetTimestampMs(),
+			}
+
+			if capMetrics := protoEvt.GetNodeCapacity(); capMetrics != nil {
+				evt.NodeCapacity = mapProtoCapacity(capMetrics)
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case eventsChan <- evt:
+			}
+		}
+	}()
+
+	return eventsChan, nil
+}
+
+func mapProtoCapacity(m *sfuv1.NodeCapacityMetrics) *domain.NodeCapacityInfo {
+	if m == nil {
+		return nil
+	}
+	return &domain.NodeCapacityInfo{
+		TotalCapacityWeight:        m.GetTotalCapacityWeight(),
+		TotalWorkers:               m.GetTotalWorkers(),
+		AliveWorkers:               m.GetAliveWorkers(),
+		LogicalLoadPercent:         m.GetLogicalLoadPercent(),
+		CpuUsagePercent:            m.GetCpuUsagePercent(),
+		MemoryUsagePercent:         m.GetMemoryUsagePercent(),
+		MaxWorkerLoadPercent:       m.GetMaxWorkerLoadPercent(),
+		EffectiveLoadPercent:       m.GetEffectiveLoadPercent(),
+		ActiveRouters:              m.GetActiveRouters(),
+		ActiveTransports:           m.GetActiveTransports(),
+		ActiveProducers:            m.GetActiveProducers(),
+		ActiveConsumers:            m.GetActiveConsumers(),
+		IsDraining:                 m.GetIsDraining(),
+		EnterpriseCascadingEnabled: m.GetEnterpriseCascadingEnabled(),
+		LicenseTier:                m.GetLicenseTier(),
+	}
 }

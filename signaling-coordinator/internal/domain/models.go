@@ -144,3 +144,36 @@ type JoinResult struct {
 	SubscriberTransport *TransportInfo
 	IceServers          []IceServer
 }
+
+type NodeCapacityInfo struct {
+	TotalCapacityWeight        uint32
+	TotalWorkers               uint32
+	AliveWorkers               uint32
+	LogicalLoadPercent         float32
+	CpuUsagePercent            float32
+	MemoryUsagePercent         float32
+	MaxWorkerLoadPercent       float32
+	EffectiveLoadPercent       float32
+	ActiveRouters              uint32
+	ActiveTransports           uint32
+	ActiveProducers            uint32
+	ActiveConsumers            uint32
+	IsDraining                 bool
+	EnterpriseCascadingEnabled bool
+	LicenseTier                string
+}
+
+type ApplyLicenseResult struct {
+	IsValid            bool
+	LicenseTier        string
+	ExpiresAtTimestamp int64
+	Features           []string
+	IssuedTo           string
+	ErrorMessage       string
+}
+
+type NodeEvent struct {
+	RouterID     string
+	TimestampMS  int64
+	NodeCapacity *NodeCapacityInfo
+}
