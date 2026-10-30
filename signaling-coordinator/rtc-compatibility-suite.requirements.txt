@@ -1013,7 +1013,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-022
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -1053,3 +1053,14 @@ STATUS: OPEN
        2. If no FID group is present, the FIRST encountered `a=ssrc:` line should be retained as `parsedTrack.SSRC`, and subsequent `a=ssrc:` lines must NOT overwrite it.
        3. In `domain.ProduceCommand` and `domain.TrackPublishCommand`, `cmd.SSRC` must be the primary media SSRC (`<orig>`).
    - This guarantees Mediasoup's `Producer` has `encoding.ssrc = 1524406117`, matching inbound video packets and forwarding them to subscriber transports.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-022]: In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`), decoupled SSRC and RTX SSRC extraction from the physical order of SDP attributes by implementing a resilient two-pass parser. In pass 1, `a=ssrc-group:FID` attributes are scanned regardless of position in the m-line to lock in `ssrc` as the primary media SSRC and `rtxSSRC` as the retransmission SSRC. In pass 2, `a=ssrc:` lines are scanned for CNAME and fallback SSRC (only if no FID group was present), guaranteeing that subsequent `a=ssrc:` lines never overwrite the primary media SSRC.
+     2. In `RtpParametersJSON.encodings[0].ssrc` and `domain.TrackPublishCommand.SSRC`, the primary media stream SSRC is strictly preserved, and RTX SSRC is mapped into `encodings[0].rtx.ssrc`. This ensures Mediasoup registers `Producer` with the primary encoding SSRC matching the actual outbound video RTP packets sent by the client, eliminating packet drops and enabling video rendering on subscriber clients.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Hardened two-pass order-independent parsing for `ssrc-group:FID` and `ssrc` attributes.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added `TestSDPMapper_PreservePrimaryMediaSSRC_OrderIndependent_REQ022`.
+   - Verification: All 37 tests pass cleanly under `go test -v -race -count=1 ./...` and `go vet ./...` exits 0.
+===================================================================

@@ -99,20 +99,20 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 
 		mid, _ := md.Attribute("mid")
 
-		// Extract SSRC and CName (REQ-021: preserve primary media SSRC and map RTX SSRC per RFC 5576 / RFC 4588)
+		// Extract SSRC and CName (REQ-021 & REQ-022: order-independent primary media SSRC and RTX SSRC per RFC 5576 / RFC 4588)
 		var ssrc uint32
 		var rtxSSRC uint32
 		cname := "default"
 
-		// 1. Scan for a=ssrc-group:FID <mediaSSRC> <rtxSSRC> first
+		// 1. Scan for a=ssrc-group:FID <mediaSSRC> <rtxSSRC> first (regardless of order in SDP)
 		for _, attr := range md.Attributes {
-			if attr.Key == "ssrc-group" {
+			if strings.EqualFold(attr.Key, "ssrc-group") {
 				fields := strings.Fields(attr.Value)
 				if len(fields) >= 3 && strings.EqualFold(fields[0], "FID") {
-					if mediaVal, err := strconv.ParseUint(fields[1], 10, 32); err == nil {
+					if mediaVal, err := strconv.ParseUint(fields[1], 10, 32); err == nil && ssrc == 0 {
 						ssrc = uint32(mediaVal)
 					}
-					if rtxVal, err := strconv.ParseUint(fields[2], 10, 32); err == nil {
+					if rtxVal, err := strconv.ParseUint(fields[2], 10, 32); err == nil && rtxSSRC == 0 {
 						rtxSSRC = uint32(rtxVal)
 					}
 				}
@@ -121,7 +121,7 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 
 		// 2. Scan a=ssrc attributes for primary SSRC (if not in FID group) and CName
 		for _, attr := range md.Attributes {
-			if attr.Key == "ssrc" {
+			if strings.EqualFold(attr.Key, "ssrc") {
 				parts := strings.Fields(attr.Value)
 				if len(parts) >= 1 {
 					val, err := strconv.ParseUint(parts[0], 10, 32)
@@ -132,12 +132,16 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 							ssrc = parsedSSRC
 						}
 						// Extract CNAME (preferring CNAME associated with primary media SSRC)
-						if len(parts) >= 2 && strings.HasPrefix(parts[1], "cname:") {
-							cn := strings.TrimPrefix(parts[1], "cname:")
-							if ssrc != 0 && parsedSSRC == ssrc {
-								cname = cn
-							} else if cname == "default" {
-								cname = cn
+						if len(parts) >= 2 {
+							for _, p := range parts[1:] {
+								if strings.HasPrefix(strings.ToLower(p), "cname:") {
+									cn := p[6:]
+									if ssrc != 0 && parsedSSRC == ssrc {
+										cname = cn
+									} else if cname == "default" {
+										cname = cn
+									}
+								}
 							}
 						}
 					}

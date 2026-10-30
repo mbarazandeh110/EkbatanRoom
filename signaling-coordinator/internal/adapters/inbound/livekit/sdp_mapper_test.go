@@ -552,5 +552,63 @@ a=ssrc:3655270929 msid:4da05d30-0011-4571-86af-1f2f009d6bfd fdacb0d6-9dc0-4d87-b
 	}
 }
 
+func TestSDPMapper_PreservePrimaryMediaSSRC_OrderIndependent_REQ022(t *testing.T) {
+	// SDP matching Chromium livekit-client where individual a=ssrc lines precede a=ssrc-group:FID
+	offerWithFIDTrailing := `v=0
+o=- 2045496112200814096 4 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=video 9 UDP/TLS/RTP/SAVPF 96 97
+c=IN IP4 0.0.0.0
+a=mid:video-0
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:96 VP8/90000
+a=rtpmap:97 rtx/90000
+a=fmtp:97 apt=96
+a=ssrc:1524406117 cname:YgDESFDBW4n2R3kX
+a=ssrc:1524406117 msid:baee7bae-2ce2-400a-91d7-920e4889cc9e adb5c000-4718-4ca9-9722-b46e96c85b64
+a=ssrc:1988226342 cname:YgDESFDBW4n2R3kX
+a=ssrc:1988226342 msid:baee7bae-2ce2-400a-91d7-920e4889cc9e adb5c000-4718-4ca9-9722-b46e96c85b64
+a=ssrc-group:FID 1524406117 1988226342
+`
+
+	parsed, err := livekit.ParsePublisherOffer(offerWithFIDTrailing)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+
+	if len(parsed.Tracks) != 1 {
+		t.Fatalf("expected 1 video track, got %d", len(parsed.Tracks))
+	}
+
+	track := parsed.Tracks[0]
+	if track.Kind != domain.TrackKindVideo {
+		t.Fatalf("expected video track, got %s", track.Kind)
+	}
+
+	// Must be primary media SSRC (1524406117), NOT RTX SSRC (1988226342) even when a=ssrc lines precede a=ssrc-group:FID
+	if track.SSRC != 1524406117 {
+		t.Fatalf("expected primary media SSRC 1524406117, got %d", track.SSRC)
+	}
+	if track.RTXSSRC != 1988226342 {
+		t.Fatalf("expected RTX SSRC 1988226342, got %d", track.RTXSSRC)
+	}
+	if track.CName != "YgDESFDBW4n2R3kX" {
+		t.Fatalf("expected CName YgDESFDBW4n2R3kX, got %s", track.CName)
+	}
+
+	// Verify encodings in RtpParametersJSON
+	expectedMediaSSRCJSON := `"ssrc":1524406117`
+	expectedRtxSSRCJSON := `"rtx":{"ssrc":1988226342}`
+	if !strings.Contains(track.RtpParametersJSON, expectedMediaSSRCJSON) {
+		t.Fatalf("expected RtpParametersJSON to contain %s, got: %s", expectedMediaSSRCJSON, track.RtpParametersJSON)
+	}
+	if !strings.Contains(track.RtpParametersJSON, expectedRtxSSRCJSON) {
+		t.Fatalf("expected RtpParametersJSON to contain %s, got: %s", expectedRtxSSRCJSON, track.RtpParametersJSON)
+	}
+}
+
 
 
