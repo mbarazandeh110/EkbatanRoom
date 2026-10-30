@@ -1009,3 +1009,47 @@ STATUS: IMPLEMENTED
      - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added `TestSDPMapper_PreservePrimaryMediaSSRC_REQ021`.
    - Verification: All 36 tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-022
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Inter-Service Protocol & RFC 5576 / RFC 4588 Compliance] Order-independent extraction of primary media SSRC and RTX SSRC when a=ssrc-group:FID appears after a=ssrc lines
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In Gate 2 (`02-bidirectional-rtp.spec.ts`), official unmodified `livekit-client` (v2.23.0) on Chromium generates video publisher offers where individual `a=ssrc:` lines precede the `a=ssrc-group:FID` line:
+     ```sdp
+     a=ssrc:1524406117 cname:YgDESFDBW4n2R3kX
+     a=ssrc:1524406117 msid:baee7bae-2ce2-400a-91d7-920e4889cc9e adb5c000-4718-4ca9-9722-b46e96c85b64
+     a=ssrc:1988226342 cname:YgDESFDBW4n2R3kX
+     a=ssrc:1988226342 msid:baee7bae-2ce2-400a-91d7-920e4889cc9e adb5c000-4718-4ca9-9722-b46e96c85b64
+     a=ssrc-group:FID 1524406117 1988226342
+     ```
+   - In REQ-021 implementation, the parser assumed `a=ssrc-group:FID` precedes `a=ssrc:` lines.
+   - When processing attributes sequentially in Chromium's actual attribute order:
+     1. `a=ssrc:1524406117` is read first (primary media SSRC).
+     2. `a=ssrc:1988226342` is read second. Because `a=ssrc-group:FID` has not been parsed yet, the parser does not know `1988226342` is an RTX SSRC, and overwrites the primary SSRC with `1988226342`.
+     3. `a=ssrc-group:FID 1524406117 1988226342` is parsed last, but does not reassign the primary SSRC or `ProduceCommand.RtpParametersJSON["encodings"][0]["ssrc"]` remains set to `1988226342`.
+   - In `sfu-media-node` (Rust Mediasoup), Producer is registered with encoding SSRC `1988226342`.
+   - Alice transmits all video RTP media packets on SSRC `1524406117` (PT 96, VP8).
+   - Mediasoup checks `encoding.ssrc == ssrc` (`1988226342 == 1524406117`), which evaluates to `false`.
+   - Mediasoup worker logs hundreds of packet drops:
+     `RTC::Producer::ReceiveRtpPacket() | no stream found for received packet [ssrc:1524406117]`
+     `RTC::Producer::ReceiveRtcpSenderReport() | RtpStream not found [ssrc:1524406117]`
+   - Direct consequence in Gate 2:
+     - Alice transmits 123,483 bytes (143 packets, 81 frames encoded).
+     - Mediasoup drops all 143 video packets at the producer.
+     - Bob receives 0 video bytes (`bytesReceived: 0, packetsReceived: 0`).
+     - `waitForRemoteTrack('video')` times out at 15000ms.
+   - Note: Audio succeeds 100% (18,280 bytes transferred) because audio has no RTX and therefore only a single SSRC.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`):
+     - Ensure SSRC parsing is completely order-independent:
+       1. If `a=ssrc-group:FID <orig> <rtx>` is present anywhere in the media description (before OR after `a=ssrc:` lines), `parsedTrack.SSRC` and `rtpParams["encodings"][0]["ssrc"]` MUST unconditionally be `<orig>` (e.g. `1524406117`), and `rtx.ssrc` MUST be `<rtx>` (e.g. `1988226342`).
+       2. If no FID group is present, the FIRST encountered `a=ssrc:` line should be retained as `parsedTrack.SSRC`, and subsequent `a=ssrc:` lines must NOT overwrite it.
+       3. In `domain.ProduceCommand` and `domain.TrackPublishCommand`, `cmd.SSRC` must be the primary media SSRC (`<orig>`).
+   - This guarantees Mediasoup's `Producer` has `encoding.ssrc = 1524406117`, matching inbound video packets and forwarding them to subscriber transports.
