@@ -93,7 +93,8 @@ test.describe('Gate 2: Bidirectional Media RTP & Video Rendering (02-bidirection
                   keyFramesEncoded: (r as unknown as { keyFramesEncoded?: number }).keyFramesEncoded,
                   pliCount: (r as unknown as { pliCount?: number }).pliCount,
                   firCount: (r as unknown as { firCount?: number }).firCount,
-                  nackCount: (r as unknown as { nackCount?: number }).nackCount
+                  nackCount: (r as unknown as { nackCount?: number }).nackCount,
+                  codec: (r as any).codecId ? reports.get((r as any).codecId) : undefined
                 });
               }
             });

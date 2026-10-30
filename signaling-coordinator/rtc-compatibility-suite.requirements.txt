@@ -1064,3 +1064,104 @@ STATUS: IMPLEMENTED
      - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added `TestSDPMapper_PreservePrimaryMediaSSRC_OrderIndependent_REQ022`.
    - Verification: All 37 tests pass cleanly under `go test -v -race -count=1 ./...` and `go vet ./...` exits 0.
 ===================================================================
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-023
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Inter-Service Contract & WebRTC RFC 4588 / RFC 5285 Compliance] Accurate RTX codec payloadType lookup (by apt matching) and populate headerExtensions in ProduceRequest.rtp_parameters_json
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In Gate 2 E2E test (`02-bidirectional-rtp.spec.ts`), bidirectional audio transmission succeeds with 100% fidelity (~19KB transferred with perfect byte/packet matching between Alice and Bob).
+   - In the video direction, Alice encodes and transmits 129KB (148 packets, 82 frames encoded, 1 keyframe) of VP8 video on media SSRC `918035962` (payload type 96) and RTX SSRC `3504424756`.
+   - However, `sfu-media-node` (Mediasoup worker) drops 100% of Alice's video packets with warnings:
+     `RTC::Producer::ReceiveRtpPacket() | no stream found for received packet [ssrc:918035962]`
+     `RTC::Producer::ReceiveRtcpSenderReport() | RtpStream not found [ssrc:918035962]`
+     Bob receives 0 video packets (`bytesReceived: 0, packetsReceived: 0`), and `waitForRemoteTrack('video')` times out at 15000ms.
+   - Observability analysis of the gRPC `ProduceRequest` payload captured at the service boundary reveals two defects in `rtp_parameters_json`:
+     ```json
+     {
+       "codecs": [
+         {
+           "clockRate": 90000,
+           "mimeType": "video/VP8",
+           "payloadType": 96,
+           "rtcpFeedback": [...]
+         },
+         {
+           "clockRate": 90000,
+           "mimeType": "video/rtx",
+           "parameters": {
+             "apt": 96
+           },
+           "payloadType": 103
+         }
+       ],
+       "encodings": [
+         {
+           "rtx": {
+             "ssrc": 3504424756
+           },
+           "ssrc": 918035962
+         }
+       ],
+       "headerExtensions": [],
+       "mid": "2",
+       "rtcp": {
+         "cname": "1PoCmU0GQ07gag4o",
+         "reducedSize": true
+       }
+     }
+     ```
+     1. **RTX PayloadType Mismatch (`payloadType: 103` vs `97`):**
+        In Chromium's publisher SDP offer:
+        ```sdp
+        a=rtpmap:96 VP8/90000
+        a=rtpmap:97 rtx/90000
+        a=fmtp:97 apt=96
+        a=rtpmap:102 red/90000
+        a=rtpmap:103 rtx/90000
+        a=fmtp:103 apt=102
+        ```
+        Per RFC 4588 Section 3, the `apt` parameter inside `a=fmtp:<rtxPT> apt=<mediaPT>` binds the RTX payload type to its associated media codec.
+        For VP8 (PT 96), `apt=96` maps to RTX payload type **97** (`a=fmtp:97 apt=96`).
+        Payload type 103 is the RTX payload type for RED (`apt=102`).
+        `sdp_mapper.go` currently assigns the last RTX payload type found in the m-line (103) instead of matching `a=fmtp:<rtxPT> apt=<primaryPT>`.
+        Because PT 103 belongs to RED rather than VP8, Mediasoup's ORTC codec and retransmission stream mapping fails to correctly associate the primary media encoding and RTX stream.
+     2. **Empty `headerExtensions: []`:**
+        `ProduceRequest.rtp_parameters_json.headerExtensions` is sent as `[]`.
+        In Alice's SDP offer, Chromium announces standard WebRTC header extensions:
+        ```sdp
+        a=extmap:4 urn:ietf:params:rtp-hdrext:sdes:mid
+        a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time
+        a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+        ```
+        In BUNDLE mode, Chromium sends packets with RTP header extensions (extension ID 4 for MID).
+        When `headerExtensions` is empty in `ProduceRequest`, Mediasoup cannot assign extension IDs to the transport (`recvRtpHeaderExtensionIds.mid = 0`), preventing MID-based stream routing and transport-wide-cc processing.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`):
+     1. **RTX Codec PT Lookup by `apt`:**
+        When adding the `video/rtx` codec to `codecs`, lookup the RTX payload type where `fmtp.apt == primaryMediaCodec.payloadType`.
+        For VP8 (PT 96), set `payloadType: 97` (matching `a=fmtp:97 apt=96`), NOT 103.
+     2. **Populate `headerExtensions`:**
+        Parse all `a=extmap:<id> <uri>` from the media section and populate `headerExtensions`:
+        ```json
+        "headerExtensions": [
+          {"id": 4, "uri": "urn:ietf:params:rtp-hdrext:sdes:mid"},
+          {"id": 2, "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"},
+          {"id": 3, "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"}
+        ]
+        ```
+        (or all supported URIs present in the offer).
+   - This ensures Mediasoup registers the producer with exact RFC 4588 RTX parameters and active RTP header extensions, allowing `CreateRtpStream` to instantiate the media stream for VP8 (SSRC `918035962`), forward packets to Bob, and render video frames.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
+   - Decision: PENDING
+   - Architectural Justification: ...
+   - Modified Files & Added Tests: ...
+===================================================================
