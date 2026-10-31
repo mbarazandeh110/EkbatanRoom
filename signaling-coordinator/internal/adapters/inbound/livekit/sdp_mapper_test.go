@@ -608,6 +608,56 @@ a=ssrc-group:FID 1524406117 1988226342
 	if !strings.Contains(track.RtpParametersJSON, expectedRtxSSRCJSON) {
 		t.Fatalf("expected RtpParametersJSON to contain %s, got: %s", expectedRtxSSRCJSON, track.RtpParametersJSON)
 	}
+	if track.CID != "adb5c000-4718-4ca9-9722-b46e96c85b64" {
+		t.Fatalf("expected CID adb5c000-4718-4ca9-9722-b46e96c85b64, got %s", track.CID)
+	}
+}
+
+func TestSDPMapper_H264_FMTP_Parameters_Parsed(t *testing.T) {
+	sdpH264 := `v=0
+o=- 2045496112200814096 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=video 9 UDP/TLS/RTP/SAVPF 125 126
+c=IN IP4 0.0.0.0
+a=mid:video-h264
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:125 H264/90000
+a=fmtp:125 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f
+a=rtpmap:126 rtx/90000
+a=fmtp:126 apt=125
+a=msid:stream-id-123 track-cid-456
+a=ssrc:333444555 cname:cname-test-h264
+`
+
+	parsed, err := livekit.ParsePublisherOffer(sdpH264)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+
+	if len(parsed.Tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(parsed.Tracks))
+	}
+
+	track := parsed.Tracks[0]
+	if track.CID != "track-cid-456" {
+		t.Fatalf("expected track CID track-cid-456, got %s", track.CID)
+	}
+	if track.CName != "cname-test-h264" {
+		t.Fatalf("expected CName cname-test-h264, got %s", track.CName)
+	}
+
+	if !strings.Contains(track.RtpParametersJSON, `"profile-level-id":"42e01f"`) {
+		t.Fatalf("expected profile-level-id 42e01f in RtpParametersJSON, got: %s", track.RtpParametersJSON)
+	}
+	if !strings.Contains(track.RtpParametersJSON, `"packetization-mode":1`) {
+		t.Fatalf("expected packetization-mode 1 in RtpParametersJSON, got: %s", track.RtpParametersJSON)
+	}
+	if !strings.Contains(track.RtpParametersJSON, `"level-asymmetry-allowed":1`) {
+		t.Fatalf("expected level-asymmetry-allowed 1 in RtpParametersJSON, got: %s", track.RtpParametersJSON)
+	}
 }
 
 

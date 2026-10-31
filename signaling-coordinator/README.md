@@ -23,7 +23,7 @@ flowchart TD
     subgraph Core["Core Application & Domain (Hexagonal Core)"]
         RManager["RoomManager<br/>(Lifecycle & Routing)"]
         subgraph Actors["Actor Model (One per Room)"]
-            RActor["RoomActor<br/>(Channel Mailbox / Lock-free)"]
+            RActor["RoomActor<br/>(State Ownership / Concurrency Guard)"]
             PSession["ParticipantSession<br/>(Stable ⇄ WaitingForAnswer)"]
             GlareQueue["Glare Prevention Queue<br/>(Mid-negotiation buffer)"]
             SDPSlots["Unified Plan Slot Manager<br/>(Port 0 Inactivation & Recycling)"]
@@ -74,7 +74,7 @@ flowchart TD
    - `/rtc`: Fully compliant with LiveKit signaling protocol (Protocol v12), enabling off-the-shelf LiveKit client SDKs (JS, React, Flutter, Swift, Kotlin).
    - `/ws/ortc`: Native ORTC signaling skeleton providing zero-SDP capability.
 2. **Actor Model per Room (`RoomActor`)**:
-   - Sequential, lock-free message processing via single-goroutine channel mailboxes eliminating data races (`go test -race` clean).
+   - Isolated state ownership and serialized room lifecycle processing eliminating data races (`go test -race` clean).
 3. **Deterministic WebRTC State Machine**:
    - State transition enforcement: `Stable` &harr; `WaitingForAnswer`.
    - Mid-negotiation glare protection: Tracks published during in-flight renegotiations are queued and flushed once the peer returns to `Stable`.
@@ -108,10 +108,14 @@ signaling-coordinator/
 │   │   └── sdp_slot.go              # Unified Plan SDP slot manager
 │   ├── ports/                       # Segregated Interface Ports (ISP)
 │   │   ├── inbound.go               # RoomCoordinatorPort, PeerResponderPort
-│   │   └── outbound.go              # RouterEnginePort, TransportEnginePort, MediaStreamPort
+│   │   └── outbound.go              # RouterEnginePort, TransportEnginePort, MediaStreamPort, PipeTransportPort, RoomPlacementStrategy
 │   ├── application/                 # Application use cases & Actor engine
+│   │   ├── license_manager.go       # Ed25519 offline license verification & cluster limits
+│   │   ├── node_registry.go         # SFU media node cluster registry & health monitor
 │   │   ├── participant_session.go   # State machine & Glare queue
-│   │   ├── room_actor.go            # Room actor & mailbox processor
+│   │   ├── placement_community.go   # Open-source single-node placement strategy (!enterprise)
+│   │   ├── placement_enterprise.go  # Commercial multi-node cascading placement strategy (enterprise)
+│   │   ├── room_actor.go            # Room actor & state coordinator
 │   │   ├── room_manager.go          # Room lifecycle coordinator
 │   │   └── room_actor_test.go       # Actor & 2-peer publish/subscribe tests
 │   └── adapters/
@@ -136,6 +140,9 @@ signaling-coordinator/
 │               └── telemetry_test.go
 ├── proto/sfu/v1/
 │   └── media_engine.proto           # Authoritative gRPC contract
+├── tools/
+│   └── license-gen/
+│       └── main.go                  # CLI tool for generating signed Ed25519 license tokens
 ├── Dockerfile                       # Production multi-stage Alpine container
 ├── Makefile                         # Automation targets
 ├── go.mod
@@ -157,7 +164,7 @@ A template configuration is provided in [`config.example.yaml`](config.example.y
 |---|---|---|---|---|
 | Config File | — | `CONFIG_FILE` | `config.yaml` (auto-detected) | Path to YAML configuration file |
 | Server Port | `server.port` | `PORT` / `CONFIG_SERVER_PORT` | `7880` | HTTP/WebSocket signaling server port |
-| Read Timeout | `server.read_timeout` | `SERVER_READ_TIMEOUT` | `15s` | HTTP server read timeout |
+| Read Timeout | `server.read_timeout` | `SERVER_READ_TIMEOUT` | `15s` | HTTP server read header timeout |
 | Write Timeout | `server.write_timeout` | `SERVER_WRITE_TIMEOUT` | `15s` | HTTP server write timeout |
 | Shutdown Timeout | `server.shutdown_timeout` | `SERVER_SHUTDOWN_TIMEOUT` | `5s` | Graceful shutdown timeout |
 | SFU gRPC Address | `sfu.grpc_addr` | `SFU_GRPC_ADDR` | `127.0.0.1:50051` | Target address of `sfu-media-node` |
@@ -166,13 +173,16 @@ A template configuration is provided in [`config.example.yaml`](config.example.y
 | LiveKit Ping Timeout | `livekit.ping_timeout` | `LIVEKIT_PING_TIMEOUT` | `20` | Heartbeat timeout in seconds (must be > interval) |
 | LiveKit Server Version | `livekit.server_version` | `LIVEKIT_SERVER_VERSION` | `1.53.0` | Reported LiveKit server version |
 | ICE Servers | `rtc.ice_servers` | `RTC_ICE_SERVERS` | `stun:stun.l.google.com:19302` | ICE STUN/TURN servers (comma-separated or JSON) |
+| License Key | `license.key` | `EKBATAN_LICENSE_KEY` | `""` | Commercial signed Ed25519 license token |
+| License Public Key | `license.public_key` | `EKBATAN_LICENSE_PUBLIC_KEY` | `""` | Public key override for license signature verification |
 | Log Level | `telemetry.log_level` | `OBS_LOG_LEVEL` | `info` | Minimum log level (`debug`, `info`, `warn`, `error`) |
 | Log Format | `telemetry.log_format` | `OBS_LOG_FORMAT` | `json` | Log output format (`json`, `text`) |
 | Log Raw SDP | `telemetry.log_raw_sdp` | `OBS_LOG_RAW_SDP` | `false` | When `true` AND level is `debug`, logs raw SDP |
 | Tracing Enabled | `telemetry.tracing_enabled` | `OBS_TRACING_ENABLED` | `false` | Enable OpenTelemetry distributed tracing |
-| Trace Sample Rate | `telemetry.trace_sample_rate` | `OBS_TRACE_SAMPLE_RATE` | `1.0` | Head-based trace sampling ratio (`0.0` to `1.0`) |
+| Trace Sample Rate | `telemetry.trace_sample_rate` | `OBS_TRACE_SAMPLE_RATE` | `0.1` | Head-based trace sampling ratio (`0.0` to `1.0`) |
 | OTLP Endpoint | `telemetry.otlp_endpoint` | `OBS_OTLP_ENDPOINT` | `""` | OTLP gRPC collector endpoint (e.g. `127.0.0.1:4317`) |
-| Metrics Enabled | `telemetry.metrics_enabled` | `OBS_METRICS_ENABLED` | `true` | Expose Prometheus/VictoriaMetrics metrics on `/metrics` |
+| Metrics Enabled | `telemetry.metrics_enabled` | `OBS_METRICS_ENABLED` | `true` | Expose Prometheus/VictoriaMetrics metrics |
+| Metrics Address | `telemetry.metrics_addr` | `OBS_METRICS_ADDR` | `""` | Dedicated HTTP metrics server address (e.g. `0.0.0.0:9091`) |
 
 ---
 
@@ -258,7 +268,7 @@ docker run --rm -it \
 The following low-cardinality metrics are exported:
 
 - `signaling_active_rooms`: Current number of active rooms (Gauge).
-- `signaling_active_participants{protocol="livekit|native_ortc"}`: Active participants by gateway (Gauge).
+- `signaling_active_participants{protocol="livekit|ortc"}`: Active participants by gateway (Gauge).
 - `signaling_ws_messages_total{protocol="...", type="...", status="..."}`: Total WebSocket messages processed (Counter).
 - `signaling_sdp_negotiation_duration_seconds{role="publisher|subscriber"}`: Histogram of SDP offer/answer cycle latency (Histogram).
 - `signaling_sdp_glare_queued_total`: Total number of renegotiation offers queued to prevent glare (Counter).

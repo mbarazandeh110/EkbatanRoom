@@ -30,6 +30,12 @@ func (noopTelemetryMetrics) IncGlareQueued() {}
 // and keyframe requests are enabled for video consumers.
 const defaultWebRTCRtpCapabilitiesJSON = `{"codecs":[{"mimeType":"audio/opus","kind":"audio","clockRate":48000,"channels":2,"preferredPayloadType":111},{"mimeType":"video/VP8","kind":"video","clockRate":90000,"preferredPayloadType":96,"rtcpFeedback":[{"type":"nack"},{"type":"nack","parameter":"pli"},{"type":"ccm","parameter":"fir"},{"type":"goog-remb"},{"type":"transport-cc"}]},{"mimeType":"video/H264","kind":"video","clockRate":90000,"preferredPayloadType":125,"parameters":{"level-asymmetry-allowed":1,"packetization-mode":1,"profile-level-id":"42e01f"},"rtcpFeedback":[{"type":"nack"},{"type":"nack","parameter":"pli"},{"type":"ccm","parameter":"fir"},{"type":"goog-remb"},{"type":"transport-cc"}]}],"headerExtensions":[]}`
 
+type pendingOffer struct {
+	responder ports.PeerResponderPort
+	slots     []*domain.SDPSlot
+	sid       string
+}
+
 // RoomActor owns the room lifecycle, participant roster, and coordinates media resources.
 type RoomActor struct {
 	mu sync.Mutex
@@ -44,6 +50,12 @@ type RoomActor struct {
 	metricsPort      ports.TelemetryMetricsPort
 	iceServers       []domain.IceServer
 	closed           bool
+
+	// Multi-node cascading support (Enterprise)
+	primaryNodeID  string
+	nodeRegistry   *NodeRegistry
+	nodeRouters    map[string]string // nodeID -> routerID
+	pipeTransports map[string]string // nodeID -> primaryPipeTransportID
 }
 
 func (a *RoomActor) getRtpCapabilitiesJSON() string {
@@ -157,28 +169,90 @@ func (a *RoomActor) IsEmptyAndIdle() bool {
 	return len(a.sessions) == 0 && a.inFlightJoins.Load() == 0
 }
 
+func (a *RoomActor) InFlightJoins() int64 {
+	return a.inFlightJoins.Load()
+}
+
+func (a *RoomActor) SetNodeRegistry(nr *NodeRegistry) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.nodeRegistry = nr
+}
+
+func (a *RoomActor) SetPrimaryNodeID(nodeID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.primaryNodeID = nodeID
+}
+
+func (a *RoomActor) collectBroadcastLocked() ([]ports.PeerResponderPort, []*domain.Participant) {
+	participants := a.room.ListParticipants()
+	responders := make([]ports.PeerResponderPort, 0, len(a.sessions))
+	for _, session := range a.sessions {
+		if session.responder != nil {
+			responders = append(responders, session.responder)
+		}
+	}
+	return responders, participants
+}
+
+func dispatchBroadcast(responders []ports.PeerResponderPort, participants []*domain.Participant) {
+	for _, r := range responders {
+		_ = r.SendParticipantUpdate(participants)
+	}
+}
+
+func dispatchOffers(offers []pendingOffer) {
+	for _, o := range offers {
+		if o.responder != nil {
+			_ = o.responder.SendSubscriberOffer(o.slots, o.sid)
+		}
+	}
+}
+
 func (a *RoomActor) Join(
 	ctx context.Context,
 	participantID string,
 	participantName string,
 	responder ports.PeerResponderPort,
+	targetNodeID ...string,
 ) (*domain.JoinResult, error) {
 	ctx, span := a.startSpan(ctx, "HandleJoin", participantID, domain.NegotiationStateStable)
 	defer span.End()
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	if a.closed || !a.room.IsActive() {
+		a.mu.Unlock()
 		span.RecordError(domain.ErrRoomClosed)
 		span.SetStatus(codes.Error, domain.ErrRoomClosed.Error())
 		return nil, domain.ErrRoomClosed
 	}
 
+	// Early check if participant already exists before provisioning transports
+	if _, exists := a.sessions[participantID]; exists {
+		a.mu.Unlock()
+		span.RecordError(domain.ErrParticipantAlreadyExists)
+		span.SetStatus(codes.Error, domain.ErrParticipantAlreadyExists.Error())
+		return nil, domain.ErrParticipantAlreadyExists
+	}
+
+	var assignedNodeID string
+	if len(targetNodeID) > 0 && targetNodeID[0] != "" {
+		assignedNodeID = targetNodeID[0]
+	}
+	if a.primaryNodeID == "" && assignedNodeID != "" {
+		a.primaryNodeID = assignedNodeID
+	}
+
+	transportPort := a.transportPort
+	activeRouterID := a.room.RouterID
+
 	// 1. Lazy initialize media router on the SFU node if not yet created
 	if a.room.RouterID == "" {
 		routerInfo, err := a.routerPort.CreateRouter(ctx, a.room.ID)
 		if err != nil {
+			a.mu.Unlock()
 			wrappedErr := fmt.Errorf("failed to create media router for room %s: %w", a.room.ID, err)
 			span.RecordError(wrappedErr)
 			span.SetStatus(codes.Error, wrappedErr.Error())
@@ -186,17 +260,100 @@ func (a *RoomActor) Join(
 		}
 		a.room.RouterID = routerInfo.RouterID
 		a.room.SetRtpCapabilitiesJSON(routerInfo.RtpCapabilitiesJSON)
+		activeRouterID = routerInfo.RouterID
+	}
+
+	// Multi-node cascading (Enterprise): If assigned to secondary node, provision router & PipeTransport
+	if assignedNodeID != "" && a.primaryNodeID != "" && assignedNodeID != a.primaryNodeID && a.nodeRegistry != nil {
+		if a.nodeRouters == nil {
+			a.nodeRouters = make(map[string]string)
+		}
+		if a.pipeTransports == nil {
+			a.pipeTransports = make(map[string]string)
+		}
+
+		secNode, err := a.nodeRegistry.GetNode(assignedNodeID)
+		if err == nil && secNode != nil {
+			secClient := secNode.Client()
+			secRouterID, ok := a.nodeRouters[assignedNodeID]
+			if !ok {
+				if rp, ok := secClient.(ports.RouterEnginePort); ok {
+					secRouterInfo, err := rp.CreateRouter(ctx, a.room.ID)
+					if err == nil && secRouterInfo != nil {
+						secRouterID = secRouterInfo.RouterID
+						a.nodeRouters[assignedNodeID] = secRouterID
+					}
+				}
+			}
+
+			if secRouterID != "" {
+				activeRouterID = secRouterID
+				if tp, ok := secClient.(ports.TransportEnginePort); ok {
+					transportPort = tp
+				}
+
+				if _, hasPipe := a.pipeTransports[assignedNodeID]; !hasPipe {
+					primNode, pErr := a.nodeRegistry.GetNode(a.primaryNodeID)
+					if pErr == nil && primNode != nil {
+						primPipePort, ok1 := primNode.Client().(ports.PipeTransportPort)
+						secPipePort, ok2 := secClient.(ports.PipeTransportPort)
+						if ok1 && ok2 {
+							primPipe, err1 := primPipePort.CreatePipeTransport(ctx, &domain.CreatePipeTransportCommand{
+								RouterID:   a.room.RouterID,
+								EnableSrtp: true,
+								EnableRtx:  true,
+							})
+							secPipe, err2 := secPipePort.CreatePipeTransport(ctx, &domain.CreatePipeTransportCommand{
+								RouterID:   secRouterID,
+								EnableSrtp: true,
+								EnableRtx:  true,
+							})
+							if err1 == nil && err2 == nil && primPipe != nil && secPipe != nil {
+								_ = primPipePort.ConnectPipeTransport(ctx, &domain.ConnectPipeTransportCommand{
+									RouterID:                 a.room.RouterID,
+									PipeTransportID:          primPipe.PipeTransportID,
+									RemoteIP:                 secPipe.IP,
+									RemotePort:               secPipe.Port,
+									RemoteSrtpParametersJSON: secPipe.SrtpParametersJSON,
+								})
+								_ = secPipePort.ConnectPipeTransport(ctx, &domain.ConnectPipeTransportCommand{
+									RouterID:                 secRouterID,
+									PipeTransportID:          secPipe.PipeTransportID,
+									RemoteIP:                 primPipe.IP,
+									RemotePort:               primPipe.Port,
+									RemoteSrtpParametersJSON: primPipe.SrtpParametersJSON,
+								})
+								a.pipeTransports[assignedNodeID] = primPipe.PipeTransportID
+
+								for _, sess := range a.sessions {
+									for _, tr := range sess.Participant().ListTracks() {
+										_, _ = primPipePort.PipeProduce(ctx, &domain.PipeProduceCommand{
+											RouterID:         a.room.RouterID,
+											PipeTransportID:  primPipe.PipeTransportID,
+											SourceProducerID: tr.ID,
+											Kind:             tr.Kind,
+											Paused:           tr.Paused,
+										})
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// 2. Provision Publisher WebRTC transport on the SFU node
-	pubTransport, err := a.transportPort.CreateTransport(ctx, &domain.CreateTransportCommand{
+	pubTransport, err := transportPort.CreateTransport(ctx, &domain.CreateTransportCommand{
 		RequestID:   uuid.NewString(),
-		RouterID:    a.room.RouterID,
+		RouterID:    activeRouterID,
 		PeerID:      participantID,
 		IsPublisher: true,
 		EnableSctp:  true,
 	})
 	if err != nil {
+		a.mu.Unlock()
 		wrappedErr := fmt.Errorf("failed to create publisher transport: %w", err)
 		span.RecordError(wrappedErr)
 		span.SetStatus(codes.Error, wrappedErr.Error())
@@ -204,15 +361,16 @@ func (a *RoomActor) Join(
 	}
 
 	// 3. Provision Subscriber WebRTC transport on the SFU node
-	subTransport, err := a.transportPort.CreateTransport(ctx, &domain.CreateTransportCommand{
+	subTransport, err := transportPort.CreateTransport(ctx, &domain.CreateTransportCommand{
 		RequestID:   uuid.NewString(),
-		RouterID:    a.room.RouterID,
+		RouterID:    activeRouterID,
 		PeerID:      participantID,
 		IsPublisher: false,
 		EnableSctp:  true,
 	})
 	if err != nil {
-		_ = a.transportPort.CloseTransport(ctx, a.room.RouterID, pubTransport.TransportID)
+		_ = transportPort.CloseTransport(ctx, activeRouterID, pubTransport.TransportID)
+		a.mu.Unlock()
 		wrappedErr := fmt.Errorf("failed to create subscriber transport: %w", err)
 		span.RecordError(wrappedErr)
 		span.SetStatus(codes.Error, wrappedErr.Error())
@@ -227,8 +385,9 @@ func (a *RoomActor) Join(
 	p.SetConnected()
 
 	if err := a.room.AddParticipant(p); err != nil {
-		_ = a.transportPort.CloseTransport(ctx, a.room.RouterID, pubTransport.TransportID)
-		_ = a.transportPort.CloseTransport(ctx, a.room.RouterID, subTransport.TransportID)
+		_ = transportPort.CloseTransport(ctx, activeRouterID, pubTransport.TransportID)
+		_ = transportPort.CloseTransport(ctx, activeRouterID, subTransport.TransportID)
+		a.mu.Unlock()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -245,20 +404,6 @@ func (a *RoomActor) Join(
 		SubscriberTransport: subTransport,
 		IceServers:          a.iceServers,
 	}
-
-	// Notify new participant via responder
-	if responder != nil {
-		if err := responder.SendJoinResponse(joinRes); err != nil {
-			_ = a.leaveLocked(ctx, participantID)
-			wrappedErr := fmt.Errorf("failed to send join response: %w", err)
-			span.RecordError(wrappedErr)
-			span.SetStatus(codes.Error, wrappedErr.Error())
-			return nil, wrappedErr
-		}
-	}
-
-	// Broadcast participant joined update to existing participants
-	a.broadcastParticipantUpdateLocked()
 
 	// 5. Subscribe the newly joined participant to all already-published tracks in the room (Late Joiner support)
 	consumedExistingCount := 0
@@ -284,6 +429,10 @@ func (a *RoomActor) Join(
 			if pubSID == "" {
 				pubSID = otherParticipant.SID
 			}
+			cname := t.CName
+			if cname == "" {
+				cname = pubSID
+			}
 
 			session.SlotTable().AllocOrRecycleSlot(
 				t.Kind,
@@ -296,6 +445,7 @@ func (a *RoomActor) Join(
 				consRes.RTXPayloadType,
 				consRes.ClockRate,
 				consRes.CodecMimeType,
+				cname,
 				pubSID,
 			)
 			p.AddSubscription(consRes.ConsumerID, t.ID)
@@ -303,12 +453,39 @@ func (a *RoomActor) Join(
 		}
 	}
 
+	var offerToSend *pendingOffer
 	if consumedExistingCount > 0 && session.State() == domain.NegotiationStateStable {
 		if err := session.StartOfferTransition(); err == nil {
 			if session.Responder() != nil {
-				_ = session.Responder().SendSubscriberOffer(session.SlotTable().ListSlots(), p.SID)
+				offerToSend = &pendingOffer{
+					responder: session.Responder(),
+					slots:     session.SlotTable().ListSlots(),
+					sid:       p.SID,
+				}
 			}
 		}
+	}
+
+	broadcastResponders, broadcastParts := a.collectBroadcastLocked()
+
+	a.mu.Unlock()
+
+	// Notify new participant via responder outside a.mu.Lock()
+	if responder != nil {
+		if err := responder.SendJoinResponse(joinRes); err != nil {
+			_ = a.Leave(ctx, participantID)
+			wrappedErr := fmt.Errorf("failed to send join response: %w", err)
+			span.RecordError(wrappedErr)
+			span.SetStatus(codes.Error, wrappedErr.Error())
+			return nil, wrappedErr
+		}
+	}
+
+	// Broadcast participant joined update to existing participants
+	dispatchBroadcast(broadcastResponders, broadcastParts)
+
+	if offerToSend != nil {
+		dispatchOffers([]pendingOffer{*offerToSend})
 	}
 
 	return joinRes, nil
@@ -316,18 +493,15 @@ func (a *RoomActor) Join(
 
 func (a *RoomActor) Leave(ctx context.Context, participantID string) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
-	return a.leaveLocked(ctx, participantID)
-}
-
-func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) error {
 	if a.closed {
+		a.mu.Unlock()
 		return nil // Ignore late leave after close
 	}
 
 	session, exists := a.sessions[participantID]
 	if !exists {
+		a.mu.Unlock()
 		return domain.ErrParticipantNotFound
 	}
 
@@ -338,6 +512,7 @@ func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) error
 	_ = session.Close()
 
 	// Inactivate all slots for this participant's tracks on remaining participants in a single batch (REQ-018)
+	var offersToSend []pendingOffer
 	leavingTracks := p.ListTracks()
 	for _, otherSession := range a.sessions {
 		inactivatedCount := 0
@@ -351,7 +526,11 @@ func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) error
 			if otherSession.State() == domain.NegotiationStateStable {
 				if err := otherSession.StartOfferTransition(); err == nil {
 					if otherSession.Responder() != nil {
-						_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), otherSession.Participant().SID)
+						offersToSend = append(offersToSend, pendingOffer{
+							responder: otherSession.Responder(),
+							slots:     otherSession.SlotTable().ListSlots(),
+							sid:       otherSession.Participant().SID,
+						})
 					}
 				}
 			} else {
@@ -369,7 +548,13 @@ func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) error
 		}
 	}
 
-	a.broadcastParticipantUpdateLocked()
+	broadcastResponders, broadcastParts := a.collectBroadcastLocked()
+
+	a.mu.Unlock()
+
+	dispatchBroadcast(broadcastResponders, broadcastParts)
+	dispatchOffers(offersToSend)
+
 	return nil
 }
 
@@ -396,15 +581,6 @@ func (a *RoomActor) ListSessions() []*ParticipantSession {
 	return sessions
 }
 
-func (a *RoomActor) broadcastParticipantUpdateLocked() {
-	participants := a.room.ListParticipants()
-	for _, session := range a.sessions {
-		if session.responder != nil {
-			_ = session.responder.SendParticipantUpdate(participants)
-		}
-	}
-}
-
 func (a *RoomActor) PublishTracks(
 	ctx context.Context,
 	participantID string,
@@ -416,10 +592,10 @@ func (a *RoomActor) PublishTracks(
 	defer span.End()
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	session, exists := a.sessions[participantID]
 	if !exists {
+		a.mu.Unlock()
 		span.RecordError(domain.ErrParticipantNotFound)
 		span.SetStatus(codes.Error, domain.ErrParticipantNotFound.Error())
 		return nil, domain.ErrParticipantNotFound
@@ -435,6 +611,7 @@ func (a *RoomActor) PublishTracks(
 			RemoteFingerprints: fingerprints,
 		})
 		if err != nil {
+			a.mu.Unlock()
 			wrappedErr := fmt.Errorf("failed to connect publisher transport: %w", err)
 			span.RecordError(wrappedErr)
 			span.SetStatus(codes.Error, wrappedErr.Error())
@@ -474,6 +651,7 @@ func (a *RoomActor) PublishTracks(
 			Paused:            false,
 		})
 		if err != nil {
+			a.mu.Unlock()
 			wrappedErr := fmt.Errorf("failed to produce track %s: %w", tc.Kind, err)
 			span.RecordError(wrappedErr)
 			span.SetStatus(codes.Error, wrappedErr.Error())
@@ -501,16 +679,33 @@ func (a *RoomActor) PublishTracks(
 			RTXPayloadType:     tc.RTXPayloadType,
 			MimeType:           tc.Codec,
 			ClockRate:          tc.ClockRate,
+			CName:              tc.CName,
 			SimulcastEncodings: prodRes.Encodings,
 		}
 		_ = p.AddTrack(domainTrack)
 		publishedTracks = append(publishedTracks, domainTrack)
+
+		// Forward track to secondary cascading nodes if active
+		if len(a.pipeTransports) > 0 && a.nodeRegistry != nil {
+			if primNode, err := a.nodeRegistry.GetNode(a.primaryNodeID); err == nil && primNode != nil {
+				if pipePort, ok := primNode.Client().(ports.PipeTransportPort); ok {
+					for _, pipeID := range a.pipeTransports {
+						_, _ = pipePort.PipeProduce(ctx, &domain.PipeProduceCommand{
+							RouterID:         a.room.RouterID,
+							PipeTransportID:  pipeID,
+							SourceProducerID: prodRes.ProducerID,
+							Kind:             tc.Kind,
+							Paused:           false,
+						})
+					}
+				}
+			}
+		}
 	}
 
-	if len(publishedTracks) > 0 {
-		// Broadcast updated participant metadata (with newly published tracks) to all participants in the room
-		a.broadcastParticipantUpdateLocked()
+	var offersToSend []pendingOffer
 
+	if len(publishedTracks) > 0 {
 		// 3. Coordinate subscriptions on all OTHER participants in the room
 		for _, otherSession := range a.sessions {
 			if otherSession.Participant().ID == participantID {
@@ -542,6 +737,11 @@ func (a *RoomActor) PublishTracks(
 					continue
 				}
 
+				cname := t.CName
+				if cname == "" {
+					cname = p.SID
+				}
+
 				otherSession.SlotTable().AllocOrRecycleSlot(
 					t.Kind,
 					t.SID,
@@ -553,6 +753,7 @@ func (a *RoomActor) PublishTracks(
 					consRes.RTXPayloadType,
 					consRes.ClockRate,
 					consRes.CodecMimeType,
+					cname,
 					p.SID,
 				)
 				otherSession.Participant().AddSubscription(consRes.ConsumerID, t.ID)
@@ -560,13 +761,25 @@ func (a *RoomActor) PublishTracks(
 
 			if err := otherSession.StartOfferTransition(); err == nil {
 				if otherSession.Responder() != nil {
-					_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), otherSession.Participant().SID)
+					offersToSend = append(offersToSend, pendingOffer{
+						responder: otherSession.Responder(),
+						slots:     otherSession.SlotTable().ListSlots(),
+						sid:       otherSession.Participant().SID,
+					})
 				}
 			}
 		}
 	}
 
-	return session.PubTransport(), nil
+	broadcastResponders, broadcastParts := a.collectBroadcastLocked()
+
+	pubTrans := session.PubTransport()
+	a.mu.Unlock()
+
+	dispatchBroadcast(broadcastResponders, broadcastParts)
+	dispatchOffers(offersToSend)
+
+	return pubTrans, nil
 }
 
 func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID string, dtlsRole string, fingerprints []domain.DtlsFingerprintInfo) error {
@@ -574,10 +787,10 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 	defer span.End()
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	session, exists := a.sessions[participantID]
 	if !exists {
+		a.mu.Unlock()
 		span.RecordError(domain.ErrParticipantNotFound)
 		span.SetStatus(codes.Error, domain.ErrParticipantNotFound.Error())
 		return domain.ErrParticipantNotFound
@@ -599,6 +812,7 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 	}
 
 	if err := session.AnswerReceivedTransition(); err != nil {
+		a.mu.Unlock()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -631,6 +845,10 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 					pubSID = p.SID
 				}
 			}
+			cname := t.CName
+			if cname == "" {
+				cname = pubSID
+			}
 
 			session.SlotTable().AllocOrRecycleSlot(
 				t.Kind,
@@ -643,18 +861,32 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 				consRes.RTXPayloadType,
 				consRes.ClockRate,
 				consRes.CodecMimeType,
+				cname,
 				pubSID,
 			)
 			p.AddSubscription(consRes.ConsumerID, t.ID)
 		}
 	}
 
+	var offerToSend *pendingOffer
 	if len(pending) > 0 || needsIceOffer || needsRenegotiation {
-		if err := session.StartOfferTransition(); err == nil {
-			if session.Responder() != nil {
-				_ = session.Responder().SendSubscriberOffer(session.SlotTable().ListSlots(), p.SID)
+		if session.State() == domain.NegotiationStateStable {
+			if err := session.StartOfferTransition(); err == nil {
+				if session.Responder() != nil {
+					offerToSend = &pendingOffer{
+						responder: session.Responder(),
+						slots:     session.SlotTable().ListSlots(),
+						sid:       p.SID,
+					}
+				}
 			}
 		}
+	}
+
+	a.mu.Unlock()
+
+	if offerToSend != nil {
+		dispatchOffers([]pendingOffer{*offerToSend})
 	}
 
 	return nil
@@ -673,15 +905,16 @@ func (a *RoomActor) HandleTrickle(ctx context.Context, participantID string, can
 
 func (a *RoomActor) SetTrackMuted(ctx context.Context, participantID, trackSID string, muted bool) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	session, exists := a.sessions[participantID]
 	if !exists {
+		a.mu.Unlock()
 		return domain.ErrParticipantNotFound
 	}
 
 	p := session.Participant()
 	if err := p.SetTrackMuted(trackSID, muted); err != nil {
+		a.mu.Unlock()
 		return err
 	}
 
@@ -695,13 +928,31 @@ func (a *RoomActor) SetTrackMuted(ctx context.Context, participantID, trackSID s
 		})
 	}
 
-	// Notify participants via both TrackMuted and ParticipantUpdate so all SDKs stay synchronized
+	type trackMuteItem struct {
+		responder ports.PeerResponderPort
+		trackSID  string
+		muted     bool
+	}
+	var trackMutes []trackMuteItem
 	for _, s := range a.sessions {
 		if s.Responder() != nil {
-			_ = s.Responder().SendTrackMuted(trackSID, muted)
+			trackMutes = append(trackMutes, trackMuteItem{
+				responder: s.Responder(),
+				trackSID:  trackSID,
+				muted:     muted,
+			})
 		}
 	}
-	a.broadcastParticipantUpdateLocked()
+
+	broadcastResponders, broadcastParts := a.collectBroadcastLocked()
+
+	a.mu.Unlock()
+
+	for _, tm := range trackMutes {
+		_ = tm.responder.SendTrackMuted(tm.trackSID, tm.muted)
+	}
+	dispatchBroadcast(broadcastResponders, broadcastParts)
+
 	return nil
 }
 
@@ -839,9 +1090,9 @@ func (a *RoomActor) Close(ctx context.Context) error {
 // HandleNodeEvent processes media engine events (ActiveSpeaker, MediaScore, LayerChanged, ResourceClosed) for this room.
 func (a *RoomActor) HandleNodeEvent(ctx context.Context, evt *domain.NodeEvent) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	if a.closed || evt == nil {
+		a.mu.Unlock()
 		return
 	}
 
@@ -873,6 +1124,9 @@ func (a *RoomActor) HandleNodeEvent(ctx context.Context, evt *domain.NodeEvent) 
 		)
 	}
 
+	var offersToSend []pendingOffer
+	var shouldBroadcast bool
+
 	if evt.ResourceClosed != nil {
 		slog.Warn("media engine resource closed unexpectedly",
 			"room_id", a.room.ID,
@@ -888,7 +1142,7 @@ func (a *RoomActor) HandleNodeEvent(ctx context.Context, evt *domain.NodeEvent) 
 				for _, tr := range p.ListTracks() {
 					if tr.ID == producerID {
 						targetTrackSID = tr.SID
-						_, _ = p.RemoveTrack(producerID)
+						_, _ = p.RemoveTrack(tr.SID)
 						break
 					}
 				}
@@ -904,7 +1158,11 @@ func (a *RoomActor) HandleNodeEvent(ctx context.Context, evt *domain.NodeEvent) 
 						if otherSession.State() == domain.NegotiationStateStable {
 							if err := otherSession.StartOfferTransition(); err == nil {
 								if otherSession.Responder() != nil {
-									_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), otherSession.Participant().SID)
+									offersToSend = append(offersToSend, pendingOffer{
+										responder: otherSession.Responder(),
+										slots:     otherSession.SlotTable().ListSlots(),
+										sid:       otherSession.Participant().SID,
+									})
 								}
 							}
 						} else {
@@ -912,8 +1170,21 @@ func (a *RoomActor) HandleNodeEvent(ctx context.Context, evt *domain.NodeEvent) 
 						}
 					}
 				}
-				a.broadcastParticipantUpdateLocked()
+				shouldBroadcast = true
 			}
 		}
 	}
+
+	var broadcastResponders []ports.PeerResponderPort
+	var broadcastParts []*domain.Participant
+	if shouldBroadcast {
+		broadcastResponders, broadcastParts = a.collectBroadcastLocked()
+	}
+
+	a.mu.Unlock()
+
+	if shouldBroadcast {
+		dispatchBroadcast(broadcastResponders, broadcastParts)
+	}
+	dispatchOffers(offersToSend)
 }

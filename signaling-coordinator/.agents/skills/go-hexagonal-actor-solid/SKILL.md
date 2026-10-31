@@ -37,3 +37,4 @@ internal/
     └── outbound/
         └── media_node_grpc/       # آداپتور کلاینت gRPC متصل به سرویس Rust (با تولید request_id و Timeout)
             └── client.go
+```

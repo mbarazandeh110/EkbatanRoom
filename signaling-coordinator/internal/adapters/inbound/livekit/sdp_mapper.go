@@ -14,6 +14,7 @@ import (
 type ParsedTrack struct {
 	Kind              domain.TrackKind
 	MID               string
+	CID               string
 	SSRC              uint32
 	RTXSSRC           uint32
 	PayloadType       uint32
@@ -131,7 +132,19 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			}
 		}
 
-		// 2. Scan a=ssrc attributes for primary SSRC (if not in FID group) and CName
+		var cid string
+		for _, attr := range md.Attributes {
+			if strings.EqualFold(attr.Key, "msid") {
+				parts := strings.Fields(attr.Value)
+				if len(parts) >= 2 {
+					cid = parts[1]
+				} else if len(parts) == 1 {
+					cid = parts[0]
+				}
+			}
+		}
+
+		// 2. Scan a=ssrc attributes for primary SSRC (if not in FID group), CName, and MSID
 		for _, attr := range md.Attributes {
 			if strings.EqualFold(attr.Key, "ssrc") {
 				parts := strings.Fields(attr.Value)
@@ -143,7 +156,7 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 						if ssrc == 0 && (rtxSSRC == 0 || parsedSSRC != rtxSSRC) {
 							ssrc = parsedSSRC
 						}
-						// Extract CNAME (preferring CNAME associated with primary media SSRC)
+						// Extract CNAME (preferring CNAME associated with primary media SSRC) and MSID
 						if len(parts) >= 2 {
 							for _, p := range parts[1:] {
 								if strings.HasPrefix(strings.ToLower(p), "cname:") {
@@ -153,6 +166,24 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 									} else if cname == "default" {
 										cname = cn
 									}
+								}
+							}
+						}
+						if strings.Contains(strings.ToLower(attr.Value), "msid:") {
+							idx := strings.Index(strings.ToLower(attr.Value), "msid:")
+							msidStr := strings.TrimSpace(attr.Value[idx+5:])
+							msidFields := strings.Fields(msidStr)
+							if len(msidFields) >= 2 {
+								if ssrc != 0 && parsedSSRC == ssrc {
+									cid = msidFields[1]
+								} else if cid == "" {
+									cid = msidFields[1]
+								}
+							} else if len(msidFields) == 1 {
+								if ssrc != 0 && parsedSSRC == ssrc {
+									cid = msidFields[0]
+								} else if cid == "" {
+									cid = msidFields[0]
 								}
 							}
 						}
@@ -233,6 +264,35 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 				channels = 2
 			}
 			codecEntry["channels"] = channels
+		}
+
+		// Parse fmtp parameters for primary payload type (e.g. H.264 profile-level-id, packetization-mode, etc.)
+		var codecParams map[string]interface{}
+		for _, attr := range md.Attributes {
+			if strings.EqualFold(attr.Key, "fmtp") {
+				parts := strings.SplitN(strings.TrimSpace(attr.Value), " ", 2)
+				if len(parts) == 2 && parts[0] == strconv.FormatUint(uint64(pt), 10) {
+					codecParams = make(map[string]interface{})
+					paramPairs := strings.Split(parts[1], ";")
+					for _, pair := range paramPairs {
+						kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+						if len(kv) == 2 {
+							k := strings.TrimSpace(kv[0])
+							v := strings.TrimSpace(kv[1])
+							if intVal, err := strconv.Atoi(v); err == nil {
+								codecParams[k] = intVal
+							} else {
+								codecParams[k] = v
+							}
+						} else if len(kv) == 1 && kv[0] != "" {
+							codecParams[strings.TrimSpace(kv[0])] = 1
+						}
+					}
+				}
+			}
+		}
+		if len(codecParams) > 0 {
+			codecEntry["parameters"] = codecParams
 		}
 
 		// REQ-020: Parse RTCP feedback attributes or provide standard video feedback
@@ -388,6 +448,7 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 		tracks = append(tracks, ParsedTrack{
 			Kind:              kind,
 			MID:               mid,
+			CID:               cid,
 			SSRC:              ssrc,
 			RTXSSRC:           rtxSSRC,
 			PayloadType:       pt,

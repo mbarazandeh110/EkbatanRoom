@@ -89,16 +89,16 @@ func (r *NodeRegistry) SetEventHandler(handler NodeEventHandler) {
 // and registers the node in the active cluster pool.
 func (r *NodeRegistry) RegisterNode(ctx context.Context, nodeID string, client ports.NodeLifecyclePort) (*RegisteredNode, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	// 1. Check if node is already registered
 	if existing, ok := r.nodes[nodeID]; ok {
+		r.mu.Unlock()
 		return existing, nil
 	}
 
 	// 2. Enforce cluster max_sfu_nodes quota via license manager
 	if r.licenseMgr != nil {
 		if err := r.licenseMgr.CheckCanAddNode(len(r.nodes)); err != nil {
+			r.mu.Unlock()
 			slog.Warn("cannot add media node to cluster: node limit exceeded",
 				"node_id", nodeID,
 				"current_nodes", len(r.nodes),
@@ -108,14 +108,16 @@ func (r *NodeRegistry) RegisterNode(ctx context.Context, nodeID string, client p
 		}
 	}
 
-	// 3. Initiate WatchNodeEvents with coordinator ID and license token
 	licenseToken := ""
 	if r.licenseMgr != nil {
 		licenseToken = r.licenseMgr.GetToken()
 	}
+	coordinatorID := r.coordinatorID
+	r.mu.Unlock()
 
+	// 3. Initiate WatchNodeEvents and GetNodeCapacity outside of r.mu.Lock()
 	nodeCtx, cancel := context.WithCancel(ctx)
-	eventsChan, err := client.WatchNodeEvents(nodeCtx, r.coordinatorID, licenseToken)
+	eventsChan, err := client.WatchNodeEvents(nodeCtx, coordinatorID, licenseToken)
 	if err != nil {
 		slog.Warn("initial watch node events failed on registration, will retry in background",
 			"node_id", nodeID,
@@ -124,24 +126,33 @@ func (r *NodeRegistry) RegisterNode(ctx context.Context, nodeID string, client p
 		eventsChan = nil
 	}
 
+	var initCap *domain.NodeCapacityInfo
+	if capInfo, err := client.GetNodeCapacity(nodeCtx); err == nil && capInfo != nil {
+		initCap = capInfo
+	}
+
 	node := &RegisteredNode{
-		nodeID:     nodeID,
-		client:     client,
-		cancelFunc: cancel,
+		nodeID:       nodeID,
+		client:       client,
+		cancelFunc:   cancel,
+		capacityInfo: initCap,
 	}
 
-	// Try fetching initial capacity
-	if initCap, err := client.GetNodeCapacity(nodeCtx); err == nil && initCap != nil {
-		node.capacityInfo = initCap
+	r.mu.Lock()
+	if existing, ok := r.nodes[nodeID]; ok {
+		r.mu.Unlock()
+		cancel()
+		return existing, nil
 	}
-
 	r.nodes[nodeID] = node
+	totalNodes := len(r.nodes)
+	r.mu.Unlock()
 
 	slog.Info("media node registered successfully",
 		"node_id", nodeID,
-		"coordinator_id", r.coordinatorID,
+		"coordinator_id", coordinatorID,
 		"has_license_token", licenseToken != "",
-		"cluster_total_nodes", len(r.nodes),
+		"cluster_total_nodes", totalNodes,
 	)
 
 	// 4. Start background listener for node events with reconnect backoff

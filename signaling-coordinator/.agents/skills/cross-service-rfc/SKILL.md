@@ -31,3 +31,9 @@ STATUS: OPEN
    - Decision: [PENDING | ACCEPTED & IMPLEMENTED | REJECTED]
    - Architectural Justification: ...
    - Modified Files & Added Tests: ...
+```
+
+## ۲. چرخه حیات درخواست (Lifecycle)
+1. **ایجاد:** درخواست توسط سرویس مبدأ در ریشه مخزن سرویس مقصد ایجاد می‌شود (`STATUS: OPEN`).
+2. **بررسی (Triage):** تیم/ایجنت سرویس مقصد درخواست را از منظر انطباق با معماری و نیازهای فنی اعتبارسنجی می‌کند.
+3. **اعمال یا رد:** در صورت انطباق، پیاده‌سازی همراه با تست انجام شده و وضعیت به `STATUS: IMPLEMENTED` تغییر می‌کند؛ در غیر این صورت با ذکر دلایل فنی `STATUS: REJECTED` می‌گردد.

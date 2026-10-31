@@ -168,17 +168,34 @@ func (m *RoomManager) Join(
 		}
 		selectedNodeID = nodeID
 	} else if !isNewRoom && m.placementStrategy != nil {
-		_, _, err := m.placementStrategy.ResolveNodeForPeerJoin(ctx, roomID, participantID)
+		nodeID, _, err := m.placementStrategy.ResolveNodeForPeerJoin(ctx, roomID, participantID)
 		if err != nil {
 			m.mu.Unlock()
 			return nil, err
 		}
+		selectedNodeID = nodeID
 	}
 
-	// 3. Count total active peers to enforce max_concurrent_peers
+	// 3. Count total active peers + in-flight joins to strictly enforce max_concurrent_peers
 	totalPeers := 0
 	for _, a := range m.rooms {
-		totalPeers += a.ParticipantCount()
+		totalPeers += a.ParticipantCount() + int(a.InFlightJoins())
+	}
+
+	if m.licenseMgr != nil {
+		isNewPeer := true
+		if !isNewRoom {
+			if _, ok := actor.GetSession(participantID); ok {
+				isNewPeer = false
+			}
+		}
+
+		if isNewPeer {
+			if err := m.licenseMgr.CheckCanJoinPeer(totalPeers); err != nil {
+				m.mu.Unlock()
+				return nil, err
+			}
+		}
 	}
 
 	if isNewRoom {
@@ -209,6 +226,8 @@ func (m *RoomManager) Join(
 			m.iceServers,
 			m.metricsPort,
 		)
+		actor.SetNodeRegistry(m.nodeRegistry)
+		actor.SetPrimaryNodeID(selectedNodeID)
 		m.rooms[roomID] = actor
 		m.metricsPort.IncActiveRooms()
 	}
@@ -216,32 +235,7 @@ func (m *RoomManager) Join(
 	actor.BeginJoin()
 	m.mu.Unlock()
 
-	// 4. Check peer limit without holding global m.mu lock
-	if m.licenseMgr != nil {
-		isNewPeer := true
-		if !isNewRoom {
-			if _, ok := actor.GetSession(participantID); ok {
-				isNewPeer = false
-			}
-		}
-
-		if isNewPeer {
-			if err := m.licenseMgr.CheckCanJoinPeer(totalPeers); err != nil {
-				actor.EndJoin()
-				m.mu.Lock()
-				if isNewRoom && actor.IsEmptyAndIdle() {
-					delete(m.rooms, roomID)
-					m.cleanupRoomPlacementLocked(roomID)
-					m.metricsPort.DecActiveRooms()
-					_ = actor.Close(ctx)
-				}
-				m.mu.Unlock()
-				return nil, err
-			}
-		}
-	}
-
-	res, err := actor.Join(ctx, participantID, participantName, responder)
+	res, err := actor.Join(ctx, participantID, participantName, responder, selectedNodeID)
 	actor.EndJoin()
 	if err != nil {
 		m.mu.Lock()

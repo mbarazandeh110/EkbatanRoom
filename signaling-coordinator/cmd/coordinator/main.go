@@ -57,9 +57,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  OBS_LOG_FORMAT           Logging format: json, text (default: json)\n")
 		fmt.Fprintf(os.Stderr, "  OBS_LOG_RAW_SDP          Log raw SDP offer/answer if level=debug (default: false)\n")
 		fmt.Fprintf(os.Stderr, "  OBS_TRACING_ENABLED      Enable OpenTelemetry tracing (default: false)\n")
-		fmt.Fprintf(os.Stderr, "  OBS_TRACE_SAMPLE_RATE    Trace sampling ratio 0.0-1.0 (default: 1.0)\n")
+		fmt.Fprintf(os.Stderr, "  OBS_TRACE_SAMPLE_RATE    Trace sampling ratio 0.0-1.0 (default: 0.1)\n")
 		fmt.Fprintf(os.Stderr, "  OBS_OTLP_ENDPOINT        OpenTelemetry gRPC collector endpoint\n")
-		fmt.Fprintf(os.Stderr, "  OBS_METRICS_ENABLED      Enable /metrics endpoint (default: true)\n\n")
+		fmt.Fprintf(os.Stderr, "  OBS_METRICS_ENABLED      Enable /metrics endpoint (default: true)\n")
+		fmt.Fprintf(os.Stderr, "  OBS_METRICS_ADDR         Separate HTTP address for Prometheus metrics (optional)\n\n")
 	}
 
 	flag.Parse()

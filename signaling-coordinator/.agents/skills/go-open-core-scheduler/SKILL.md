@@ -12,7 +12,20 @@ description: الگوی معماری Open-Core در signaling-coordinator شام
 ```go
 type RoomPlacementStrategy interface {
     // انتخاب نود برای ساخت اتاق جدید
-    SelectNodeForNewRoom(ctx context.Context, roomID string) (NodeID, error)
+    SelectNodeForNewRoom(ctx context.Context, roomID string) (string, error)
     // انتخاب نود برای ورود کاربر به اتاق موجود (در نسخه Enterprise در صورت عبور از Hard Threshold عملیات Cascading را انجام می‌دهد)
-    ResolveNodeForPeerJoin(ctx context.Context, roomID string, peerID string) (NodeID, RouterID, error)
+    ResolveNodeForPeerJoin(ctx context.Context, roomID string, peerID string) (string, string, error)
 }
+```
+
+## ۲. پیاده‌سازی نسخه متن‌باز (Community Edition)
+1. **تگ کامپایل:** `//go:build !enterprise` در فایل `placement_community.go`.
+2. **سادگی و تک‌نودی:** تمام اتاق‌ها و شرکت‌کنندگان به نود پیش‌فرض اول تخصیص می‌یابند.
+3. هیچ‌گونه Cascading بین‌نودی انجام نمی‌شود و مقیاس‌پذیری درون یک نود با ورکرهای متعدد Rust (`sfu-media-node`) تأمین می‌گردد.
+
+## ۳. پیاده‌سازی نسخه تجاری (Enterprise Edition)
+1. **تگ کامپایل:** `//go:build enterprise` در فایل `placement_enterprise.go`.
+2. **زمان‌بندی هوشمند و Spillover:**
+   - نودها بر اساس بار و ظرفیت وزن‌دار رتبه‌بندی می‌شوند.
+   - اعمال آستانه‌های `SFU_SOFT_THRESHOLD_PERCENT` (پیش‌فرض ۷۰٪) و `SFU_HARD_THRESHOLD_PERCENT` (پیش‌فرض ۸۵٪).
+   - در صورت اشباع نود اولیه، کاربر به نود ثانویه سرریز شده و ارتباط دو نود با `PipeTransport` برقرار می‌گردد.

@@ -209,13 +209,28 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					assignedSID = existingSID
 				} else {
 					// New track in renegotiation or initial publish; allocate from pendingAddTracks
-					for i, pat := range pendingAddTracks {
-						if pat.kind == t.Kind {
-							assignedSID = pat.sid
-							patInfo = pat
-							pendingAddTracks = append(pendingAddTracks[:i], pendingAddTracks[i+1:]...)
-							break
+					matchedIdx := -1
+					if t.CID != "" {
+						for i, pat := range pendingAddTracks {
+							if pat.cid != "" && pat.cid == t.CID {
+								matchedIdx = i
+								break
+							}
 						}
+					}
+					if matchedIdx == -1 {
+						for i, pat := range pendingAddTracks {
+							if pat.kind == t.Kind {
+								matchedIdx = i
+								break
+							}
+						}
+					}
+					if matchedIdx >= 0 {
+						pat := pendingAddTracks[matchedIdx]
+						assignedSID = pat.sid
+						patInfo = pat
+						pendingAddTracks = append(pendingAddTracks[:matchedIdx], pendingAddTracks[matchedIdx+1:]...)
 					}
 				}
 

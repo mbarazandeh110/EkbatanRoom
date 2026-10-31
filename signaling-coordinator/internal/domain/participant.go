@@ -44,6 +44,7 @@ type Track struct {
 	RTXPayloadType     uint32
 	MimeType           string
 	ClockRate          uint32
+	CName              string
 	Paused             bool
 	SimulcastEncodings []SimulcastLayer
 }

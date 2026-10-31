@@ -1,39 +1,21 @@
-# قوانین معماری و مهندسی سرویس `signaling-coordinator` (Go)
-
-## ۱. معماری هگزاگونال و ایزوله‌سازی پروتکل
-1. **استقلال لایه دامنه (`internal/domain/` و `internal/ports/`):** هیچ پکیجی از `github.com/livekit/protocol`، `github.com/pion/sdp/v3` یا `google.golang.org/grpc` نباید وارد لایه دامنه شود.
-2. **محدود کردن دامنه فاز صفر (جلوگیری از Over-Engineering):**
-   - در فاز صفر، تمرکز صرفاً روی اتصال `/rtc`، فرآیند Join و عبور واقعی صدا و تصویر (Publish/Subscribe) و سپس مدیریت هم‌زمانی و Simulcast است.
-   - پیاده‌سازی کامل سرویس‌های جانبی مثل Twirp API، وب‌هوک‌ها یا چندمستأجری را تا پیش از عبور از دروازه فاز صفر وارد کد نکن.
-   - برای `NativeOrtcAdapter` (`/ws/ortc`) فقط یک اسکلت ساده در کنار `LiveKitAdapter` قرار بده.
-
-## ۲. ماشین وضعیت صریح مذاکره و Actorهای محدود
-1. **فقط دو سطح مالکیت وضعیت هم‌زمان:**
-   - `RoomActor`: مالک وضعیت اتاق، لیست شرکت‌کنندگان و ترتیب عملیات. نادیده گرفتن رویدادهای دیررس پس از بسته شدن اتاق.
-   - `ParticipantSession` (`ParticipantSdpActor`): مالک وضعیت اتصال هر شرکت‌کننده و ماشین وضعیت مذاکره SDP.
-2. **ماشین وضعیت صریح مذاکره SDP:**
-   - وضعیت‌ها را به صورت صریح تعریف و تست کن: `Stable` $\rightarrow$ `WaitingForAnswer` $\rightarrow$ `Stable` (به همراه حالت‌های `TimedOut` و `Closed`).
-   - هرگز در حالت `WaitingForAnswer` یک Offer جدید ارسال نکن؛ تغییرات جدید ترک‌ها را در صف (`pendingChanges`) نگه دار و پس از دریافت Answer و تکمیل اتصال، مذاکره بعدی را آغاز کن.
-
------
 # قوانین معماری، SOLID و مهندسی سرویس `signaling-coordinator` (Go)
 
 ## ۱. الزام معماری Hexagonal و اصول پنج‌گانه SOLID
 1. **رعایت اجباری ساختار لایه‌ای:** کدها باید دقیقاً مطابق مهارت `go-hexagonal-actor-solid` در لایه‌های `internal/domain`، `internal/ports`، `internal/application` و `internal/adapters` تفکیک شوند.
-2. **استقلال لایه دامنه (اصل DIP):** هیچ پکیجی از `github.com/livekit/protocol`، `github.com/pion/sdp/v3`، `gorilla/websocket` یا `google.golang.org/grpc` نباید در `internal/domain` یا `internal/ports` ایمپورت شود[cite: 3, 5].
-3. **ایزوله‌سازی کامل پروتکل LiveKit (اصل SRP و OCP):** تمام منطق مربوط به Protobufهای LiveKit و پارس/تولید SDP باید منحصراً داخل `internal/adapters/inbound/livekit/` قرار گیرد و از طریق پورت `PeerResponderPort` با هسته دامنه ارتباط برقرار کند[cite: 3, 5].
-4. **محدود کردن دامنه فاز صفر:** در فاز صفر تمرکز روی `/rtc`، فرآیند Join و عبور واقعی رسانه (Publish/Subscribe)، هم‌زمانی، Simulcast و ICE Restart است. سرویس‌های جانبی (مانند Twirp کامل یا چندمستأجری) را وارد فاز صفر نکن و برای `/ws/ortc` یک اسکلت تمیز قرار بده[cite: 3, 5].
+2. **استقلال لایه دامنه (اصل DIP):** هیچ پکیجی از `github.com/livekit/protocol`، `github.com/pion/sdp/v3`، `gorilla/websocket` یا `google.golang.org/grpc` نباید در `internal/domain` یا `internal/ports` ایمپورت شود.
+3. **ایزوله‌سازی کامل پروتکل LiveKit (اصل SRP و OCP):** تمام منطق مربوط به Protobufهای LiveKit و پارس/تولید SDP باید منحصراً داخل `internal/adapters/inbound/livekit/` قرار گیرد و از طریق پورت `PeerResponderPort` با هسته دامنه ارتباط برقرار کند.
+4. **محدود کردن دامنه فاز صفر:** در فاز صفر تمرکز روی `/rtc`، فرآیند Join و عبور واقعی رسانه (Publish/Subscribe)، هم‌زمانی، Simulcast و ICE Restart است. سرویس‌های جانبی (مانند Twirp کامل یا چندمستأجری) را وارد فاز صفر نکن و برای `/ws/ortc` یک اسکلت تمیز قرار بده.
 
 ## ۲. ماشین وضعیت صریح مذاکره، Actorها و Best Practices
 1. **دو سطح مالکیت وضعیت هم‌زمان:**
-   - `RoomActor`: مالک وضعیت اتاق و ترتیب عملیات. رویدادهای دیررس پس از بسته شدن اتاق باید نادیده گرفته شوند[cite: 3, 5].
-   - `ParticipantSession` (`ParticipantSdpActor`): مالک وضعیت اتصال شرکت‌کننده و ماشین وضعیت مذاکره SDP[cite: 3, 5].
+   - `RoomActor`: مالک وضعیت اتاق و ترتیب عملیات. رویدادهای دیررس پس از بسته شدن اتاق باید نادیده گرفته شوند.
+   - `ParticipantSession` (`ParticipantSdpActor`): مالک وضعیت اتصال شرکت‌کننده و ماشین وضعیت مذاکره SDP.
 2. **ماشین وضعیت صریح مذاکره SDP:**
-   - وضعیت‌های `Stable` $\rightarrow$ `WaitingForAnswer` $\rightarrow$ `Stable` (به همراه `TimedOut` و `Closed`) را به صورت صریح پیاده‌سازی و با Unit Test راستی‌آزمایی کن[cite: 5].
-   - در حالت `WaitingForAnswer` هرگز Offer جدید نفرست؛ تغییرات جدید را صف‌بندی/ادغام کن تا پس از دریافت Answer اعمال شوند[cite: 5].
+   - وضعیت‌های `Stable` $\rightarrow$ `WaitingForAnswer` $\rightarrow$ `Stable` (به همراه `TimedOut` و `Closed`) را به صورت صریح پیاده‌سازی و با Unit Test راستی‌آزمایی کن.
+   - در حالت `WaitingForAnswer` هرگز Offer جدید نفرست؛ تغییرات جدید را صف‌بندی/ادغام کن تا پس از دریافت Answer اعمال شوند.
 3. **کیفیت کد Go:**
    - اجرای تمام تست‌ها با فلگ `-race` (`go test -race ./...`) برای اثبات نبودن Race Condition الزامی است.
-   - تمام فراخوانی‌های gRPC به نود Rust باید دارای `context.WithTimeout` و `request_id` یکتا باشند[cite: 3, 5].
+   - تمام فراخوانی‌های gRPC به نود Rust باید دارای `context.WithTimeout` و `request_id` یکتا باشند.
 
 ## ۳. قوانین Observability، لاگ امن و ردیابی توزیع‌شده
 1. **استقلال لایه دامنه از ابزارهای تله‌متری:** راه‌اندازی OpenTelemetry، Prometheus و تنظیمات `slog` باید خارج از `internal/domain` انجام شود.
@@ -52,16 +34,17 @@
 3. **نحوه بررسی و اعمال فایل نیازمندی دریافتی (Inbound Requirement Triage):**
    - هرگاه کاربر از تو خواست فایل `<other-service>.requirements.txt` موجود در ریشه سرویس خودت را بررسی کنی:
      1. ابتدا درستی فنی ادعا و انطباق آن را با قوانین معماری هگزاگونال، اصول SOLID و مرزهای دامنه سرویس خودت راستی‌آزمایی کن.
-     2. اگر درخواست باعث نقض معماری می‌شود (مثلاً وارد کردن منطق SDP/LiveKit به داخل `sfu-media-node`[cite: 3, 5])، درخواست را با ذکر دلیل معماری در همان فایل `REJECT` کن.
+     2. اگر درخواست باعث نقض معماری می‌شود (مثلاً وارد کردن منطق SDP/LiveKit به داخل `sfu-media-node`)، درخواست را با ذکر دلیل معماری در همان فایل `REJECT` کن.
      3. اگر نیازمندی درست و معتبر است، آن را با استفاده از مهارت‌های تخصصی و معماری همین سرویس (همراه با تست واحد/یکپارچگی) پیاده‌سازی کن و در انتهای فایل `<other-service>.requirements.txt` گزارش تغییرات و وضعیت `STATUS: IMPLEMENTED` را ثبت نما.
-4. قانون مالکیت فایل‌های قرارداد مشترک (`media_engine.proto` و `SIGNALING_CONTRACT.md`):
+4. **قانون مالکیت فایل‌های قرارداد مشترک (`media_engine.proto` و `SIGNALING_CONTRACT.md`):**
    1. مالک انحصاری تغییر `media_engine.proto` فقط چت `sfu-media-node` (Rust) است. اگر چت Go فیلد جدیدی در gRPC نیاز داشت، آن را در `sfu-media-node/signaling-coordinator.requirements.txt` می‌نویسد.
    2. مالک انحصاری تغییر `SIGNALING_CONTRACT.md` فقط چت `signaling-coordinator` (Go) است.
 
-## قوانین زمان‌بندی ظرفیت SFU و توزیع بار (SFU Capacity Scheduling)
+## ۵. قوانین زمان‌بندی ظرفیت SFU و توزیع بار (SFU Capacity Scheduling)
 1. **عدم دخالت در توپولوژی ورکرهای داخلی Rust:** سرویس `signaling-coordinator` هر نود `sfu-media-node` را به عنوان یک واحد یکپارچه می‌بیند و هرگز نباید سعی کند ورکرهای داخلی یک نود را مدیریت یا Pipe کند.
-2. **تصمیم‌گیری متمرکز Soft/Hard Threshold:** اعمال مرزهای `SFU_SOFT_THRESHOLD_PERCENT` (پیش‌فرض ۷۰٪ برای اتاق‌های جدید) و `SFU_HARD_THRESHOLD_PERCENT` (پیش‌فرض ۹۰٪ برای سرریز اتاق موجود به نود دیگر) منحصراً بر عهده `signaling-coordinator` و بر پایه فیلد `effective_load_percent` و `total_capacity_weight` دریافتی از نودهای مدیا است.
+2. **تصمیم‌گیری متمرکز Soft/Hard Threshold:** اعمال مرزهای `SFU_SOFT_THRESHOLD_PERCENT` (پیش‌فرض ۷۰٪ برای اتاق‌های جدید) و `SFU_HARD_THRESHOLD_PERCENT` (پیش‌فرض ۸۵٪ برای سرریز اتاق موجود به نود دیگر) منحصراً بر عهده `signaling-coordinator` و بر پایه فیلد `effective_load_percent` و `total_capacity_weight` دریافتی از نودهای مدیا است.
 3. **اولویت مطلق هم‌جواری اتاق (Room Locality):** تا زمانی که نود میزبان فعلی یک اتاق به مرز Hard Threshold نرسیده است، تمام کاربران جدید همان اتاق باید به همان نود هدایت شوند.
-## قوانین معماری Open-Core و زمان‌بندی ناوگان SFU
+
+## ۶. قوانین معماری Open-Core و زمان‌بندی ناوگان SFU
 1. **تفکیک تمیز با Go Build Tags و Strategy Port:** منطق نسخه متن‌باز (`!enterprise`) و نسخه تجاری (`enterprise`) باید از طریق اینترفیس `RoomPlacementStrategy` جداسازی شود. قرار دادن شرط‌های پراکنده در لایه کنترلر یا هندلرهای WebSocket ممنوع است.
 2. **مقیاس‌پذیری داخل نود در برابر بین نود:** توزیع اتاق روی ورکرهای یک نود بر عهده `sfu-media-node` است و در نسخه متن‌باز فعال است. توزیع یک اتاق واحد روی چند نود (`PipeTransport` بین‌نودی و مدیریت Soft/Hard Threshold) منحصراً در نسخه Enterprise از `signaling-coordinator` فعال می‌شود.

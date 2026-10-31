@@ -813,6 +813,11 @@ func TestRoomActor_ProducerResourceClosedEvent_InactivatesSlotAndRenegotiates(t 
 	if len(respBob.offers) < 1 {
 		t.Fatalf("expected Bob to receive subscriber offer after producer closed, got %d", len(respBob.offers))
 	}
+
+	// Alice's published tracks should now be removed from Participant (verifying RemoveTrack by SID)
+	if len(sessAlice.Participant().ListTracks()) != 0 {
+		t.Fatalf("expected Alice to have 0 published tracks after producer closed, got %d", len(sessAlice.Participant().ListTracks()))
+	}
 }
 
 func TestRoomActor_LeaveDuringWaitingForAnswer_PendingRenegotiation(t *testing.T) {
