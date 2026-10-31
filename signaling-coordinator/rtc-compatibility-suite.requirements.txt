@@ -1173,3 +1173,53 @@ STATUS: IMPLEMENTED
      - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added unit test `TestSDPMapper_ParsePublisherOffer_RtxAptAndHeaderExtensions_REQ023` verifying that RTX 97 is matched to VP8 PT 96 (and RED RTX 103 is discarded), and all header extensions contain `"encrypt": false`.
    - Verification: All tests pass cleanly under `go test -v -race -count=1 ./...` and `go vet ./...` exits 0.
 ===================================================================
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-024
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Protocol Validation] Filter unsupported RTP Header Extension URIs in ProduceRequest rtp_parameters_json
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In Offer 2 / Offer 3 when publishing video, Chromium sends multiple RTP header extensions:
+     `a=extmap:14 urn:ietf:params:rtp-hdrext:toffset`
+     `a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time`
+     `a=extmap:13 urn:3gpp:video-orientation`
+     `a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01`
+     `a=extmap:5 http://www.webrtc.org/experiments/rtp-hdrext/playout-delay`
+     `a=extmap:6 http://www.webrtc.org/experiments/rtp-hdrext/video-content-type`
+     `a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing`
+     `a=extmap:8 http://www.webrtc.org/experiments/rtp-hdrext/color-space`
+     `a=extmap:4 urn:ietf:params:rtp-hdrext:sdes:mid`
+     `a=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id`
+     `a=extmap:11 urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id`
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go`, when parsing `a=extmap` lines into `ProduceRequest.rtp_parameters_json.headerExtensions`, all extensions from the SDP are currently included without filtering.
+   - Mediasoup Rust deserializes `ProduceRequest.rtp_parameters_json` into `RtpParameters`. In Mediasoup Rust, `RtpHeaderExtensionParameters.uri` is a strictly typed enum `RtpHeaderExtensionUri` without a fallback/unknown variant.
+   - When an unhandled URI like `urn:ietf:params:rtp-hdrext:toffset` is passed, Mediasoup's serde rejects the JSON:
+     ```log
+     ERROR: livekit publish tracks error: room_id=gate2-media-room-1793467429715 identity=peer-alice error="failed to produce track video: grpc produce failed (request_id=2618a158-b756-4538-9031-e8caa8a3cc5f): rpc error: code = InvalidArgument desc = Invalid rtp_parameters_json: unknown variant `urn:ietf:params:rtp-hdrext:toffset`, expected one of `urn:ietf:params:rtp-hdrext:sdes:mid`, `urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id`, `urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id`, `http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time`, `http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01`, `urn:ietf:params:rtp-hdrext:ssrc-audio-level`, `https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension`, `urn:3gpp:video-orientation`, `http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time`, `http://www.webrtc.org/experiments/rtp-hdrext/playout-delay`, `urn:mediasoup:params:rtp-hdrext:packet-id` at line 1 column 448"
+     ```
+   - Because `ProduceRequest` fails with `InvalidArgument`, the coordinator does not return an SDP answer to Alice, causing `clientA.publishTracks()` to time out after 30 seconds.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - When generating `headerExtensions` in `internal/adapters/inbound/livekit/sdp_mapper.go`, filter the list of header extensions against the whitelist of URIs supported by Mediasoup:
+     - `urn:ietf:params:rtp-hdrext:sdes:mid`
+     - `urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id`
+     - `urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id`
+     - `http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time`
+     - `http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01`
+     - `urn:ietf:params:rtp-hdrext:ssrc-audio-level`
+     - `https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension`
+     - `urn:3gpp:video-orientation`
+     - `http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time`
+     - `http://www.webrtc.org/experiments/rtp-hdrext/playout-delay`
+     - `urn:mediasoup:params:rtp-hdrext:packet-id`
+   - Omit any extension URI not present in this list (such as `urn:ietf:params:rtp-hdrext:toffset`, `http://www.webrtc.org/experiments/rtp-hdrext/video-content-type`, `http://www.webrtc.org/experiments/rtp-hdrext/video-timing`, and `http://www.webrtc.org/experiments/rtp-hdrext/color-space`).
+   - Retain `"encrypt": false` on all allowed entries per REQ-023.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: PENDING
