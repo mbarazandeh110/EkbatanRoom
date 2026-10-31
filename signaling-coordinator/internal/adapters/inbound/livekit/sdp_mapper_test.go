@@ -1,6 +1,7 @@
 package livekit_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -660,5 +661,144 @@ a=ssrc:333444555 cname:cname-test-h264
 	}
 }
 
+func TestSDPMapper_ParsePublisherOffer_RtxAptAndHeaderExtensions_REQ023(t *testing.T) {
+	// Chromium SDP offer with multiple RTX codecs (VP8 apt=96 and RED apt=102) and header extensions
+	chromiumOffer := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE video-0
+m=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103
+c=IN IP4 0.0.0.0
+a=mid:video-0
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:96 VP8/90000
+a=rtpmap:97 rtx/90000
+a=fmtp:97 apt=96
+a=rtpmap:102 red/90000
+a=rtpmap:103 rtx/90000
+a=fmtp:103 apt=102
+a=extmap:4 urn:ietf:params:rtp-hdrext:sdes:mid
+a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time
+a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=ssrc:918035962 cname:1PoCmU0GQ07gag4o
+a=ssrc:3504424756 cname:1PoCmU0GQ07gag4o
+a=ssrc-group:FID 918035962 3504424756
+`
 
+	parsed, err := livekit.ParsePublisherOffer(chromiumOffer)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
 
+	if len(parsed.Tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(parsed.Tracks))
+	}
+
+	track := parsed.Tracks[0]
+	if track.Kind != domain.TrackKindVideo {
+		t.Fatalf("expected video track, got %s", track.Kind)
+	}
+
+	// SSRC and RTX SSRC
+	if track.SSRC != 918035962 {
+		t.Fatalf("expected primary media SSRC 918035962, got %d", track.SSRC)
+	}
+	if track.RTXSSRC != 3504424756 {
+		t.Fatalf("expected RTX SSRC 3504424756, got %d", track.RTXSSRC)
+	}
+
+	// Primary codec and RTX matching
+	if track.PayloadType != 96 {
+		t.Fatalf("expected primary payloadType 96, got %d", track.PayloadType)
+	}
+	if track.RTXPayloadType != 97 {
+		t.Fatalf("expected RTX payloadType 97 (matching apt=96), got %d (must NOT be 103 from secondary RED codec)", track.RTXPayloadType)
+	}
+
+	// Verify RtpParametersJSON structure
+	var rtpParams struct {
+		Codecs []struct {
+			MimeType    string                 `json:"mimeType"`
+			PayloadType uint32                 `json:"payloadType"`
+			ClockRate   uint32                 `json:"clockRate"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		} `json:"codecs"`
+		HeaderExtensions []struct {
+			ID      int    `json:"id"`
+			URI     string `json:"uri"`
+			Encrypt bool   `json:"encrypt"`
+		} `json:"headerExtensions"`
+	}
+
+	if err := json.Unmarshal([]byte(track.RtpParametersJSON), &rtpParams); err != nil {
+		t.Fatalf("failed to unmarshal RtpParametersJSON: %v", err)
+	}
+
+	// Verify codecs
+	var foundVP8, foundRTX97, foundRTX103 bool
+	for _, c := range rtpParams.Codecs {
+		if c.MimeType == "video/VP8" && c.PayloadType == 96 {
+			foundVP8 = true
+		}
+		if c.MimeType == "video/rtx" {
+			if c.PayloadType == 97 {
+				foundRTX97 = true
+				if apt, ok := c.Parameters["apt"].(float64); !ok || uint32(apt) != 96 {
+					t.Fatalf("expected RTX codec apt to be 96, got %v", c.Parameters["apt"])
+				}
+			}
+			if c.PayloadType == 103 {
+				foundRTX103 = true
+			}
+		}
+	}
+	if !foundVP8 {
+		t.Fatalf("expected video/VP8 codec with PT 96 in codecs")
+	}
+	if !foundRTX97 {
+		t.Fatalf("expected video/rtx codec with PT 97 in codecs")
+	}
+	if foundRTX103 {
+		t.Fatalf("did NOT expect secondary RED rtx PT 103 in primary video codecs")
+	}
+
+	// Verify headerExtensions with required encrypt: false (RFC 5285 / Mediasoup Rust requirement)
+	if len(rtpParams.HeaderExtensions) != 3 {
+		t.Fatalf("expected 3 header extensions, got %d: %+v", len(rtpParams.HeaderExtensions), rtpParams.HeaderExtensions)
+	}
+
+	extMap := make(map[int]struct {
+		URI     string
+		Encrypt bool
+	})
+	for _, ext := range rtpParams.HeaderExtensions {
+		extMap[ext.ID] = struct {
+			URI     string
+			Encrypt bool
+		}{
+			URI:     ext.URI,
+			Encrypt: ext.Encrypt,
+		}
+		if ext.Encrypt != false {
+			t.Fatalf("expected header extension ID %d to have encrypt: false, got: %v", ext.ID, ext.Encrypt)
+		}
+	}
+
+	if midExt, ok := extMap[4]; !ok || midExt.URI != "urn:ietf:params:rtp-hdrext:sdes:mid" {
+		t.Fatalf("expected header extension 4 for sdes:mid, got: %+v", midExt)
+	}
+	if absExt, ok := extMap[2]; !ok || absExt.URI != "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time" {
+		t.Fatalf("expected header extension 2 for abs-send-time, got: %+v", absExt)
+	}
+	if twccExt, ok := extMap[3]; !ok || twccExt.URI != "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01" {
+		t.Fatalf("expected header extension 3 for transport-wide-cc, got: %+v", twccExt)
+	}
+
+	// Verify raw JSON string explicitly contains "encrypt":false
+	if !strings.Contains(track.RtpParametersJSON, `"encrypt":false`) {
+		t.Fatalf("expected RtpParametersJSON to contain \"encrypt\":false, got: %s", track.RtpParametersJSON)
+	}
+}

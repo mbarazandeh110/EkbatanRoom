@@ -1069,7 +1069,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-023
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -1163,8 +1163,13 @@ STATUS: OPEN
      `rpc error: code = InvalidArgument desc = Invalid rtp_parameters_json: missing field encrypt at line 1 column 299`
    - This ensures Mediasoup registers the producer with exact RFC 4588 RTX parameters and active RTP header extensions, allowing `CreateRtpStream` to instantiate the media stream for VP8 (SSRC `918035962`), forward packets to Bob, and render video frames.
 
-4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
-   - Decision: PENDING
-   - Architectural Justification: ...
-   - Modified Files & Added Tests: ...
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-023]: In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`), implemented accurate RFC 4588 RTX payload type lookup by parsing `a=fmtp:<rtxPT> apt=<mediaPT>` parameters and matching `apt == primaryCodec.payloadType`. When multiple RTX codecs are present in the SDP offer (such as VP8 PT 96 with RTX 97 and RED PT 102 with RTX 103), the mapper selects the exact RTX PT associated with the primary media codec (97 for VP8) rather than overwriting it with subsequent RTX codecs.
+     2. Populated `headerExtensions` with RFC 5285 audio/video header extensions extracted from session and media levels, explicitly adding the mandatory `"encrypt": false` boolean field required by Mediasoup Rust `RtpHeaderExtensionParameters` deserialization. This enables MID-based BUNDLE routing, abs-send-time, and transport-wide-cc in `sfu-media-node` without triggering serde `missing field encrypt` errors.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added `fmtp apt` matching for RTX codec payload type lookup and injected `"encrypt": false` into all parsed `headerExtensions`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added unit test `TestSDPMapper_ParsePublisherOffer_RtxAptAndHeaderExtensions_REQ023` verifying that RTX 97 is matched to VP8 PT 96 (and RED RTX 103 is discarded), and all header extensions contain `"encrypt": false`.
+   - Verification: All tests pass cleanly under `go test -v -race -count=1 ./...` and `go vet ./...` exits 0.
 ===================================================================

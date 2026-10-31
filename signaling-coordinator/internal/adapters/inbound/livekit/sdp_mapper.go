@@ -205,6 +205,7 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			clockRate = 90000
 		}
 
+		var rtxCandidates []uint32
 		for _, attr := range md.Attributes {
 			if attr.Key == "rtpmap" {
 				// e.g. "111 opus/48000/2" or "96 VP8/90000"
@@ -217,7 +218,7 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 							name := subParts[0]
 							rate, _ := strconv.ParseUint(subParts[1], 10, 32)
 							if strings.EqualFold(name, "rtx") {
-								rtxPT = uint32(payloadNum)
+								rtxCandidates = append(rtxCandidates, uint32(payloadNum))
 							} else if pt == 0 {
 								pt = uint32(payloadNum)
 								codecName = name
@@ -253,6 +254,58 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			}
 		}
 
+		// Parse fmtp parameters for primary payload type and map RTX apt associations (RFC 4588)
+		var codecParams map[string]interface{}
+		fmtpAptMap := make(map[uint32]uint32)
+		for _, attr := range md.Attributes {
+			if strings.EqualFold(attr.Key, "fmtp") {
+				parts := strings.SplitN(strings.TrimSpace(attr.Value), " ", 2)
+				if len(parts) == 2 {
+					fmtpPT, err := strconv.ParseUint(parts[0], 10, 32)
+					if err == nil {
+						paramPairs := strings.Split(parts[1], ";")
+						isPrimaryCodec := (uint32(fmtpPT) == pt)
+						if isPrimaryCodec {
+							codecParams = make(map[string]interface{})
+						}
+						for _, pair := range paramPairs {
+							kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+							if len(kv) == 2 {
+								k := strings.TrimSpace(kv[0])
+								v := strings.TrimSpace(kv[1])
+								if strings.EqualFold(k, "apt") {
+									if aptVal, err := strconv.ParseUint(v, 10, 32); err == nil {
+										fmtpAptMap[uint32(fmtpPT)] = uint32(aptVal)
+									}
+								}
+								if isPrimaryCodec {
+									if intVal, err := strconv.Atoi(v); err == nil {
+										codecParams[k] = intVal
+									} else {
+										codecParams[k] = v
+									}
+								}
+							} else if len(kv) == 1 && kv[0] != "" && isPrimaryCodec {
+								codecParams[strings.TrimSpace(kv[0])] = 1
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Match RTX payload type for the primary codec via fmtp apt (RFC 4588)
+		for _, cand := range rtxCandidates {
+			if aptVal, exists := fmtpAptMap[cand]; exists && aptVal == pt {
+				rtxPT = cand
+				break
+			}
+		}
+		// Fallback: If no apt explicitly matched but RTX candidate exists (e.g. single RTX in m-line without fmtp)
+		if rtxPT == 0 && len(rtxCandidates) > 0 {
+			rtxPT = rtxCandidates[0]
+		}
+
 		// Build RTP parameters JSON for SFU node
 		codecEntry := map[string]interface{}{
 			"mimeType":    fmt.Sprintf("%s/%s", kind, codecName),
@@ -264,32 +317,6 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 				channels = 2
 			}
 			codecEntry["channels"] = channels
-		}
-
-		// Parse fmtp parameters for primary payload type (e.g. H.264 profile-level-id, packetization-mode, etc.)
-		var codecParams map[string]interface{}
-		for _, attr := range md.Attributes {
-			if strings.EqualFold(attr.Key, "fmtp") {
-				parts := strings.SplitN(strings.TrimSpace(attr.Value), " ", 2)
-				if len(parts) == 2 && parts[0] == strconv.FormatUint(uint64(pt), 10) {
-					codecParams = make(map[string]interface{})
-					paramPairs := strings.Split(parts[1], ";")
-					for _, pair := range paramPairs {
-						kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-						if len(kv) == 2 {
-							k := strings.TrimSpace(kv[0])
-							v := strings.TrimSpace(kv[1])
-							if intVal, err := strconv.Atoi(v); err == nil {
-								codecParams[k] = intVal
-							} else {
-								codecParams[k] = v
-							}
-						} else if len(kv) == 1 && kv[0] != "" {
-							codecParams[strings.TrimSpace(kv[0])] = 1
-						}
-					}
-				}
-			}
 		}
 		if len(codecParams) > 0 {
 			codecEntry["parameters"] = codecParams
@@ -379,8 +406,9 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 					if id, err := strconv.Atoi(idStr); err == nil && !extmapSeen[id] {
 						extmapSeen[id] = true
 						headerExtensions = append(headerExtensions, map[string]interface{}{
-							"id":  id,
-							"uri": fields[1],
+							"id":      id,
+							"uri":     fields[1],
+							"encrypt": false,
 						})
 					}
 				}
