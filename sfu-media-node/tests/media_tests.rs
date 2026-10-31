@@ -294,3 +294,271 @@ async fn test_node_events_stream() {
         other => panic!("Expected ResourceClosed, got: {:?}", other),
     }
 }
+
+#[tokio::test]
+async fn test_video_produce_consume_lifecycle_and_keyframe_request() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create Router
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-video".to_string(),
+            room_id: "room-video".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let router_id = r_resp.router_id;
+
+    // 2. Create Publisher Transport
+    let pub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-pub-tr-video".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-alice".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 3. Create Video Producer (VP8 + RTX with non-sanitized ORTC parameters from browser)
+    // Note: includes missing "encrypt: bool", unknown extension URI, and missing "parameter" in rtcpFeedback
+    let video_rtp_params = r#"{
+        "mid": "1",
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "payloadType": 96,
+                "clockRate": 90000,
+                "parameters": {},
+                "rtcpFeedback": [
+                    { "type": "nack", "parameter": "" },
+                    { "type": "nack", "parameter": "pli" },
+                    { "type": "ccm", "parameter": "fir" },
+                    { "type": "goog-remb" },
+                    { "type": "transport-cc" }
+                ]
+            },
+            {
+                "mimeType": "video/rtx",
+                "payloadType": 97,
+                "clockRate": 90000,
+                "parameters": {
+                    "apt": 96
+                },
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": [
+            {
+                "id": 1,
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:mid"
+            },
+            {
+                "id": 2,
+                "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"
+            },
+            {
+                "id": 3,
+                "uri": "urn:ietf:params:rtp-hdrext:toffset"
+            }
+        ],
+        "encodings": [
+            {
+                "ssrc": 2154539055,
+                "rtx": {
+                    "ssrc": 1846870575
+                },
+                "maxBitrate": 1500000
+            }
+        ],
+        "rtcp": {
+            "cname": "alice-video"
+        }
+    }"#;
+
+    let prod_resp = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-prod-video".to_string(),
+            router_id: router_id.clone(),
+            transport_id: pub_tr.transport_id.clone(),
+            peer_id: "peer-alice".to_string(),
+            kind: "video".to_string(),
+            rtp_parameters_json: video_rtp_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!prod_resp.producer_id.is_empty());
+    assert_eq!(prod_resp.kind, "video");
+    assert_eq!(prod_resp.encodings.len(), 1);
+    assert_eq!(prod_resp.encodings[0].ssrc, 2154539055);
+    assert_eq!(prod_resp.encodings[0].rtx_ssrc, 1846870575);
+
+    // 4. Create Subscriber Transport
+    let sub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-sub-tr-video".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-bob".to_string(),
+            is_publisher: false,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 5. Consume Video Track (with keyframe request automatically dispatched)
+    let video_caps = r#"{
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "kind": "video",
+                "clockRate": 90000,
+                "preferredPayloadType": 96,
+                "rtcpFeedback": [
+                    { "type": "nack" },
+                    { "type": "nack", "parameter": "pli" },
+                    { "type": "ccm", "parameter": "fir" }
+                ],
+                "parameters": {}
+            },
+            {
+                "mimeType": "video/rtx",
+                "kind": "video",
+                "clockRate": 90000,
+                "preferredPayloadType": 97,
+                "rtcpFeedback": [],
+                "parameters": {
+                    "apt": 96
+                }
+            }
+        ],
+        "headerExtensions": [
+            {
+                "kind": "video",
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+                "preferredId": 1
+            },
+            {
+                "kind": "video",
+                "uri": "urn:ietf:params:rtp-hdrext:toffset",
+                "preferredId": 3
+            }
+        ]
+    }"#;
+
+    let cons_resp = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-cons-video".to_string(),
+            router_id: router_id.clone(),
+            subscriber_transport_id: sub_tr.transport_id.clone(),
+            producer_id: prod_resp.producer_id.clone(),
+            rtp_capabilities_json: video_caps.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!cons_resp.consumer_id.is_empty());
+    assert_eq!(cons_resp.kind, "video");
+    assert_eq!(cons_resp.codec_mime_type, "video/VP8");
+    assert!(cons_resp.payload_type >= 96 && cons_resp.payload_type <= 127);
+    assert!(cons_resp.ssrc > 0);
+}
+
+#[test]
+fn test_defensive_ortc_parameter_sanitization() {
+    use sfu_media_node::adapters::inbound_grpc::mapper::{
+        parse_rtp_capabilities, parse_rtp_parameters,
+    };
+
+    // Case 1: String SSRC and signed negative integer (JavaScript 32-bit overflow)
+    // 2154539055 as signed 32-bit integer is -2140428241
+    let raw_json = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "payloadType": "96",
+                "clockRate": "90000",
+                "parameters": {},
+                "rtcpFeedback": [
+                    { "type": "nack" },
+                    { "type": "nack", "parameter": "pli" }
+                ]
+            }
+        ],
+        "headerExtensions": [
+            {
+                "id": "1",
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:mid"
+            },
+            {
+                "id": "2",
+                "uri": "urn:ietf:params:rtp-hdrext:toffset"
+            }
+        ],
+        "encodings": [
+            {
+                "ssrc": -2140428241,
+                "rtx": {
+                    "ssrc": "1846870575"
+                },
+                "maxBitrate": "2500000"
+            }
+        ]
+    }"#;
+
+    let parsed = parse_rtp_parameters(raw_json).expect("Should sanitize and parse successfully");
+    assert_eq!(parsed.encodings.len(), 1);
+    assert_eq!(parsed.encodings[0].ssrc, Some(2154539055));
+    assert_eq!(parsed.encodings[0].rtx.as_ref().unwrap().ssrc, 1846870575);
+    assert_eq!(parsed.encodings[0].max_bitrate, Some(2500000));
+    assert_eq!(parsed.codecs[0].payload_type(), 96);
+    assert_eq!(parsed.codecs[0].clock_rate().get(), 90000);
+
+    // Unsupported extension URI should be filtered out
+    assert_eq!(parsed.header_extensions.len(), 1);
+    assert_eq!(parsed.header_extensions[0].id, 1);
+    assert!(!parsed.header_extensions[0].encrypt);
+    assert!(parsed.rtcp.reduced_size);
+
+    // Case 2: Capabilities with missing preferredEncrypt, missing direction, unknown URI
+    let caps_json = r#"{
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "kind": "video",
+                "clockRate": "90000",
+                "preferredPayloadType": "96"
+            }
+        ],
+        "headerExtensions": [
+            {
+                "kind": "video",
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+                "preferredId": 1
+            },
+            {
+                "kind": "video",
+                "uri": "urn:ietf:params:rtp-hdrext:unknown-extension",
+                "preferredId": 2
+            }
+        ]
+    }"#;
+
+    let parsed_caps =
+        parse_rtp_capabilities(caps_json).expect("Should sanitize capabilities successfully");
+    assert_eq!(parsed_caps.codecs.len(), 1);
+    assert_eq!(parsed_caps.codecs[0].preferred_payload_type(), Some(96));
+    assert_eq!(parsed_caps.header_extensions.len(), 1);
+    assert!(!parsed_caps.header_extensions[0].preferred_encrypt);
+}

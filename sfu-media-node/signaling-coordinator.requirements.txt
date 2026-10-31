@@ -1,0 +1,57 @@
+===================================================================
+RFC / REQUIREMENT ID: SFU-REQ-001
+SOURCE SERVICE: signaling-coordinator
+TARGET SERVICE: sfu-media-node
+STATUS: IMPLEMENTED
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix & Architectural Resilience | WebRTC Video Ingestion, RtpStream Mapping & RTCP PLI Keyframe Delivery]
+   Ensure incoming video RTP packets are properly associated with the Producer stream, eliminate packet drops (no stream found), sanitize/tolerate ORTC parameters in Produce, and guarantee immediate RTCP PLI/FIR keyframe requests upon Consumer creation.
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In E2E Integration Tests (Gate 2: 02-bidirectional-rtp.spec.ts), bidirectional audio transmission (Opus) works with 100% fidelity (~18KB transferred with zero loss). This proves that ICE connectivity, UDP transport, DTLS handshakes, and SCTP channels between both clients (Alice & Bob) and sfu-media-node are fully functional.
+   - However, in the video direction (VP8), 100% of video packets sent by Alice are discarded by sfu-media-node, causing 0 bytes to be received by Bob (bytesReceived: 0, packetsReceived: 0) and resulting in a test timeout after 15 seconds.
+   - Technical Evidence & Log Traces:
+     1. Packet Ingestion & Dropping:
+        Alice transmits ~68KB of video data across 98 RTP packets with media SSRC (e.g. 2154539055) and RTX SSRC (e.g. 1846870575), and encodes 2 keyframes.
+        However, sfu-media-node's internal Mediasoup worker drops all inbound video packets with warnings:
+        `RTC::Producer::ReceiveRtpPacket() | no stream found for received packet [ssrc:2154539055]`
+        `RTC::Producer::ReceiveRtcpSenderReport() | RtpStream not found [ssrc:2154539055]`
+     2. Missing RTCP PLI Keyframe Requests:
+        Under Mediasoup architecture, a newly created Consumer cannot forward delta frames (P-frames) to a subscriber until it receives a valid Keyframe (I-frame) from the Producer. When Bob consumes Alice's video track, sfu-media-node must dispatch an RTCP Picture Loss Indication (PLI) or Full Intra Request (FIR) back to Alice's WebRtcTransport.
+        In client metrics captured during the test:
+        `Alice Outbound: pliCount: 0, firCount: 0, nackCount: 0`
+        Alice never receives a PLI/FIR from the SFU, preventing any keyframe regeneration after Bob joins.
+     3. Strict Deserialization Fragility in `ProduceRequest.rtp_parameters_json`:
+        Through requirements REQ-020 through REQ-024, it became evident that sfu-media-node deserializes `rtp_parameters_json` directly into Mediasoup Rust structs without any defensive sanitization:
+        - Missing boolean fields (`encrypt: bool`) cause fatal serde errors (`missing field encrypt at line 1 column 299`).
+        - Extension URIs sent by modern Chromium that are not in Rust's closed enum (e.g., `urn:ietf:params:rtp-hdrext:toffset`) cause `unknown variant` serde rejections and crash the gRPC call with `InvalidArgument`.
+     4. Test Coverage Gap:
+        Inspection of `sfu-media-node/tests/media_tests.rs` reveals that existing integration tests only exercise single-SSRC audio tracks (`audio/opus`). There are currently zero automated tests in sfu-media-node verifying video produce/consume lifecycles with VP8/H264, RTX pairs, multiple SSRCs, or RTCP feedback delivery.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `sfu-media-node` gRPC Service (`Produce` and `Consume` methods):
+     1. **Stream Mapping & Packet Ingestion:**
+        When `Produce` is called with valid video parameters (SSRC, codec, encodings), Mediasoup must instantiate the corresponding `RtpStreamRecv` matching the announced SSRC. Inbound RTP packets matching that SSRC must not be dropped with `no stream found for received packet`.
+     2. **Defensive Parameter Sanitization:**
+        Before passing `rtp_parameters_json` to Mediasoup:
+        - Apply default values for required fields (such as `encrypt: false` for header extensions).
+        - Filter or gracefully ignore extension URIs not supported by the internal Mediasoup enum rather than returning gRPC `InvalidArgument`.
+     3. **Consumer Keyframe Request Dispatch:**
+        When `Consume` creates a new video Consumer, trigger a keyframe request (e.g., `consumer.request_key_frame()` or equivalent PLI mechanism) to ensure the Producer transmits an immediate RTCP PLI to the publisher transport.
+     4. **Automated Video Tests:**
+        Add comprehensive unit/integration tests in `sfu-media-node/tests/media_tests.rs` asserting video produce and consume with VP8, SSRC/RTX pairing, and keyframe request propagation.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & RESOLVED
+   - Architectural Justification:
+     1. Defensive Parameter Sanitization: Implemented resilient pre-processing in `src/adapters/inbound_grpc/mapper.rs` (`parse_rtp_parameters` and `parse_rtp_capabilities`). Numerical SSRC fields (supporting string-encoded numbers and signed 32-bit overflows from JavaScript clients) are normalized into valid `u32` values for both primary media and RTX streams. Unsupported header extensions (e.g. `toffset`) are filtered out rather than failing serde deserialization, and missing boolean fields such as `encrypt: false` or `reducedSize: true` are defaulted safely.
+     2. Immediate RTCP PLI/FIR Keyframe Dispatch: Implemented explicit `consumer.request_key_frame()` invocation upon creating any video Consumer (in both `src/application/media_service.rs` and `src/application/pipe_service.rs`). This guarantees that when a subscriber joins, the publisher immediately regenerates and transmits a fresh IDR/Keyframe so that inbound video packets are not ignored while waiting for stream initialization.
+     3. Observability: Added structured `tracing::debug!` logs capturing `room_id`, `peer_id`, `kind`, `encodings` (with SSRCs) and `codecs` upon `Produce` request reception and transport produce initiation.
+   - Modified Files & Added Tests:
+     - `src/adapters/inbound_grpc/mapper.rs`
+     - `src/application/media_service.rs`
+     - `src/application/pipe_service.rs`
+     - `tests/media_tests.rs` (Added `test_video_produce_consume_lifecycle_and_keyframe_request` and `test_defensive_ortc_parameter_sanitization`)
+===================================================================

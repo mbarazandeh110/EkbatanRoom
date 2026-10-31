@@ -1,0 +1,90 @@
+===================================================================
+RFC / REQUIREMENT ID: REQ-SFU-001
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: sfu-media-node
+STATUS: IMPLEMENTED
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Boundary Investigation] Inbound Video RTP Stream Creation Failure: Mediasoup Worker drops 100% of video RTP packets with "no stream found for received packet"
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In Gate 2 end-to-end black-box verification (`02-bidirectional-rtp.spec.ts` using official unmodified `livekit-client@2.23.0`):
+     1. **Audio works with 100% fidelity:**
+        Alice sends Opus audio packets. In `sfu-media-node` worker log:
+        `RTC::Producer::CreateRtpStream() | [encodingIdx:0, ssrc:1151366328, rid:, payloadType:111]`
+        The stream is instantiated immediately, and Bob receives all audio packets without loss.
+     2. **Video fails completely (0 bytes received by Bob):**
+        Alice encodes and sends 124KB+ of video. In `sfu-media-node` worker log:
+        ```log
+        WARN: [id:...] RTC::Producer::ReceiveRtpPacket() | no stream found for received packet [ssrc:2154539055]
+        DEBUG: [id:...] RTC::Producer::GetRtpStream() | ignoring RTX packet for not yet created RtpStream (ssrc lookup)
+        ```
+        Bob's consumer receives 0 video packets (`bytesReceived: 0, packetsReceived: 0`), and `waitForRemoteTrack('video')` times out after 15 seconds.
+
+   - Technical analysis of Mediasoup C++ worker core (`worker/src/RTC/Producer.cpp`):
+     In `Producer::GetRtpStream(packet)`:
+     ```cpp
+     for (size_t i{ 0 }; i < this->rtpParameters.encodings.size(); ++i) {
+         auto& encoding           = this->rtpParameters.encodings[i];
+         const auto* mediaCodec   = this->rtpParameters.GetCodecForEncoding(encoding);
+         const auto* rtxCodec     = this->rtpParameters.GetRtxCodecForEncoding(encoding);
+         const bool isMediaPacket = (mediaCodec->payloadType == payloadType);
+         const bool isRtxPacket   = (rtxCodec && rtxCodec->payloadType == payloadType);
+
+         if (isMediaPacket && encoding.ssrc == ssrc) {
+             return CreateRtpStream(packet, *mediaCodec, i); // <--- NEVER REACHED FOR VIDEO
+         }
+         else if (isRtxPacket && encoding.hasRtx && encoding.rtx.ssrc == ssrc) {
+             auto it = this->mapSsrcRtpStream.find(encoding.ssrc);
+             if (it == this->mapSsrcRtpStream.end()) {
+                 MS_DEBUG_2TAGS(rtp, rtx, "ignoring RTX packet for not yet created RtpStream (ssrc lookup)");
+                 return nullptr;
+             }
+             ...
+         }
+     }
+     ```
+     - Notice that RTX packets DO match the `else if` branch (proving that RTX SSRC `1846870575` and `hasRtx = true` are recognized), but are discarded because `mapSsrcRtpStream` contains no entry for the primary media stream.
+     - For media packets (`ssrc: 2154539055`), `CreateRtpStream` is NEVER called. This means the condition `(isMediaPacket && encoding.ssrc == ssrc)` evaluates to `false` for every inbound packet.
+
+   - Suspected Areas in `sfu-media-node`:
+     1. **Deserialization / Mapping of `encodings[0].ssrc`:**
+        When `ProduceRequest.rtp_parameters_json` is parsed in `src/adapters/inbound_grpc/mapper.rs` into `mediasoup::producer::ProducerOptions`:
+        Is `encodings[0].ssrc` correctly preserved as `Some(2154539055)`?
+        If `ssrc` in Rust is deserialized as `None` or 0, Mediasoup's C++ worker receives `encoding.ssrc = 0`. Consequently, `encoding.ssrc == ssrc` (`0 == 2154539055`) fails for all packets!
+     2. **Payload Type Matching (`isMediaPacket`):**
+        `isMediaPacket` checks `(mediaCodec->payloadType == packet->GetPayloadType())`.
+        In `rtp_parameters_json`, VP8 is declared with `payloadType: 96`.
+        We need to verify what `payloadType` is stamped on the incoming packet arriving at Mediasoup worker.
+     3. **Observability Gap:**
+        Currently, `sfu-media-node` does not log the deserialized `RtpParameters` passed to `transport.produce()`. Adding a debug log printing the exact `RtpParameters` (codecs and encodings) will immediately expose any serialization, mapping, or SSRC mismatch.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `sfu-media-node` (`Produce` RPC handler and mapper):
+     1. Ensure `rtp_parameters_json.encodings` is faithfully deserialized and passed into `transport.produce()`, ensuring `encoding.ssrc` matches the primary media SSRC (e.g. 2154539055) and `encoding.rtx.ssrc` matches the RTX SSRC (e.g. 1846870575).
+     2. Add a structured log at `DEBUG` level in `sfu-media-node` upon receiving a `ProduceRequest`:
+        ```rust
+        tracing::debug!(
+            room_id = %req.router_id,
+            peer_id = %req.peer_id,
+            kind = %req.kind,
+            encodings = ?parsed_params.encodings,
+            codecs = ?parsed_params.codecs,
+            "deserialized Producer rtp_parameters"
+        );
+        ```
+     3. When valid VP8 video packets arrive matching the primary media SSRC and payload type, Mediasoup worker must invoke `CreateRtpStream()` and forward packets to subscribers.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & RESOLVED
+   - Architectural Justification:
+     1. Defensive Parameter Sanitization: Implemented resilient pre-processing in `src/adapters/inbound_grpc/mapper.rs` (`parse_rtp_parameters` and `parse_rtp_capabilities`). Numerical SSRC fields (supporting string-encoded numbers and signed 32-bit overflows from JavaScript clients) are normalized into valid `u32` values for both primary media and RTX streams. Unsupported header extensions (e.g. `toffset`) are filtered out rather than failing serde deserialization, and missing boolean fields such as `encrypt: false` or `reducedSize: true` are defaulted safely.
+     2. Immediate RTCP PLI/FIR Keyframe Dispatch: Implemented explicit `consumer.request_key_frame()` invocation upon creating any video Consumer (in both `src/application/media_service.rs` and `src/application/pipe_service.rs`). This guarantees that when a subscriber joins, the publisher immediately regenerates and transmits a fresh IDR/Keyframe so that inbound video packets are not ignored while waiting for stream initialization.
+     3. Observability: Added structured `tracing::debug!` logs capturing `room_id`, `peer_id`, `kind`, `encodings` (with SSRCs) and `codecs` upon `Produce` request reception and transport produce initiation.
+   - Modified Files & Added Tests:
+     - `src/adapters/inbound_grpc/mapper.rs`
+     - `src/application/media_service.rs`
+     - `src/application/pipe_service.rs`
+     - `tests/media_tests.rs` (Added `test_video_produce_consume_lifecycle_and_keyframe_request` and `test_defensive_ortc_parameter_sanitization`)
+===================================================================

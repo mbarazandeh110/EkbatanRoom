@@ -130,6 +130,16 @@ impl MediaUseCase for MediaService {
 
                     let ms_kind = to_mediasoup_kind(params.kind);
 
+                    tracing::debug!(
+                        router_id = %params.router_id,
+                        transport_id = %params.transport_id,
+                        peer_id = %params.peer_id,
+                        kind = %params.kind,
+                        encodings = ?params.rtp_parameters.encodings,
+                        codecs = ?params.rtp_parameters.codecs,
+                        "Starting transport.produce with sanitized RTP parameters"
+                    );
+
                     let mut options = ProducerOptions::new(ms_kind, params.rtp_parameters);
                     options.paused = params.paused;
 
@@ -734,6 +744,7 @@ impl MediaUseCase for MediaService {
                         .unwrap_or(-1);
 
                     let consumer_kind: MediaKind = from_mediasoup_kind(consumer.kind());
+                    let consumer_for_kf = consumer.clone();
 
                     let item = ConsumerItem {
                         consumer,
@@ -762,6 +773,22 @@ impl MediaUseCase for MediaService {
                     self.worker_pool.add_resource_score(sub_worker_index, c_weight);
                     self.metrics
                         .inc_active_consumers(&consumer_kind.to_string());
+
+                    // Immediate RTCP PLI/FIR keyframe dispatch for video consumer
+                    if consumer_for_kf.kind() == mediasoup::prelude::MediaKind::Video {
+                        if let Err(e) = consumer_for_kf.request_key_frame().await {
+                            tracing::warn!(
+                                consumer_id = %consumer_id,
+                                error = %e,
+                                "Failed to request initial keyframe for video consumer"
+                            );
+                        } else {
+                            tracing::debug!(
+                                consumer_id = %consumer_id,
+                                "Requested initial keyframe for video consumer"
+                            );
+                        }
+                    }
 
                     Ok(ConsumeResult {
                         consumer_id,

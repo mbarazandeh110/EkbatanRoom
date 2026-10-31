@@ -32,6 +32,48 @@ impl From<SfuDomainError> for tonic::Status {
     }
 }
 
+fn is_supported_header_extension_uri(uri: &str) -> bool {
+    matches!(
+        uri,
+        "urn:ietf:params:rtp-hdrext:sdes:mid"
+            | "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"
+            | "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"
+            | "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"
+            | "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
+            | "urn:ietf:params:rtp-hdrext:ssrc-audio-level"
+            | "https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension"
+            | "urn:3gpp:video-orientation"
+            | "http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time"
+            | "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay"
+            | "urn:mediasoup:params:rtp-hdrext:packet-id"
+    )
+}
+
+fn sanitize_ssrc_value(val: &serde_json::Value) -> Option<u32> {
+    match val {
+        serde_json::Value::Number(num) => {
+            if let Some(u) = num.as_u64() {
+                Some(u as u32)
+            } else if let Some(i) = num.as_i64() {
+                Some(i as u32)
+            } else {
+                num.as_f64().map(|f| f as u32)
+            }
+        }
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if let Ok(u) = trimmed.parse::<u64>() {
+                Some(u as u32)
+            } else if let Ok(i) = trimmed.parse::<i64>() {
+                Some(i as u32)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn parse_rtp_parameters(json_str: &str) -> Result<RtpParameters, SfuDomainError> {
     let trimmed = json_str.trim();
     if trimmed.is_empty() {
@@ -40,7 +82,164 @@ pub fn parse_rtp_parameters(json_str: &str) -> Result<RtpParameters, SfuDomainEr
         ));
     }
 
-    let params: RtpParameters = serde_json::from_str(trimmed).map_err(|e| {
+    let mut root_val: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+        SfuDomainError::InvalidArgument(format!("Invalid rtp_parameters_json: {e}"))
+    })?;
+
+    if let Some(root_obj) = root_val.as_object_mut() {
+        // 1. Sanitize headerExtensions
+        if let Some(exts) = root_obj
+            .get_mut("headerExtensions")
+            .and_then(|v| v.as_array_mut())
+        {
+            exts.retain_mut(|ext| {
+                let Some(ext_map) = ext.as_object_mut() else {
+                    return false;
+                };
+
+                // Inject default encrypt: false if absent or null
+                if !ext_map.contains_key("encrypt")
+                    || ext_map.get("encrypt").map(|v| v.is_null()).unwrap_or(false)
+                {
+                    ext_map.insert("encrypt".to_string(), serde_json::Value::Bool(false));
+                }
+
+                // Sanitize numeric id if sent as string
+                if let Some(id_val) = ext_map.get("id") {
+                    if let Some(id_str) = id_val.as_str() {
+                        if let Ok(num) = id_str.trim().parse::<u16>() {
+                            ext_map.insert("id".to_string(), serde_json::json!(num));
+                        }
+                    }
+                }
+
+                // Validate and filter URI
+                if let Some(uri_val) = ext_map.get("uri").and_then(|u| u.as_str()) {
+                    if is_supported_header_extension_uri(uri_val) {
+                        true
+                    } else {
+                        tracing::debug!(
+                            uri = %uri_val,
+                            "Filtering unsupported RTP header extension URI in produce parameters"
+                        );
+                        false
+                    }
+                } else {
+                    false
+                }
+            });
+        }
+
+        // 2. Sanitize encodings (ssrc, rtx.ssrc, codecPayloadType, maxBitrate)
+        if let Some(encs) = root_obj.get_mut("encodings").and_then(|v| v.as_array_mut()) {
+            for enc in encs {
+                if let Some(enc_map) = enc.as_object_mut() {
+                    // Sanitize primary media SSRC
+                    if let Some(ssrc_val) = enc_map.get("ssrc") {
+                        if let Some(cleaned_ssrc) = sanitize_ssrc_value(ssrc_val) {
+                            enc_map.insert("ssrc".to_string(), serde_json::json!(cleaned_ssrc));
+                        }
+                    }
+
+                    // Sanitize RTX SSRC
+                    if let Some(rtx_map) = enc_map.get_mut("rtx").and_then(|r| r.as_object_mut()) {
+                        if let Some(rtx_ssrc_val) = rtx_map.get("ssrc") {
+                            if let Some(cleaned_rtx_ssrc) = sanitize_ssrc_value(rtx_ssrc_val) {
+                                rtx_map.insert(
+                                    "ssrc".to_string(),
+                                    serde_json::json!(cleaned_rtx_ssrc),
+                                );
+                            }
+                        }
+                    }
+
+                    // Sanitize codecPayloadType if sent as string
+                    if let Some(cpt_val) = enc_map.get("codecPayloadType") {
+                        if let Some(cpt_str) = cpt_val.as_str() {
+                            if let Ok(num) = cpt_str.trim().parse::<u8>() {
+                                enc_map
+                                    .insert("codecPayloadType".to_string(), serde_json::json!(num));
+                            }
+                        }
+                    }
+
+                    // Sanitize maxBitrate if sent as string
+                    if let Some(mbr_val) = enc_map.get("maxBitrate") {
+                        if let Some(mbr_str) = mbr_val.as_str() {
+                            if let Ok(num) = mbr_str.trim().parse::<u64>() {
+                                enc_map.insert("maxBitrate".to_string(), serde_json::json!(num));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Sanitize codecs (payloadType, clockRate, channels, rtcpFeedback)
+        if let Some(codecs) = root_obj.get_mut("codecs").and_then(|v| v.as_array_mut()) {
+            for codec in codecs {
+                if let Some(codec_map) = codec.as_object_mut() {
+                    if let Some(pt_val) = codec_map.get("payloadType") {
+                        if let Some(pt_str) = pt_val.as_str() {
+                            if let Ok(num) = pt_str.trim().parse::<u8>() {
+                                codec_map.insert("payloadType".to_string(), serde_json::json!(num));
+                            }
+                        }
+                    }
+                    if let Some(cr_val) = codec_map.get("clockRate") {
+                        if let Some(cr_str) = cr_val.as_str() {
+                            if let Ok(num) = cr_str.trim().parse::<u32>() {
+                                codec_map.insert("clockRate".to_string(), serde_json::json!(num));
+                            }
+                        }
+                    }
+                    if let Some(ch_val) = codec_map.get("channels") {
+                        if let Some(ch_str) = ch_val.as_str() {
+                            if let Ok(num) = ch_str.trim().parse::<u8>() {
+                                codec_map.insert("channels".to_string(), serde_json::json!(num));
+                            }
+                        }
+                    }
+                    if let Some(rtcp_fb) = codec_map
+                        .get_mut("rtcpFeedback")
+                        .and_then(|v| v.as_array_mut())
+                    {
+                        for fb in rtcp_fb {
+                            if let Some(fb_map) = fb.as_object_mut() {
+                                if !fb_map.contains_key("parameter")
+                                    || fb_map
+                                        .get("parameter")
+                                        .map(|v| v.is_null())
+                                        .unwrap_or(false)
+                                {
+                                    fb_map.insert("parameter".to_string(), serde_json::json!(""));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Sanitize rtcp (ensure reducedSize default)
+        if let Some(rtcp_map) = root_obj.get_mut("rtcp").and_then(|v| v.as_object_mut()) {
+            if !rtcp_map.contains_key("reducedSize")
+                || rtcp_map
+                    .get("reducedSize")
+                    .map(|v| v.is_null())
+                    .unwrap_or(false)
+            {
+                rtcp_map.insert("reducedSize".to_string(), serde_json::Value::Bool(true));
+            }
+        } else {
+            root_obj.insert(
+                "rtcp".to_string(),
+                serde_json::json!({ "reducedSize": true }),
+            );
+        }
+    }
+
+    let params: RtpParameters = serde_json::from_value(root_val).map_err(|e| {
         SfuDomainError::InvalidArgument(format!("Invalid rtp_parameters_json: {e}"))
     })?;
 
@@ -61,7 +260,109 @@ pub fn parse_rtp_capabilities(json_str: &str) -> Result<RtpCapabilities, SfuDoma
         ));
     }
 
-    let caps: RtpCapabilities = serde_json::from_str(trimmed).map_err(|e| {
+    let mut root_val: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+        SfuDomainError::InvalidArgument(format!("Invalid rtp_capabilities_json: {e}"))
+    })?;
+
+    if let Some(root_obj) = root_val.as_object_mut() {
+        // Sanitize headerExtensions
+        if let Some(exts) = root_obj
+            .get_mut("headerExtensions")
+            .and_then(|v| v.as_array_mut())
+        {
+            exts.retain_mut(|ext| {
+                let Some(ext_map) = ext.as_object_mut() else {
+                    return false;
+                };
+
+                if !ext_map.contains_key("preferredEncrypt")
+                    || ext_map
+                        .get("preferredEncrypt")
+                        .map(|v| v.is_null())
+                        .unwrap_or(false)
+                {
+                    ext_map.insert(
+                        "preferredEncrypt".to_string(),
+                        serde_json::Value::Bool(false),
+                    );
+                }
+
+                if !ext_map.contains_key("direction")
+                    || ext_map
+                        .get("direction")
+                        .map(|v| v.is_null())
+                        .unwrap_or(false)
+                {
+                    ext_map.insert("direction".to_string(), serde_json::json!("sendrecv"));
+                }
+
+                if let Some(uri_val) = ext_map.get("uri").and_then(|u| u.as_str()) {
+                    if is_supported_header_extension_uri(uri_val) {
+                        true
+                    } else {
+                        tracing::debug!(
+                            uri = %uri_val,
+                            "Filtering unsupported RTP header extension URI in capabilities"
+                        );
+                        false
+                    }
+                } else {
+                    false
+                }
+            });
+        }
+
+        // Sanitize codecs
+        if let Some(codecs) = root_obj.get_mut("codecs").and_then(|v| v.as_array_mut()) {
+            for codec in codecs {
+                if let Some(codec_map) = codec.as_object_mut() {
+                    if let Some(pt_val) = codec_map.get("preferredPayloadType") {
+                        if let Some(pt_str) = pt_val.as_str() {
+                            if let Ok(num) = pt_str.trim().parse::<u8>() {
+                                codec_map.insert(
+                                    "preferredPayloadType".to_string(),
+                                    serde_json::json!(num),
+                                );
+                            }
+                        }
+                    }
+                    if let Some(cr_val) = codec_map.get("clockRate") {
+                        if let Some(cr_str) = cr_val.as_str() {
+                            if let Ok(num) = cr_str.trim().parse::<u32>() {
+                                codec_map.insert("clockRate".to_string(), serde_json::json!(num));
+                            }
+                        }
+                    }
+                    if let Some(ch_val) = codec_map.get("channels") {
+                        if let Some(ch_str) = ch_val.as_str() {
+                            if let Ok(num) = ch_str.trim().parse::<u8>() {
+                                codec_map.insert("channels".to_string(), serde_json::json!(num));
+                            }
+                        }
+                    }
+                    if let Some(rtcp_fb) = codec_map
+                        .get_mut("rtcpFeedback")
+                        .and_then(|v| v.as_array_mut())
+                    {
+                        for fb in rtcp_fb {
+                            if let Some(fb_map) = fb.as_object_mut() {
+                                if !fb_map.contains_key("parameter")
+                                    || fb_map
+                                        .get("parameter")
+                                        .map(|v| v.is_null())
+                                        .unwrap_or(false)
+                                {
+                                    fb_map.insert("parameter".to_string(), serde_json::json!(""));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let caps: RtpCapabilities = serde_json::from_value(root_val).map_err(|e| {
         SfuDomainError::InvalidArgument(format!("Invalid rtp_capabilities_json: {e}"))
     })?;
 
@@ -193,6 +494,15 @@ pub fn from_produce_request(req: proto::ProduceRequest) -> Result<ProduceParams,
 
     let kind = validation::parse_media_kind(&req.kind)?;
     let rtp_parameters = parse_rtp_parameters(&req.rtp_parameters_json)?;
+
+    tracing::debug!(
+        room_id = %req.router_id,
+        peer_id = %req.peer_id,
+        kind = %req.kind,
+        encodings = ?rtp_parameters.encodings,
+        codecs = ?rtp_parameters.codecs,
+        "deserialized Producer rtp_parameters"
+    );
 
     Ok(ProduceParams {
         request_id: req.request_id,
@@ -382,6 +692,16 @@ pub fn from_pipe_produce_request(
 
     let kind = validation::parse_media_kind(&req.kind)?;
     let rtp_parameters = parse_rtp_parameters(&req.rtp_parameters_json)?;
+
+    tracing::debug!(
+        router_id = %req.router_id,
+        pipe_transport_id = %req.pipe_transport_id,
+        source_producer_id = %req.source_producer_id,
+        kind = %req.kind,
+        encodings = ?rtp_parameters.encodings,
+        codecs = ?rtp_parameters.codecs,
+        "deserialized PipeProducer rtp_parameters"
+    );
 
     Ok(PipeProduceParams {
         request_id: req.request_id,

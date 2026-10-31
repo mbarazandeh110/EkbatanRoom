@@ -909,6 +909,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         })
                         .detach();
 
+                    let consumer_for_kf = consumer.clone();
                     let item = ConsumerItem {
                         consumer,
                         router_id: params.router_id.clone(),
@@ -941,6 +942,22 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     self.worker_pool.add_resource_score(main_worker_index, c_weight);
 
                     self.metrics.inc_active_consumers(kind_str);
+
+                    // Immediate RTCP PLI/FIR keyframe dispatch for video pipe consumer
+                    if consumer_for_kf.kind() == mediasoup::prelude::MediaKind::Video {
+                        if let Err(e) = consumer_for_kf.request_key_frame().await {
+                            tracing::warn!(
+                                consumer_id = %consumer_id,
+                                error = %e,
+                                "Failed to request initial keyframe for pipe video consumer"
+                            );
+                        } else {
+                            tracing::debug!(
+                                consumer_id = %consumer_id,
+                                "Requested initial keyframe for pipe video consumer"
+                            );
+                        }
+                    }
 
                     Ok(ConsumeResult {
                         consumer_id,
