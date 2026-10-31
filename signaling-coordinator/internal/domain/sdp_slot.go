@@ -21,6 +21,7 @@ type SDPSlot struct {
 	TrackSID       string
 	ProducerID     string
 	ConsumerID     string
+	PublisherSID   string
 	SSRC           uint32
 	RTXSSRC        uint32
 	PayloadType    uint32
@@ -54,9 +55,15 @@ func (t *SDPSlotTable) AllocOrRecycleSlot(
 	clockRate uint32,
 	mimeType string,
 	cname string,
+	publisherSID ...string,
 ) *SDPSlot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	pubSID := cname
+	if len(publisherSID) > 0 && publisherSID[0] != "" {
+		pubSID = publisherSID[0]
+	}
 
 	// 1. Look for existing slot for this consumer/track to avoid duplicate slots
 	for _, slot := range t.slots {
@@ -68,6 +75,7 @@ func (t *SDPSlotTable) AllocOrRecycleSlot(
 			slot.ClockRate = clockRate
 			slot.MimeType = mimeType
 			slot.CName = cname
+			slot.PublisherSID = pubSID
 			return slot
 		}
 	}
@@ -79,6 +87,7 @@ func (t *SDPSlotTable) AllocOrRecycleSlot(
 			slot.TrackSID = trackSID
 			slot.ProducerID = producerID
 			slot.ConsumerID = consumerID
+			slot.PublisherSID = pubSID
 			slot.SSRC = ssrc
 			slot.RTXSSRC = rtxSSRC
 			slot.PayloadType = pt
@@ -100,6 +109,7 @@ func (t *SDPSlotTable) AllocOrRecycleSlot(
 		TrackSID:       trackSID,
 		ProducerID:     producerID,
 		ConsumerID:     consumerID,
+		PublisherSID:   pubSID,
 		SSRC:           ssrc,
 		RTXSSRC:        rtxSSRC,
 		PayloadType:    pt,

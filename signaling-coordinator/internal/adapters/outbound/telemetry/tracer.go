@@ -2,8 +2,11 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -27,11 +30,25 @@ func SetupTracer(ctx context.Context, cfg Config) (func(context.Context) error, 
 
 	// 2. Configure Sampler with configurable sample rate
 	sampler := sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.TraceSampleRate))
-
-	tp := sdktrace.NewTracerProvider(
+	tpOpts := []sdktrace.TracerProviderOption{
 		sdktrace.WithSampler(sampler),
-	)
+	}
 
+	// 3. Connect OTLP gRPC exporter if endpoint is configured
+	if endpoint := strings.TrimSpace(cfg.OtlpEndpoint); endpoint != "" {
+		endpoint = strings.TrimPrefix(endpoint, "http://")
+		endpoint = strings.TrimPrefix(endpoint, "https://")
+		exp, err := otlptracegrpc.New(ctx,
+			otlptracegrpc.WithEndpoint(endpoint),
+			otlptracegrpc.WithInsecure(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create otlp trace exporter: %w", err)
+		}
+		tpOpts = append(tpOpts, sdktrace.WithBatcher(exp))
+	}
+
+	tp := sdktrace.NewTracerProvider(tpOpts...)
 	otel.SetTracerProvider(tp)
 
 	shutdown := func(ctx context.Context) error {

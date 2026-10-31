@@ -156,3 +156,49 @@ func TestMetrics_LowCardinalityAndExport(t *testing.T) {
 		}
 	}
 }
+
+func TestLogger_PrettyFormat(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := telemetry.Config{
+		LogLevel:  "info",
+		LogFormat: "pretty",
+	}
+
+	logger := telemetry.SetupLogger(cfg, &buf)
+	logger.Info("pretty log test", "key", "value")
+
+	out := buf.String()
+	if !strings.Contains(out, "pretty log test") || !strings.Contains(out, "key=value") {
+		t.Fatalf("expected text-formatted pretty log, got: %s", out)
+	}
+}
+
+func TestLogger_TraceLogLevel(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := telemetry.Config{
+		LogLevel:  "trace",
+		LogFormat: "json",
+	}
+
+	logger := telemetry.SetupLogger(cfg, &buf)
+	logger.Log(context.Background(), -4, "fine-grained trace message")
+
+	out := buf.String()
+	if !strings.Contains(out, "fine-grained trace message") {
+		t.Fatalf("expected trace message to be logged when LogLevel=trace, got: %s", out)
+	}
+}
+
+func TestTracer_SetupShutdown(t *testing.T) {
+	cfg := telemetry.Config{
+		TracingEnabled:  false,
+		TraceSampleRate: 1.0,
+		OtlpEndpoint:    "localhost:4317",
+	}
+
+	shutdown, err := telemetry.SetupTracer(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("SetupTracer failed: %v", err)
+	}
+	defer shutdown(context.Background())
+}

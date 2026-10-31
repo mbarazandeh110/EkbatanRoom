@@ -3,6 +3,7 @@ package native_ortc
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/gorilla/websocket"
 
@@ -50,7 +51,7 @@ func (h *NativeOrtcHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
 			telemetry.DefaultMetrics().RecordWSMessage("native_ortc", "packet", "ok")
 			// Acknowledge received ORTC packet
-			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ack","len":`+string(rune(len(data)))+`}`))
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ack","len":`+strconv.Itoa(len(data))+`}`))
 		}
 	}
 }

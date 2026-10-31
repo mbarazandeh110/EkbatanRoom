@@ -172,7 +172,7 @@ func (r *LiveKitResponder) SendSubscriberOffer(slots []*domain.SDPSlot, particip
 		return domain.ErrTransportNotFound
 	}
 
-	sdpOffer, err := GenerateSubscriberOffer(subTransport, slots, participantSID)
+	sdpOffer, err := GenerateSubscriberOffer(subTransport, slots, participantSID, uint64(offerID))
 	if err != nil {
 		return err
 	}

@@ -218,3 +218,16 @@ func (r *NodeRegistry) BroadcastLicense(ctx context.Context, licenseToken string
 
 	return errorsMap
 }
+
+// Close gracefully cancels all node event streams and clears registered nodes.
+func (r *NodeRegistry) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for id, node := range r.nodes {
+		if node.cancelFunc != nil {
+			node.cancelFunc()
+		}
+		delete(r.nodes, id)
+	}
+}

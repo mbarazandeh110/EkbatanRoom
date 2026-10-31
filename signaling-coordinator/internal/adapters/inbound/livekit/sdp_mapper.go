@@ -485,13 +485,18 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 
 // GenerateSubscriberOffer synthesizes an SDP offer for the subscriber peer connection.
 // Unified Plan ordering is strictly maintained using SDPSlots. Inactive slots use port 0 and a=inactive.
-func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SDPSlot, participantSID string) (string, error) {
+func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SDPSlot, participantSID string, sessionVersion ...uint64) (string, error) {
+	var sVer uint64 = 1
+	if len(sessionVersion) > 0 && sessionVersion[0] > 0 {
+		sVer = sessionVersion[0]
+	}
+
 	offer := sdp.SessionDescription{
 		Version: 0,
 		Origin: sdp.Origin{
 			Username:       "-",
 			SessionID:      1000000000,
-			SessionVersion: 1,
+			SessionVersion: sVer,
 			NetworkType:    "IN",
 			AddressType:    "IP4",
 			UnicastAddress: "127.0.0.1",
@@ -620,10 +625,18 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 			cname = participantSID
 		}
 
+		pubSID := slot.PublisherSID
+		if pubSID == "" {
+			pubSID = cname
+		}
+		if pubSID == "" {
+			pubSID = participantSID
+		}
+
 		md.Attributes = append(md.Attributes,
 			sdp.Attribute{
 				Key:   "msid",
-				Value: fmt.Sprintf("%s %s", participantSID, slot.TrackSID),
+				Value: fmt.Sprintf("%s %s", pubSID, slot.TrackSID),
 			},
 			sdp.Attribute{
 				Key:   "ssrc",
@@ -631,7 +644,7 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 			},
 			sdp.Attribute{
 				Key:   "ssrc",
-				Value: fmt.Sprintf("%d msid:%s %s", slot.SSRC, participantSID, slot.TrackSID),
+				Value: fmt.Sprintf("%d msid:%s %s", slot.SSRC, pubSID, slot.TrackSID),
 			},
 		)
 

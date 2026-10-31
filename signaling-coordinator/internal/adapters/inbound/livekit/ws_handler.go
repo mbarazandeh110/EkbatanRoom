@@ -118,6 +118,13 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = h.coordinator.Leave(context.Background(), roomID, identity)
 	}()
 
+	type pendingAddTrackInfo struct {
+		sid  string
+		cid  string
+		kind domain.TrackKind
+	}
+	var pendingAddTracks []pendingAddTrackInfo
+
 	// 2. Main incoming message read loop
 	for {
 		messageType, data, err := conn.ReadMessage()
@@ -172,8 +179,18 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			trackCmds := make([]domain.TrackPublishCommand, 0, len(parsed.Tracks))
+			midToTrackId := make(map[string]string)
 			for _, t := range parsed.Tracks {
-				trackCmds = append(trackCmds, domain.TrackPublishCommand{
+				var assignedSID string
+				for i, pat := range pendingAddTracks {
+					if pat.kind == t.Kind {
+						assignedSID = pat.sid
+						pendingAddTracks = append(pendingAddTracks[:i], pendingAddTracks[i+1:]...)
+						break
+					}
+				}
+
+				trackCmd := domain.TrackPublishCommand{
 					Kind:              t.Kind,
 					SSRC:              t.SSRC,
 					RTXSSRC:           t.RTXSSRC,
@@ -183,7 +200,19 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					ClockRate:         t.ClockRate,
 					CName:             t.CName,
 					RtpParametersJSON: t.RtpParametersJSON,
-				})
+				}
+
+				if assignedSID != "" {
+					trackCmd.TrackSID = assignedSID
+					if t.MID != "" {
+						midToTrackId[t.MID] = assignedSID
+					}
+				} else {
+					if t.MID != "" {
+						midToTrackId[t.MID] = t.MID
+					}
+				}
+				trackCmds = append(trackCmds, trackCmd)
 			}
 
 			pubTransport, err := h.coordinator.PublishTracks(ctx, roomID, identity, parsed.DTLSRole, parsed.RemoteFingerprints, trackCmds)
@@ -215,13 +244,6 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"sdp", answerSDP,
 			)
 
-			midToTrackId := make(map[string]string)
-			for _, t := range parsed.Tracks {
-				if t.MID != "" {
-					midToTrackId[t.MID] = t.MID
-				}
-			}
-
 			answerMsg := &livekitproto.SignalResponse{
 				Message: &livekitproto.SignalResponse_Answer{
 					Answer: &livekitproto.SessionDescription{
@@ -241,6 +263,16 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if trackSID == "" {
 				trackSID = fmt.Sprintf("TR_%s", uuid.NewString()[:12])
 			}
+
+			kind := domain.TrackKindAudio
+			if addTrack.GetType() == livekitproto.TrackType_VIDEO {
+				kind = domain.TrackKindVideo
+			}
+			pendingAddTracks = append(pendingAddTracks, pendingAddTrackInfo{
+				sid:  trackSID,
+				cid:  addTrack.GetCid(),
+				kind: kind,
+			})
 
 			slog.InfoContext(ctx, "received add track request",
 				"room_id", roomID,
@@ -342,9 +374,10 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"identity", identity,
 				"quality", trackSettings.GetQuality(),
 			)
+			spatial := int32(trackSettings.GetQuality())
+			temporal := spatial
 			for _, sid := range trackSettings.GetTrackSids() {
-				spatial := int32(trackSettings.GetQuality())
-				if err := h.coordinator.SetConsumerLayers(ctx, roomID, identity, sid, spatial, 0); err != nil {
+				if err := h.coordinator.SetConsumerLayers(ctx, roomID, identity, sid, spatial, temporal); err != nil {
 					slog.ErrorContext(ctx, "livekit track setting error",
 						"room_id", roomID,
 						"identity", identity,

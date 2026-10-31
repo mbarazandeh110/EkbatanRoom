@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 
+	"ekbatan-room/signaling-coordinator/internal/adapters/outbound/telemetry"
 	"ekbatan-room/signaling-coordinator/internal/domain"
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
@@ -22,13 +24,14 @@ const defaultWebRTCRtpCapabilitiesJSON = `{"codecs":[{"mimeType":"audio/opus","k
 type RoomActor struct {
 	mu sync.Mutex
 
-	room            *domain.Room
-	sessions        map[string]*ParticipantSession
-	routerPort      ports.RouterEnginePort
-	transportPort   ports.TransportEnginePort
-	mediaStreamPort ports.MediaStreamPort
-	iceServers      []domain.IceServer
-	closed          bool
+	room             *domain.Room
+	sessions         map[string]*ParticipantSession
+	participantCount atomic.Int64
+	routerPort       ports.RouterEnginePort
+	transportPort    ports.TransportEnginePort
+	mediaStreamPort  ports.MediaStreamPort
+	iceServers       []domain.IceServer
+	closed           bool
 }
 
 func (a *RoomActor) getRtpCapabilitiesJSON() string {
@@ -163,6 +166,7 @@ func (a *RoomActor) Join(
 
 	session := NewParticipantSession(p, pubTransport, subTransport, responder)
 	a.sessions[participantID] = session
+	a.participantCount.Add(1)
 
 	joinRes := &domain.JoinResult{
 		Room:                a.room,
@@ -205,6 +209,7 @@ func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) error
 
 	p := session.Participant()
 	delete(a.sessions, participantID)
+	a.participantCount.Add(-1)
 	_, _ = a.room.RemoveParticipant(participantID)
 	_ = session.Close()
 
@@ -213,8 +218,9 @@ func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) error
 	for _, otherSession := range a.sessions {
 		inactivatedCount := 0
 		for _, track := range leavingTracks {
-			if _, ok := otherSession.SlotTable().InactivateSlotByTrackSID(track.SID); ok {
+			if slot, ok := otherSession.SlotTable().InactivateSlotByTrackSID(track.SID); ok {
 				inactivatedCount++
+				otherSession.Participant().RemoveSubscription(slot.ConsumerID)
 			}
 		}
 		if inactivatedCount > 0 && otherSession.State() == domain.NegotiationStateStable {
@@ -240,9 +246,7 @@ func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) error
 }
 
 func (a *RoomActor) ParticipantCount() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return len(a.sessions)
+	return int(a.participantCount.Load())
 }
 
 func (a *RoomActor) GetSession(participantID string) (*ParticipantSession, bool) {
@@ -320,7 +324,10 @@ func (a *RoomActor) PublishTracks(
 			continue
 		}
 
-		trackSID := fmt.Sprintf("TR_%s", uuid.NewString()[:8])
+		trackSID := tc.TrackSID
+		if trackSID == "" {
+			trackSID = fmt.Sprintf("TR_%s", uuid.NewString()[:8])
+		}
 		reqID := uuid.NewString()
 
 		prodRes, err := a.mediaStreamPort.Produce(ctx, &domain.ProduceCommand{
@@ -339,6 +346,8 @@ func (a *RoomActor) PublishTracks(
 		domainTrack := &domain.Track{
 			ID:                 prodRes.ProducerID,
 			SID:                trackSID,
+			PublisherID:        participantID,
+			PublisherSID:       p.SID,
 			Kind:               tc.Kind,
 			SSRC:               tc.SSRC,
 			RTXSSRC:            tc.RTXSSRC,
@@ -364,6 +373,7 @@ func (a *RoomActor) PublishTracks(
 
 			if otherSession.State() == domain.NegotiationStateWaitingForAnswer {
 				// Concurrency / Glare handling: queue tracks until current negotiation completes
+				telemetry.DefaultMetrics().IncGlareQueued()
 				for _, t := range publishedTracks {
 					otherSession.QueuePendingTrack(t)
 				}
@@ -455,6 +465,11 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 				continue
 			}
 
+			pubSID := t.PublisherSID
+			if pubSID == "" {
+				pubSID = p.SID
+			}
+
 			session.SlotTable().AllocOrRecycleSlot(
 				t.Kind,
 				t.SID,
@@ -466,7 +481,7 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 				consRes.RTXPayloadType,
 				consRes.ClockRate,
 				consRes.CodecMimeType,
-				p.SID,
+				pubSID,
 			)
 			p.AddSubscription(consRes.ConsumerID, t.ID)
 		}
@@ -529,14 +544,26 @@ func (a *RoomActor) SetConsumerLayers(ctx context.Context, participantID, consum
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	_, exists := a.sessions[participantID]
+	session, exists := a.sessions[participantID]
 	if !exists {
 		return domain.ErrParticipantNotFound
 	}
 
+	actualConsumerID := consumerID
+	if session != nil && session.SlotTable() != nil {
+		for _, slot := range session.SlotTable().ListSlots() {
+			if slot.TrackSID == consumerID || slot.ProducerID == consumerID || slot.ConsumerID == consumerID {
+				if slot.ConsumerID != "" {
+					actualConsumerID = slot.ConsumerID
+				}
+				break
+			}
+		}
+	}
+
 	return a.mediaStreamPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{
 		RouterID:      a.room.RouterID,
-		ConsumerID:    consumerID,
+		ConsumerID:    actualConsumerID,
 		SpatialLayer:  spatial,
 		TemporalLayer: temporal,
 	})
@@ -596,6 +623,7 @@ func (a *RoomActor) Close(ctx context.Context) error {
 		return nil
 	}
 	a.closed = true
+	a.participantCount.Store(0)
 
 	for pid, session := range a.sessions {
 		p := session.Participant()

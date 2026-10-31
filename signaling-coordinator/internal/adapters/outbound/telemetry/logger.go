@@ -52,6 +52,8 @@ func SetupLogger(cfg Config, w io.Writer) *slog.Logger {
 
 	var level slog.Level
 	switch strings.ToLower(cfg.LogLevel) {
+	case "trace":
+		level = slog.LevelDebug - 4
 	case "debug":
 		level = slog.LevelDebug
 	case "warn", "warning":
@@ -70,9 +72,9 @@ func SetupLogger(cfg Config, w io.Writer) *slog.Logger {
 			return slog.String(a.Key, "[REDACTED]")
 		}
 
-		// 2. Redact SDP unless debug level AND OBS_LOG_RAW_SDP=true
+		// 2. Redact SDP unless debug/trace level AND OBS_LOG_RAW_SDP=true
 		if keyLower == "sdp" || keyLower == "raw_sdp" || keyLower == "sdp_offer" || keyLower == "sdp_answer" {
-			if level == slog.LevelDebug && cfg.LogRawSDP {
+			if level <= slog.LevelDebug && cfg.LogRawSDP {
 				return a
 			}
 			strVal := a.Value.String()
@@ -88,7 +90,8 @@ func SetupLogger(cfg Config, w io.Writer) *slog.Logger {
 	}
 
 	var baseHandler slog.Handler
-	if strings.ToLower(cfg.LogFormat) == "text" {
+	formatLower := strings.ToLower(cfg.LogFormat)
+	if formatLower == "text" || formatLower == "pretty" {
 		baseHandler = slog.NewTextHandler(w, opts)
 	} else {
 		baseHandler = slog.NewJSONHandler(w, opts)

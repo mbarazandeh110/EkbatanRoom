@@ -140,6 +140,7 @@ func main() {
 		cfg.RTC.IceServers,
 		licenseMgr,
 	)
+	roomManager.SetNodeRegistry(nodeRegistry)
 
 	// 6. Assemble Inbound Adapters (Dual Gateway)
 	liveKitHandler := livekit.NewLiveKitWSHandler(roomManager, livekit.ResponderConfig{
@@ -154,7 +155,9 @@ func main() {
 	// NOTE (REQ-008): /rtc/ is intentionally NOT registered so that /rtc/v1 returns HTTP 404,
 	// triggering official livekit-client protocol fallback to standard /rtc WebSocket signaling.
 	mux.Handle("/ws/ortc", ortcHandler)
-	mux.Handle("/metrics", telemetry.DefaultMetrics().Handler())
+	if cfg.Telemetry.MetricsEnabled {
+		mux.Handle("/metrics", telemetry.DefaultMetrics().Handler())
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -167,7 +170,7 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
 
-	// 6. Graceful shutdown handler
+	// 7. Graceful shutdown handler
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
 
@@ -188,5 +191,12 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("HTTP server shutdown error", "error", err)
 	}
+
+	// Release SFU media routers and transports for all active rooms
+	if err := roomManager.Close(shutdownCtx); err != nil {
+		slog.Error("error releasing room SFU resources", "error", err)
+	}
+
+	nodeRegistry.Close()
 	slog.Info("shutdown complete")
 }

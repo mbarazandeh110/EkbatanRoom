@@ -23,12 +23,15 @@ import (
 type mockCoordinator struct {
 	ports.RoomCoordinatorPort
 
-	mu          sync.Mutex
-	joinCalled  bool
-	leaveCalled bool
-	lastRoom    string
-	lastPeer    string
-	lastResp    ports.PeerResponderPort
+	mu                  sync.Mutex
+	joinCalled          bool
+	leaveCalled         bool
+	lastRoom            string
+	lastPeer            string
+	lastResp            ports.PeerResponderPort
+	lastPublishedTracks []domain.TrackPublishCommand
+	lastMutedTrackSID   string
+	lastMutedValue      bool
 }
 
 func (m *mockCoordinator) Join(ctx context.Context, roomID, participantID, participantName string, responder ports.PeerResponderPort) (*domain.JoinResult, error) {
@@ -72,11 +75,22 @@ func (m *mockCoordinator) Leave(ctx context.Context, roomID, participantID strin
 }
 
 func (m *mockCoordinator) PublishTracks(ctx context.Context, roomID, participantID string, dtlsRole string, fingerprints []domain.DtlsFingerprintInfo, tracks []domain.TrackPublishCommand) (*domain.TransportInfo, error) {
+	m.mu.Lock()
+	m.lastPublishedTracks = tracks
+	m.mu.Unlock()
 	return &domain.TransportInfo{
 		TransportID: "pub-1",
 		IceUfrag:    "ufrag-pub",
 		IcePwd:      "pwd-pub",
 	}, nil
+}
+
+func (m *mockCoordinator) SetTrackMuted(ctx context.Context, roomID, participantID, trackSID string, muted bool) error {
+	m.mu.Lock()
+	m.lastMutedTrackSID = trackSID
+	m.lastMutedValue = muted
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *mockCoordinator) HandleSubscriberAnswer(ctx context.Context, roomID, participantID string, dtlsRole string, fingerprints []domain.DtlsFingerprintInfo) error {
@@ -480,6 +494,139 @@ func TestLiveKitResponder_PingIntervalAndTimeoutPerREQ007(t *testing.T) {
 	perm := join.Participant.Permission
 	if !perm.CanPublish || !perm.CanSubscribe || !perm.CanPublishData {
 		t.Fatalf("expected CanPublish, CanSubscribe, and CanPublishData to be true, got %+v", perm)
+	}
+}
+
+func TestLiveKitWSHandler_AddTrack_PreservesTrackSID_ThroughOfferAndMute(t *testing.T) {
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc?room=conference-sid&identity=alice&name=Alice"
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// 1. Drain Join response
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read join: %v", err)
+	}
+
+	// 2. Client sends AddTrack request
+	addTrackReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_AddTrack{
+			AddTrack: &livekitproto.AddTrackRequest{
+				Cid:    "client-track-cid-1",
+				Name:   "camera",
+				Type:   livekitproto.TrackType_VIDEO,
+				Source: livekitproto.TrackSource_CAMERA,
+			},
+		},
+	}
+	reqData, _ := proto.Marshal(addTrackReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, reqData); err != nil {
+		t.Fatalf("failed to send add track request: %v", err)
+	}
+
+	// 3. Read TrackPublished response and capture assigned TrackSID
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, respData, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read track published message: %v", err)
+	}
+
+	var signalResp livekitproto.SignalResponse
+	if err := proto.Unmarshal(respData, &signalResp); err != nil {
+		t.Fatalf("failed to unmarshal track published response: %v", err)
+	}
+	tp := signalResp.GetTrackPublished()
+	if tp == nil || tp.Track == nil {
+		t.Fatalf("expected TrackPublished, got %+v", signalResp.Message)
+	}
+	assignedSID := tp.Track.Sid
+	if !strings.HasPrefix(assignedSID, "TR_") {
+		t.Fatalf("expected Track SID starting with TR_, got %s", assignedSID)
+	}
+
+	// 4. Client sends Offer with Video media section (mid: "0")
+	dummyVideoOfferSDP := "v=0\r\no=- 12345 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendonly\r\na=rtpmap:96 VP8/90000\r\na=setup:actpass\r\na=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF\r\n"
+	offerReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_Offer{
+			Offer: &livekitproto.SessionDescription{
+				Type: "offer",
+				Sdp:  dummyVideoOfferSDP,
+				Id:   101,
+			},
+		},
+	}
+	offerData, _ := proto.Marshal(offerReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, offerData); err != nil {
+		t.Fatalf("failed to send offer: %v", err)
+	}
+
+	// 5. Read Answer response
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, answerBytes, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read answer: %v", err)
+	}
+
+	var ansResp livekitproto.SignalResponse
+	if err := proto.Unmarshal(answerBytes, &ansResp); err != nil {
+		t.Fatalf("failed to unmarshal answer: %v", err)
+	}
+	ans := ansResp.GetAnswer()
+	if ans == nil {
+		t.Fatalf("expected Answer, got %+v", ansResp.Message)
+	}
+
+	// Verify that MidToTrackId["0"] is the assignedSID from AddTrack!
+	if ans.MidToTrackId["0"] != assignedSID {
+		t.Fatalf("expected MidToTrackId['0'] == %s, got %s", assignedSID, ans.MidToTrackId["0"])
+	}
+
+	// Verify coordinator received the exact assignedSID in TrackPublishCommand
+	coord.mu.Lock()
+	if len(coord.lastPublishedTracks) != 1 {
+		coord.mu.Unlock()
+		t.Fatalf("expected 1 published track in coordinator, got %d", len(coord.lastPublishedTracks))
+	}
+	if coord.lastPublishedTracks[0].TrackSID != assignedSID {
+		coord.mu.Unlock()
+		t.Fatalf("expected coordinator TrackSID == %s, got %s", assignedSID, coord.lastPublishedTracks[0].TrackSID)
+	}
+	coord.mu.Unlock()
+
+	// 6. Client sends MuteTrack request using the assignedSID
+	muteReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_Mute{
+			Mute: &livekitproto.MuteTrackRequest{
+				Sid:   assignedSID,
+				Muted: true,
+			},
+		},
+	}
+	muteData, _ := proto.Marshal(muteReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, muteData); err != nil {
+		t.Fatalf("failed to send mute request: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	coord.mu.Lock()
+	defer coord.mu.Unlock()
+	if coord.lastMutedTrackSID != assignedSID {
+		t.Fatalf("expected coordinator lastMutedTrackSID == %s, got %s", assignedSID, coord.lastMutedTrackSID)
+	}
+	if !coord.lastMutedValue {
+		t.Fatalf("expected coordinator lastMutedValue == true")
 	}
 }
 

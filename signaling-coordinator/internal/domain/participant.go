@@ -31,6 +31,8 @@ type SimulcastLayer struct {
 type Track struct {
 	ID                 string
 	SID                string
+	PublisherID        string
+	PublisherSID       string
 	Kind               TrackKind
 	SSRC               uint32
 	RTXSSRC            uint32

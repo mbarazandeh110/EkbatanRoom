@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 
 	sfuv1 "ekbatan-room/signaling-coordinator/gen/proto/sfu/v1"
 	"ekbatan-room/signaling-coordinator/internal/adapters/outbound/media_node_grpc"
@@ -98,6 +99,10 @@ func TestMediaNodeClient_CreateRouter_Success(t *testing.T) {
 			}
 			if in.RequestId == "" {
 				t.Fatalf("expected non-empty request_id")
+			}
+			md, ok := metadata.FromOutgoingContext(ctx)
+			if !ok || len(md.Get("x-request-id")) == 0 || md.Get("x-request-id")[0] == "" {
+				t.Fatalf("expected x-request-id in outgoing gRPC metadata per SIGNALING_CONTRACT.md")
 			}
 			deadline, ok := ctx.Deadline()
 			if !ok || time.Until(deadline) <= 0 {

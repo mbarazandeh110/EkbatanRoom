@@ -126,6 +126,7 @@ type IceServer struct {
 }
 
 type TrackPublishCommand struct {
+	TrackSID          string
 	Kind              TrackKind
 	SSRC              uint32
 	RTXSSRC           uint32
@@ -172,8 +173,42 @@ type ApplyLicenseResult struct {
 	ErrorMessage       string
 }
 
+type ActiveSpeakerEvent struct {
+	ProducerID string
+	PeerID     string
+	VolumeDBFS float32
+}
+
+type MediaScoreEvent struct {
+	ResourceID     string
+	PeerID         string
+	IsProducer     bool
+	Score          uint32
+	ProducerScores []uint32
+}
+
+type LayerChangedEvent struct {
+	ConsumerID             string
+	ProducerID             string
+	PeerID                 string
+	PreferredSpatialLayer  int32
+	CurrentSpatialLayer    int32
+	PreferredTemporalLayer int32
+	CurrentTemporalLayer   int32
+}
+
+type ResourceClosedEvent struct {
+	ResourceType ResourceType
+	ResourceID   string
+	Reason       string
+}
+
 type NodeEvent struct {
-	RouterID     string
-	TimestampMS  int64
-	NodeCapacity *NodeCapacityInfo
+	RouterID       string
+	TimestampMS    int64
+	NodeCapacity   *NodeCapacityInfo
+	ActiveSpeaker  *ActiveSpeakerEvent
+	MediaScore     *MediaScoreEvent
+	LayerChanged   *LayerChangedEvent
+	ResourceClosed *ResourceClosedEvent
 }

@@ -22,6 +22,7 @@ type mockOutboundEngine struct {
 	closedTransports    []*closedTransportEntry
 	produced            []*domain.ProduceCommand
 	consumed            []*domain.ConsumeCommand
+	preferredLayers     []*domain.SetPreferredLayersCommand
 }
 
 type closedTransportEntry struct {
@@ -38,6 +39,7 @@ func newMockOutboundEngine() *mockOutboundEngine {
 		closedTransports:    make([]*closedTransportEntry, 0),
 		produced:            make([]*domain.ProduceCommand, 0),
 		consumed:            make([]*domain.ConsumeCommand, 0),
+		preferredLayers:     make([]*domain.SetPreferredLayersCommand, 0),
 	}
 }
 
@@ -129,6 +131,9 @@ func (m *mockOutboundEngine) SetMediaPaused(ctx context.Context, cmd *domain.Set
 }
 
 func (m *mockOutboundEngine) SetConsumerPreferredLayers(ctx context.Context, cmd *domain.SetPreferredLayersCommand) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.preferredLayers = append(m.preferredLayers, cmd)
 	return nil
 }
 
@@ -578,6 +583,162 @@ func TestRoomActor_PublishTracks_UnifiedPlanRenegotiationDuplicateSSRCFiltered(t
 	engine.mu.Unlock()
 	if produceCount3 != 2 {
 		t.Fatalf("expected total produce calls to remain 2 after duplicate offer, got %d", produceCount3)
+	}
+}
+
+func TestRoomActor_PublishTracks_ExplicitTrackSID(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	iceServers := []domain.IceServer{{URLs: []string{"stun:stun.example.com"}}}
+	actor := application.NewRoomActor("conf-tracksid", engine, engine, engine, iceServers)
+
+	resp := newMockResponder()
+	_, err := actor.Join(ctx, "alice", "Alice", resp)
+	if err != nil {
+		t.Fatalf("Join failed: %v", err)
+	}
+
+	fingerprints := []domain.DtlsFingerprintInfo{{Algorithm: "sha-256", Value: "AA:BB:CC"}}
+	explicitSID := "TR_explicit_mic_123"
+
+	tracks := []domain.TrackPublishCommand{
+		{
+			TrackSID:          explicitSID,
+			Kind:              domain.TrackKindAudio,
+			SSRC:              5555,
+			PayloadType:       111,
+			Codec:             "opus",
+			ClockRate:         48000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"audio/opus"}]}`,
+		},
+	}
+
+	_, err = actor.PublishTracks(ctx, "alice", "client", fingerprints, tracks)
+	if err != nil {
+		t.Fatalf("PublishTracks failed: %v", err)
+	}
+
+	session, ok := actor.GetSession("alice")
+	if !ok {
+		t.Fatalf("expected session for alice")
+	}
+
+	track, ok := session.Participant().GetTrack(explicitSID)
+	if !ok {
+		t.Fatalf("expected track with explicit SID %s to be registered in participant", explicitSID)
+	}
+	if track.SID != explicitSID {
+		t.Fatalf("expected track.SID == %s, got %s", explicitSID, track.SID)
+	}
+	if track.PublisherSID != session.Participant().SID {
+		t.Fatalf("expected track.PublisherSID == %s, got %s", session.Participant().SID, track.PublisherSID)
+	}
+
+	// Verify Mute succeeds using explicit TrackSID
+	if err := actor.SetTrackMuted(ctx, "alice", explicitSID, true); err != nil {
+		t.Fatalf("SetTrackMuted failed with explicit TrackSID: %v", err)
+	}
+	if !track.Paused {
+		t.Fatalf("expected track to be paused/muted")
+	}
+}
+
+func TestRoomActor_SetConsumerLayers_ResolvesTrackSIDToConsumerID(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	iceServers := []domain.IceServer{{URLs: []string{"stun:stun.example.com"}}}
+	actor := application.NewRoomActor("conf-layers", engine, engine, engine, iceServers)
+
+	respAlice := newMockResponder()
+	respBob := newMockResponder()
+
+	_, _ = actor.Join(ctx, "alice", "Alice", respAlice)
+	_, _ = actor.Join(ctx, "bob", "Bob", respBob)
+
+	fingerprints := []domain.DtlsFingerprintInfo{{Algorithm: "sha-256", Value: "AA:BB:CC"}}
+	explicitVideoSID := "TR_video_custom_99"
+
+	tracks := []domain.TrackPublishCommand{
+		{
+			TrackSID:          explicitVideoSID,
+			Kind:              domain.TrackKindVideo,
+			SSRC:              7777,
+			PayloadType:       96,
+			Codec:             "VP8",
+			ClockRate:         90000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"video/VP8"}]}`,
+		},
+	}
+
+	_, err := actor.PublishTracks(ctx, "alice", "client", fingerprints, tracks)
+	if err != nil {
+		t.Fatalf("PublishTracks failed: %v", err)
+	}
+
+	bobSession, _ := actor.GetSession("bob")
+	slots := bobSession.SlotTable().ListSlots()
+	if len(slots) != 1 {
+		t.Fatalf("expected 1 slot on Bob, got %d", len(slots))
+	}
+	actualConsumerID := slots[0].ConsumerID
+	if actualConsumerID == "" {
+		t.Fatalf("expected slot to have valid ConsumerID")
+	}
+
+	// Bob requests layer update passing TrackSID instead of internal ConsumerID (LiveKit protocol behavior)
+	err = actor.SetConsumerLayers(ctx, "bob", explicitVideoSID, 2, 2)
+	if err != nil {
+		t.Fatalf("SetConsumerLayers failed: %v", err)
+	}
+
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if len(engine.preferredLayers) != 1 {
+		t.Fatalf("expected 1 preferredLayers command, got %d", len(engine.preferredLayers))
+	}
+	cmd := engine.preferredLayers[0]
+	if cmd.ConsumerID != actualConsumerID {
+		t.Fatalf("expected SetPreferredLayersCommand to resolve TrackSID %s to actual ConsumerID %s, got %s",
+			explicitVideoSID, actualConsumerID, cmd.ConsumerID)
+	}
+	if cmd.SpatialLayer != 2 || cmd.TemporalLayer != 2 {
+		t.Fatalf("expected layers 2/2, got spatial=%d temporal=%d", cmd.SpatialLayer, cmd.TemporalLayer)
+	}
+}
+
+func TestRoomManager_CloseGracefullyReleasesAllRooms(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	iceServers := []domain.IceServer{{URLs: []string{"stun:stun.example.com"}}}
+	mgr := application.NewRoomManager(engine, engine, engine, iceServers)
+
+	_, err := mgr.Join(ctx, "room-close-1", "user-1", "User 1", newMockResponder())
+	if err != nil {
+		t.Fatalf("Join room 1 failed: %v", err)
+	}
+	_, err = mgr.Join(ctx, "room-close-2", "user-2", "User 2", newMockResponder())
+	if err != nil {
+		t.Fatalf("Join room 2 failed: %v", err)
+	}
+
+	if mgr.ActiveRoomsCount() != 2 {
+		t.Fatalf("expected 2 active rooms, got %d", mgr.ActiveRoomsCount())
+	}
+
+	// Graceful close of manager
+	if err := mgr.Close(ctx); err != nil {
+		t.Fatalf("manager.Close failed: %v", err)
+	}
+
+	if mgr.ActiveRoomsCount() != 0 {
+		t.Fatalf("expected 0 active rooms after close, got %d", mgr.ActiveRoomsCount())
+	}
+
+	engine.mu.Lock()
+	closedRouters := len(engine.closedRouters)
+	engine.mu.Unlock()
+	if closedRouters != 2 {
+		t.Fatalf("expected 2 routers closed on SFU node, got %d", closedRouters)
 	}
 }
 

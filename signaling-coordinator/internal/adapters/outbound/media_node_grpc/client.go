@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/metadata"
 
-	"ekbatan-room/signaling-coordinator/gen/proto/sfu/v1"
+	sfuv1 "ekbatan-room/signaling-coordinator/gen/proto/sfu/v1"
+	"ekbatan-room/signaling-coordinator/internal/adapters/outbound/telemetry"
 	"ekbatan-room/signaling-coordinator/internal/domain"
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
@@ -37,27 +39,37 @@ func NewMediaNodeClient(client sfuv1.SfuMediaEngineServiceClient, defaultTimeout
 	}
 }
 
-func (c *MediaNodeClient) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, ok := ctx.Deadline(); ok {
-		return ctx, func() {}
+func (c *MediaNodeClient) withTimeoutAndReqID(ctx context.Context, reqID string) (context.Context, context.CancelFunc) {
+	callCtx := ctx
+	var cancel context.CancelFunc = func() {}
+	if _, ok := ctx.Deadline(); !ok {
+		callCtx, cancel = context.WithTimeout(ctx, c.defaultTimeout)
 	}
-	return context.WithTimeout(ctx, c.defaultTimeout)
+	if reqID != "" {
+		callCtx = metadata.AppendToOutgoingContext(callCtx, "x-request-id", reqID)
+	}
+	return callCtx, cancel
 }
 
 // RouterEnginePort implementation
 
 func (c *MediaNodeClient) CreateRouter(ctx context.Context, roomID string) (*domain.RouterInfo, error) {
-	callCtx, cancel := c.withTimeout(ctx)
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
 	defer cancel()
 
-	reqID := uuid.NewString()
 	res, err := c.client.CreateRouter(callCtx, &sfuv1.CreateRouterRequest{
 		RequestId: reqID,
 		RoomId:    roomID,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("CreateRouter", status, time.Since(start).Seconds())
 		return nil, fmt.Errorf("grpc create router failed (request_id=%s): %w", reqID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("CreateRouter", status, time.Since(start).Seconds())
 
 	return &domain.RouterInfo{
 		RouterID:            res.GetRouterId(),
@@ -67,7 +79,9 @@ func (c *MediaNodeClient) CreateRouter(ctx context.Context, roomID string) (*dom
 }
 
 func (c *MediaNodeClient) CloseRouter(ctx context.Context, routerID string) error {
-	callCtx, cancel := c.withTimeout(ctx)
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
 	defer cancel()
 
 	_, err := c.client.CloseResource(callCtx, &sfuv1.CloseResourceRequest{
@@ -75,22 +89,26 @@ func (c *MediaNodeClient) CloseRouter(ctx context.Context, routerID string) erro
 		ResourceType: sfuv1.ResourceType_RESOURCE_TYPE_ROUTER,
 		ResourceId:   routerID,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("CloseRouter", status, time.Since(start).Seconds())
 		return fmt.Errorf("grpc close router failed (router_id=%s): %w", routerID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("CloseRouter", status, time.Since(start).Seconds())
 	return nil
 }
 
 // TransportEnginePort implementation
 
 func (c *MediaNodeClient) CreateTransport(ctx context.Context, cmd *domain.CreateTransportCommand) (*domain.TransportInfo, error) {
-	callCtx, cancel := c.withTimeout(ctx)
-	defer cancel()
-
+	start := time.Now()
 	reqID := cmd.RequestID
 	if reqID == "" {
 		reqID = uuid.NewString()
 	}
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
+	defer cancel()
 
 	res, err := c.client.CreateTransport(callCtx, &sfuv1.CreateTransportRequest{
 		RequestId:   reqID,
@@ -99,9 +117,13 @@ func (c *MediaNodeClient) CreateTransport(ctx context.Context, cmd *domain.Creat
 		IsPublisher: cmd.IsPublisher,
 		EnableSctp:  cmd.EnableSctp,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("CreateTransport", status, time.Since(start).Seconds())
 		return nil, fmt.Errorf("grpc create transport failed (request_id=%s): %w", reqID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("CreateTransport", status, time.Since(start).Seconds())
 
 	candidates := make([]domain.IceCandidateInfo, 0, len(res.GetIceCandidates()))
 	for _, cand := range res.GetIceCandidates() {
@@ -138,7 +160,9 @@ func (c *MediaNodeClient) CreateTransport(ctx context.Context, cmd *domain.Creat
 }
 
 func (c *MediaNodeClient) ConnectTransport(ctx context.Context, cmd *domain.ConnectTransportCommand) error {
-	callCtx, cancel := c.withTimeout(ctx)
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
 	defer cancel()
 
 	remoteFps := make([]*sfuv1.DtlsFingerprintInfo, 0, len(cmd.RemoteFingerprints))
@@ -155,28 +179,39 @@ func (c *MediaNodeClient) ConnectTransport(ctx context.Context, cmd *domain.Conn
 		DtlsRole:           cmd.DtlsRole,
 		RemoteFingerprints: remoteFps,
 	})
+	status := "ok"
 	if err != nil {
 		// Idempotency: Mediasoup returns an error if connect() is already called on the transport.
 		// In WebRTC renegotiation, duplicate connect calls are non-fatal.
 		if strings.Contains(err.Error(), "already called") {
+			telemetry.DefaultMetrics().RecordGRPC("ConnectTransport", status, time.Since(start).Seconds())
 			return nil
 		}
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("ConnectTransport", status, time.Since(start).Seconds())
 		return fmt.Errorf("grpc connect transport failed (transport_id=%s): %w", cmd.TransportID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("ConnectTransport", status, time.Since(start).Seconds())
 	return nil
 }
 
 func (c *MediaNodeClient) RestartIce(ctx context.Context, routerID, transportID string) (*domain.IceInfo, error) {
-	callCtx, cancel := c.withTimeout(ctx)
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
 	defer cancel()
 
 	res, err := c.client.RestartIce(callCtx, &sfuv1.RestartIceRequest{
 		RouterId:    routerID,
 		TransportId: transportID,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("RestartIce", status, time.Since(start).Seconds())
 		return nil, fmt.Errorf("grpc restart ice failed (transport_id=%s): %w", transportID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("RestartIce", status, time.Since(start).Seconds())
 
 	return &domain.IceInfo{
 		IceUfrag:             res.GetIceUfrag(),
@@ -186,7 +221,9 @@ func (c *MediaNodeClient) RestartIce(ctx context.Context, routerID, transportID 
 }
 
 func (c *MediaNodeClient) CloseTransport(ctx context.Context, routerID, transportID string) error {
-	callCtx, cancel := c.withTimeout(ctx)
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
 	defer cancel()
 
 	_, err := c.client.CloseResource(callCtx, &sfuv1.CloseResourceRequest{
@@ -194,22 +231,26 @@ func (c *MediaNodeClient) CloseTransport(ctx context.Context, routerID, transpor
 		ResourceType: sfuv1.ResourceType_RESOURCE_TYPE_TRANSPORT,
 		ResourceId:   transportID,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("CloseTransport", status, time.Since(start).Seconds())
 		return fmt.Errorf("grpc close transport failed (transport_id=%s): %w", transportID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("CloseTransport", status, time.Since(start).Seconds())
 	return nil
 }
 
 // MediaStreamPort implementation
 
 func (c *MediaNodeClient) Produce(ctx context.Context, cmd *domain.ProduceCommand) (*domain.ProduceResult, error) {
-	callCtx, cancel := c.withTimeout(ctx)
-	defer cancel()
-
+	start := time.Now()
 	reqID := cmd.RequestID
 	if reqID == "" {
 		reqID = uuid.NewString()
 	}
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
+	defer cancel()
 
 	res, err := c.client.Produce(callCtx, &sfuv1.ProduceRequest{
 		RequestId:         reqID,
@@ -220,9 +261,13 @@ func (c *MediaNodeClient) Produce(ctx context.Context, cmd *domain.ProduceComman
 		RtpParametersJson: cmd.RtpParametersJSON,
 		Paused:            cmd.Paused,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("Produce", status, time.Since(start).Seconds())
 		return nil, fmt.Errorf("grpc produce failed (request_id=%s): %w", reqID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("Produce", status, time.Since(start).Seconds())
 
 	encodings := make([]domain.SimulcastLayer, 0, len(res.GetEncodings()))
 	for _, enc := range res.GetEncodings() {
@@ -243,25 +288,29 @@ func (c *MediaNodeClient) Produce(ctx context.Context, cmd *domain.ProduceComman
 }
 
 func (c *MediaNodeClient) Consume(ctx context.Context, cmd *domain.ConsumeCommand) (*domain.ConsumeResult, error) {
-	callCtx, cancel := c.withTimeout(ctx)
-	defer cancel()
-
+	start := time.Now()
 	reqID := cmd.RequestID
 	if reqID == "" {
 		reqID = uuid.NewString()
 	}
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
+	defer cancel()
 
 	res, err := c.client.Consume(callCtx, &sfuv1.ConsumeRequest{
-		RequestId:              reqID,
-		RouterId:               cmd.RouterID,
-		SubscriberTransportId:  cmd.SubscriberTransportID,
-		ProducerId:             cmd.ProducerID,
-		RtpCapabilitiesJson:    cmd.RtpCapabilitiesJSON,
-		Paused:                 cmd.Paused,
+		RequestId:             reqID,
+		RouterId:              cmd.RouterID,
+		SubscriberTransportId: cmd.SubscriberTransportID,
+		ProducerId:            cmd.ProducerID,
+		RtpCapabilitiesJson:   cmd.RtpCapabilitiesJSON,
+		Paused:                cmd.Paused,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("Consume", status, time.Since(start).Seconds())
 		return nil, fmt.Errorf("grpc consume failed (request_id=%s): %w", reqID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("Consume", status, time.Since(start).Seconds())
 
 	encodings := make([]domain.SimulcastLayer, 0, len(res.GetEncodings()))
 	for _, enc := range res.GetEncodings() {
@@ -292,7 +341,9 @@ func (c *MediaNodeClient) Consume(ctx context.Context, cmd *domain.ConsumeComman
 }
 
 func (c *MediaNodeClient) SetMediaPaused(ctx context.Context, cmd *domain.SetMediaPausedCommand) error {
-	callCtx, cancel := c.withTimeout(ctx)
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
 	defer cancel()
 
 	protoResType := sfuv1.ResourceType(cmd.ResourceType)
@@ -302,14 +353,20 @@ func (c *MediaNodeClient) SetMediaPaused(ctx context.Context, cmd *domain.SetMed
 		ResourceId:   cmd.ResourceID,
 		Paused:       cmd.Paused,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("SetMediaPaused", status, time.Since(start).Seconds())
 		return fmt.Errorf("grpc set media paused failed (resource_id=%s): %w", cmd.ResourceID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("SetMediaPaused", status, time.Since(start).Seconds())
 	return nil
 }
 
 func (c *MediaNodeClient) SetConsumerPreferredLayers(ctx context.Context, cmd *domain.SetPreferredLayersCommand) error {
-	callCtx, cancel := c.withTimeout(ctx)
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
 	defer cancel()
 
 	_, err := c.client.SetConsumerPreferredLayers(callCtx, &sfuv1.SetConsumerPreferredLayersRequest{
@@ -318,14 +375,20 @@ func (c *MediaNodeClient) SetConsumerPreferredLayers(ctx context.Context, cmd *d
 		SpatialLayer:  cmd.SpatialLayer,
 		TemporalLayer: cmd.TemporalLayer,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("SetConsumerPreferredLayers", status, time.Since(start).Seconds())
 		return fmt.Errorf("grpc set preferred layers failed (consumer_id=%s): %w", cmd.ConsumerID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("SetConsumerPreferredLayers", status, time.Since(start).Seconds())
 	return nil
 }
 
 func (c *MediaNodeClient) CloseResource(ctx context.Context, routerID string, resourceType domain.ResourceType, resourceID string) error {
-	callCtx, cancel := c.withTimeout(ctx)
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
 	defer cancel()
 
 	protoResType := sfuv1.ResourceType(resourceType)
@@ -334,24 +397,34 @@ func (c *MediaNodeClient) CloseResource(ctx context.Context, routerID string, re
 		ResourceType: protoResType,
 		ResourceId:   resourceID,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("CloseResource", status, time.Since(start).Seconds())
 		return fmt.Errorf("grpc close resource failed (resource_id=%s): %w", resourceID, err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("CloseResource", status, time.Since(start).Seconds())
 	return nil
 }
 
 // NodeLifecyclePort implementation
 
 func (c *MediaNodeClient) ApplyLicense(ctx context.Context, licenseToken string) (*domain.ApplyLicenseResult, error) {
-	callCtx, cancel := c.withTimeout(ctx)
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
 	defer cancel()
 
 	res, err := c.client.ApplyLicense(callCtx, &sfuv1.ApplyLicenseRequest{
 		LicenseToken: licenseToken,
 	})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("ApplyLicense", status, time.Since(start).Seconds())
 		return nil, fmt.Errorf("grpc apply license failed: %w", err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("ApplyLicense", status, time.Since(start).Seconds())
 
 	return &domain.ApplyLicenseResult{
 		IsValid:            res.GetIsValid(),
@@ -364,13 +437,19 @@ func (c *MediaNodeClient) ApplyLicense(ctx context.Context, licenseToken string)
 }
 
 func (c *MediaNodeClient) GetNodeCapacity(ctx context.Context) (*domain.NodeCapacityInfo, error) {
-	callCtx, cancel := c.withTimeout(ctx)
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
 	defer cancel()
 
 	metrics, err := c.client.GetNodeCapacity(callCtx, &sfuv1.GetNodeCapacityRequest{})
+	status := "ok"
 	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("GetNodeCapacity", status, time.Since(start).Seconds())
 		return nil, fmt.Errorf("grpc get node capacity failed: %w", err)
 	}
+	telemetry.DefaultMetrics().RecordGRPC("GetNodeCapacity", status, time.Since(start).Seconds())
 
 	return mapProtoCapacity(metrics), nil
 }
@@ -403,6 +482,40 @@ func (c *MediaNodeClient) WatchNodeEvents(ctx context.Context, coordinatorID, li
 
 			if capMetrics := protoEvt.GetNodeCapacity(); capMetrics != nil {
 				evt.NodeCapacity = mapProtoCapacity(capMetrics)
+			}
+			if as := protoEvt.GetActiveSpeaker(); as != nil {
+				evt.ActiveSpeaker = &domain.ActiveSpeakerEvent{
+					ProducerID: as.GetProducerId(),
+					PeerID:     as.GetPeerId(),
+					VolumeDBFS: as.GetVolumeDbfs(),
+				}
+			}
+			if ms := protoEvt.GetMediaScore(); ms != nil {
+				evt.MediaScore = &domain.MediaScoreEvent{
+					ResourceID:     ms.GetResourceId(),
+					PeerID:         ms.GetPeerId(),
+					IsProducer:     ms.GetIsProducer(),
+					Score:          ms.GetScore(),
+					ProducerScores: ms.GetProducerScores(),
+				}
+			}
+			if lc := protoEvt.GetLayerChanged(); lc != nil {
+				evt.LayerChanged = &domain.LayerChangedEvent{
+					ConsumerID:             lc.GetConsumerId(),
+					ProducerID:             lc.GetProducerId(),
+					PeerID:                 lc.GetPeerId(),
+					PreferredSpatialLayer:  lc.GetPreferredSpatialLayer(),
+					CurrentSpatialLayer:    lc.GetCurrentSpatialLayer(),
+					PreferredTemporalLayer: lc.GetPreferredTemporalLayer(),
+					CurrentTemporalLayer:   lc.GetCurrentTemporalLayer(),
+				}
+			}
+			if rc := protoEvt.GetResourceClosed(); rc != nil {
+				evt.ResourceClosed = &domain.ResourceClosedEvent{
+					ResourceType: domain.ResourceType(rc.GetResourceType()),
+					ResourceID:   rc.GetResourceId(),
+					Reason:       rc.GetReason(),
+				}
 			}
 
 			select {

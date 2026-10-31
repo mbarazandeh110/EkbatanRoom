@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"ekbatan-room/signaling-coordinator/internal/adapters/outbound/telemetry"
 	"ekbatan-room/signaling-coordinator/internal/domain"
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
@@ -20,6 +21,7 @@ type RoomManager struct {
 	mediaStreamPort ports.MediaStreamPort
 	iceServers      []domain.IceServer
 	licenseMgr      *LicenseManager
+	nodeRegistry    *NodeRegistry
 }
 
 // NewRoomManager creates a new RoomManager with constructor-injected ports.
@@ -44,6 +46,20 @@ func NewRoomManager(
 		iceServers:      iceServers,
 		licenseMgr:      lm,
 	}
+}
+
+// SetNodeRegistry associates a NodeRegistry with the RoomManager.
+func (m *RoomManager) SetNodeRegistry(nr *NodeRegistry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nodeRegistry = nr
+}
+
+// NodeRegistry returns the associated NodeRegistry, if any.
+func (m *RoomManager) NodeRegistry() *NodeRegistry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.nodeRegistry
 }
 
 func (m *RoomManager) getRoomActor(roomID string) (*RoomActor, error) {
@@ -93,24 +109,10 @@ func (m *RoomManager) Join(
 		}
 	}
 
-	// 2. Count total active peers to enforce max_concurrent_peers
+	// 2. Count total active peers to enforce max_concurrent_peers (lock-free via atomic counts)
 	totalPeers := 0
 	for _, a := range m.rooms {
 		totalPeers += a.ParticipantCount()
-	}
-
-	isNewPeer := true
-	if !isNewRoom {
-		if _, ok := actor.GetSession(participantID); ok {
-			isNewPeer = false
-		}
-	}
-
-	if isNewPeer && m.licenseMgr != nil {
-		if err := m.licenseMgr.CheckCanJoinPeer(totalPeers); err != nil {
-			m.mu.Unlock()
-			return nil, err
-		}
 	}
 
 	if isNewRoom {
@@ -122,14 +124,39 @@ func (m *RoomManager) Join(
 			m.iceServers,
 		)
 		m.rooms[roomID] = actor
+		telemetry.DefaultMetrics().IncActiveRooms()
 	}
 	m.mu.Unlock()
+
+	// 3. Check peer limit without holding global m.mu lock
+	if m.licenseMgr != nil {
+		isNewPeer := true
+		if !isNewRoom {
+			if _, ok := actor.GetSession(participantID); ok {
+				isNewPeer = false
+			}
+		}
+
+		if isNewPeer {
+			if err := m.licenseMgr.CheckCanJoinPeer(totalPeers); err != nil {
+				if isNewRoom {
+					m.mu.Lock()
+					delete(m.rooms, roomID)
+					telemetry.DefaultMetrics().DecActiveRooms()
+					m.mu.Unlock()
+					_ = actor.Close(ctx)
+				}
+				return nil, err
+			}
+		}
+	}
 
 	res, err := actor.Join(ctx, participantID, participantName, responder)
 	if err != nil {
 		m.mu.Lock()
 		if isNewRoom && actor.ParticipantCount() == 0 {
 			delete(m.rooms, roomID)
+			telemetry.DefaultMetrics().DecActiveRooms()
 			_ = actor.Close(ctx)
 		}
 		m.mu.Unlock()
@@ -149,11 +176,25 @@ func (m *RoomManager) Leave(ctx context.Context, roomID, participantID string) e
 	m.mu.Lock()
 	if actor.ParticipantCount() == 0 {
 		delete(m.rooms, roomID)
+		telemetry.DefaultMetrics().DecActiveRooms()
 		_ = actor.Close(ctx)
 	}
 	m.mu.Unlock()
 
 	return leaveErr
+}
+
+// Close gracefully closes all active rooms and releases all media router and transport resources on SFU nodes.
+func (m *RoomManager) Close(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for roomID, actor := range m.rooms {
+		_ = actor.Close(ctx)
+		delete(m.rooms, roomID)
+		telemetry.DefaultMetrics().DecActiveRooms()
+	}
+	return nil
 }
 
 func (m *RoomManager) PublishTracks(
