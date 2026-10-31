@@ -43,12 +43,26 @@ func (n *RegisteredNode) updateCapacity(info *domain.NodeCapacityInfo) {
 	n.capacityInfo = info
 }
 
+// NodeEventHandler handles domain media events (ActiveSpeaker, MediaScore, LayerChanged, ResourceClosed) from media nodes.
+type NodeEventHandler interface {
+	HandleNodeEvent(ctx context.Context, nodeID string, evt *domain.NodeEvent)
+}
+
+// NodeEventHandlerFunc allows using a function as NodeEventHandler.
+type NodeEventHandlerFunc func(ctx context.Context, nodeID string, evt *domain.NodeEvent)
+
+// HandleNodeEvent calls the underlying function.
+func (f NodeEventHandlerFunc) HandleNodeEvent(ctx context.Context, nodeID string, evt *domain.NodeEvent) {
+	f(ctx, nodeID, evt)
+}
+
 // NodeRegistry manages connected SFU media nodes and enforces cluster node limits.
 type NodeRegistry struct {
 	mu            sync.RWMutex
 	coordinatorID string
 	licenseMgr    *LicenseManager
 	nodes         map[string]*RegisteredNode
+	eventHandler  NodeEventHandler
 }
 
 // NewNodeRegistry initializes a new NodeRegistry.
@@ -61,6 +75,13 @@ func NewNodeRegistry(coordinatorID string, licenseMgr *LicenseManager) *NodeRegi
 		licenseMgr:    licenseMgr,
 		nodes:         make(map[string]*RegisteredNode),
 	}
+}
+
+// SetEventHandler registers a handler for media node events (ActiveSpeaker, MediaScore, LayerChanged, ResourceClosed).
+func (r *NodeRegistry) SetEventHandler(handler NodeEventHandler) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.eventHandler = handler
 }
 
 // RegisterNode verifies cluster capacity limits, establishes event streaming with license token,
@@ -135,13 +156,21 @@ func (r *NodeRegistry) listenNodeEvents(ctx context.Context, nodeID string, node
 				slog.Warn("media node event stream terminated", "node_id", nodeID)
 				return
 			}
-			if evt != nil && evt.NodeCapacity != nil {
-				node.updateCapacity(evt.NodeCapacity)
-				slog.Debug("media node capacity updated from event",
-					"node_id", nodeID,
-					"effective_load", evt.NodeCapacity.EffectiveLoadPercent,
-					"license_tier", evt.NodeCapacity.LicenseTier,
-				)
+			if evt != nil {
+				if evt.NodeCapacity != nil {
+					node.updateCapacity(evt.NodeCapacity)
+					slog.Debug("media node capacity updated from event",
+						"node_id", nodeID,
+						"effective_load", evt.NodeCapacity.EffectiveLoadPercent,
+						"license_tier", evt.NodeCapacity.LicenseTier,
+					)
+				}
+				r.mu.RLock()
+				handler := r.eventHandler
+				r.mu.RUnlock()
+				if handler != nil && (evt.ActiveSpeaker != nil || evt.MediaScore != nil || evt.LayerChanged != nil || evt.ResourceClosed != nil) {
+					handler.HandleNodeEvent(ctx, nodeID, evt)
+				}
 			}
 		}
 	}

@@ -31,6 +31,10 @@ type SimulcastLayer struct {
 type Track struct {
 	ID                 string
 	SID                string
+	Name               string
+	Source             string
+	Width              uint32
+	Height             uint32
 	PublisherID        string
 	PublisherSID       string
 	Kind               TrackKind
@@ -102,7 +106,14 @@ func (p *Participant) GetTrack(sid string) (*Track, bool) {
 	defer p.mu.RUnlock()
 
 	t, ok := p.PublishedTracks[sid]
-	return t, ok
+	if !ok || t == nil {
+		return nil, false
+	}
+	cp := *t
+	if len(t.SimulcastEncodings) > 0 {
+		cp.SimulcastEncodings = append([]SimulcastLayer(nil), t.SimulcastEncodings...)
+	}
+	return &cp, true
 }
 
 func (p *Participant) RemoveTrack(sid string) (*Track, error) {
@@ -135,7 +146,14 @@ func (p *Participant) ListTracks() []*Track {
 
 	tracks := make([]*Track, 0, len(p.PublishedTracks))
 	for _, t := range p.PublishedTracks {
-		tracks = append(tracks, t)
+		if t == nil {
+			continue
+		}
+		cp := *t
+		if len(t.SimulcastEncodings) > 0 {
+			cp.SimulcastEncodings = append([]SimulcastLayer(nil), t.SimulcastEncodings...)
+		}
+		tracks = append(tracks, &cp)
 	}
 	return tracks
 }

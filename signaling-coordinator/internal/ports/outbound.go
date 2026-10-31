@@ -35,3 +35,24 @@ type NodeLifecyclePort interface {
 	GetNodeCapacity(ctx context.Context) (*domain.NodeCapacityInfo, error)
 	WatchNodeEvents(ctx context.Context, coordinatorID, licenseToken string) (<-chan *domain.NodeEvent, error)
 }
+
+// PipeTransportPort defines the enterprise inter-node PipeTransport cascading operations.
+type PipeTransportPort interface {
+	CreatePipeTransport(ctx context.Context, cmd *domain.CreatePipeTransportCommand) (*domain.PipeTransportInfo, error)
+	ConnectPipeTransport(ctx context.Context, cmd *domain.ConnectPipeTransportCommand) error
+	PipeProduce(ctx context.Context, cmd *domain.PipeProduceCommand) (*domain.ProduceResult, error)
+	PipeConsume(ctx context.Context, cmd *domain.PipeConsumeCommand) (*domain.ConsumeResult, error)
+}
+
+// RoomPlacementStrategy defines the Open-Core strategy port for SFU node placement and cascading.
+type RoomPlacementStrategy interface {
+	SelectNodeForNewRoom(ctx context.Context, roomID string) (string, error)
+	ResolveNodeForPeerJoin(ctx context.Context, roomID string, peerID string) (string, string, error)
+}
+
+// TelemetryMetricsPort decouples application logic from concrete Prometheus/VictoriaMetrics adapters.
+type TelemetryMetricsPort interface {
+	IncActiveRooms()
+	DecActiveRooms()
+	IncGlareQueued()
+}

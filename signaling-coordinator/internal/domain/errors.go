@@ -37,4 +37,5 @@ var (
 	ErrMaxRoomsExceeded        = errors.New("cluster limit exceeded: maximum concurrent rooms reached")
 	ErrMaxPeersExceeded        = errors.New("cluster limit exceeded: maximum concurrent peers reached")
 	ErrMaxNodesExceeded        = errors.New("cluster limit exceeded: maximum SFU nodes reached")
+	ErrNoNodesAvailable        = errors.New("no SFU media nodes available in cluster")
 )

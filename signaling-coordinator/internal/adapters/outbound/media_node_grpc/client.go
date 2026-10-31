@@ -20,6 +20,7 @@ var (
 	_ ports.TransportEnginePort = (*MediaNodeClient)(nil)
 	_ ports.MediaStreamPort     = (*MediaNodeClient)(nil)
 	_ ports.NodeLifecyclePort   = (*MediaNodeClient)(nil)
+	_ ports.PipeTransportPort   = (*MediaNodeClient)(nil)
 )
 
 // MediaNodeClient implements outbound media engine ports via gRPC.
@@ -551,3 +552,138 @@ func mapProtoCapacity(m *sfuv1.NodeCapacityMetrics) *domain.NodeCapacityInfo {
 		LicenseTier:                m.GetLicenseTier(),
 	}
 }
+
+// PipeTransportPort implementation
+
+func (c *MediaNodeClient) CreatePipeTransport(ctx context.Context, cmd *domain.CreatePipeTransportCommand) (*domain.PipeTransportInfo, error) {
+	start := time.Now()
+	reqID := cmd.RequestID
+	if reqID == "" {
+		reqID = uuid.NewString()
+	}
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
+	defer cancel()
+
+	protoReq := &sfuv1.CreatePipeTransportRequest{
+		RequestId:  reqID,
+		RouterId:   cmd.RouterID,
+		EnableSrtp: cmd.EnableSrtp,
+		EnableRtx:  cmd.EnableRtx,
+	}
+
+	resp, err := c.client.CreatePipeTransport(callCtx, protoReq)
+	duration := time.Since(start).Seconds()
+	if err != nil {
+		telemetry.DefaultMetrics().RecordGRPC("CreatePipeTransport", "error", duration)
+		return nil, fmt.Errorf("failed to create pipe transport: %w", err)
+	}
+	telemetry.DefaultMetrics().RecordGRPC("CreatePipeTransport", "ok", duration)
+
+	return &domain.PipeTransportInfo{
+		PipeTransportID:    resp.GetPipeTransportId(),
+		IP:                 resp.GetIp(),
+		Port:               resp.GetPort(),
+		SrtpParametersJSON: resp.GetSrtpParametersJson(),
+	}, nil
+}
+
+func (c *MediaNodeClient) ConnectPipeTransport(ctx context.Context, cmd *domain.ConnectPipeTransportCommand) error {
+	start := time.Now()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, "")
+	defer cancel()
+
+	protoReq := &sfuv1.ConnectPipeTransportRequest{
+		RouterId:                 cmd.RouterID,
+		PipeTransportId:          cmd.PipeTransportID,
+		RemoteIp:                 cmd.RemoteIP,
+		RemotePort:               cmd.RemotePort,
+		RemoteSrtpParametersJson: cmd.RemoteSrtpParametersJSON,
+	}
+
+	_, err := c.client.ConnectPipeTransport(callCtx, protoReq)
+	duration := time.Since(start).Seconds()
+	if err != nil {
+		telemetry.DefaultMetrics().RecordGRPC("ConnectPipeTransport", "error", duration)
+		return fmt.Errorf("failed to connect pipe transport: %w", err)
+	}
+	telemetry.DefaultMetrics().RecordGRPC("ConnectPipeTransport", "ok", duration)
+	return nil
+}
+
+func (c *MediaNodeClient) PipeProduce(ctx context.Context, cmd *domain.PipeProduceCommand) (*domain.ProduceResult, error) {
+	start := time.Now()
+	reqID := cmd.RequestID
+	if reqID == "" {
+		reqID = uuid.NewString()
+	}
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
+	defer cancel()
+
+	protoReq := &sfuv1.PipeProduceRequest{
+		RequestId:         reqID,
+		RouterId:          cmd.RouterID,
+		PipeTransportId:   cmd.PipeTransportID,
+		SourceProducerId:  cmd.SourceProducerID,
+		Kind:              string(cmd.Kind),
+		RtpParametersJson: cmd.RtpParametersJSON,
+		Paused:            cmd.Paused,
+	}
+
+	resp, err := c.client.PipeProduce(callCtx, protoReq)
+	duration := time.Since(start).Seconds()
+	if err != nil {
+		telemetry.DefaultMetrics().RecordGRPC("PipeProduce", "error", duration)
+		return nil, fmt.Errorf("failed to pipe produce: %w", err)
+	}
+	telemetry.DefaultMetrics().RecordGRPC("PipeProduce", "ok", duration)
+
+	encodings := make([]domain.SimulcastLayer, 0, len(resp.GetEncodings()))
+	for _, enc := range resp.GetEncodings() {
+		encodings = append(encodings, domain.SimulcastLayer{
+			RID:             enc.GetRid(),
+			SSRC:            enc.GetSsrc(),
+			RTXSSRC:         enc.GetRtxSsrc(),
+			MaxBitrate:      enc.GetMaxBitrate(),
+			ScalabilityMode: enc.GetScalabilityMode(),
+		})
+	}
+
+	return &domain.ProduceResult{
+		ProducerID: resp.GetProducerId(),
+		Kind:       domain.TrackKind(resp.GetKind()),
+		Encodings:  encodings,
+	}, nil
+}
+
+func (c *MediaNodeClient) PipeConsume(ctx context.Context, cmd *domain.PipeConsumeCommand) (*domain.ConsumeResult, error) {
+	start := time.Now()
+	reqID := cmd.RequestID
+	if reqID == "" {
+		reqID = uuid.NewString()
+	}
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
+	defer cancel()
+
+	protoReq := &sfuv1.PipeConsumeRequest{
+		RequestId:       reqID,
+		RouterId:        cmd.RouterID,
+		PipeTransportId: cmd.PipeTransportID,
+		ProducerId:      cmd.ProducerID,
+	}
+
+	resp, err := c.client.PipeConsume(callCtx, protoReq)
+	duration := time.Since(start).Seconds()
+	if err != nil {
+		telemetry.DefaultMetrics().RecordGRPC("PipeConsume", "error", duration)
+		return nil, fmt.Errorf("failed to pipe consume: %w", err)
+	}
+	telemetry.DefaultMetrics().RecordGRPC("PipeConsume", "ok", duration)
+
+	return &domain.ConsumeResult{
+		ConsumerID:        resp.GetConsumerId(),
+		ProducerID:        resp.GetProducerId(),
+		Kind:              domain.TrackKind(resp.GetKind()),
+		RtpParametersJSON: resp.GetRtpParametersJson(),
+	}, nil
+}
+

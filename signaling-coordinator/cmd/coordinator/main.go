@@ -140,6 +140,7 @@ func main() {
 		cfg.RTC.IceServers,
 		licenseMgr,
 	)
+	roomManager.SetMetricsPort(telemetry.DefaultMetrics())
 	roomManager.SetNodeRegistry(nodeRegistry)
 
 	// 6. Assemble Inbound Adapters (Dual Gateway)
@@ -155,8 +156,25 @@ func main() {
 	// NOTE (REQ-008): /rtc/ is intentionally NOT registered so that /rtc/v1 returns HTTP 404,
 	// triggering official livekit-client protocol fallback to standard /rtc WebSocket signaling.
 	mux.Handle("/ws/ortc", ortcHandler)
+
+	var metricsSrv *http.Server
 	if cfg.Telemetry.MetricsEnabled {
-		mux.Handle("/metrics", telemetry.DefaultMetrics().Handler())
+		if cfg.Telemetry.MetricsAddr != "" {
+			metricsMux := http.NewServeMux()
+			metricsMux.Handle("/metrics", telemetry.DefaultMetrics().Handler())
+			metricsSrv = &http.Server{
+				Addr:    cfg.Telemetry.MetricsAddr,
+				Handler: metricsMux,
+			}
+			go func() {
+				slog.Info("dedicated metrics server listening", "addr", cfg.Telemetry.MetricsAddr)
+				if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					slog.Error("metrics server failure", "error", err)
+				}
+			}()
+		} else {
+			mux.Handle("/metrics", telemetry.DefaultMetrics().Handler())
+		}
 	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -187,6 +205,10 @@ func main() {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
+
+	if metricsSrv != nil {
+		_ = metricsSrv.Shutdown(shutdownCtx)
+	}
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("HTTP server shutdown error", "error", err)

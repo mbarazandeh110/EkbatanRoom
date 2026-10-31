@@ -85,14 +85,35 @@ func mapDomainTracksToProto(tracks []*domain.Track) []*livekitproto.TrackInfo {
 	protoTracks := make([]*livekitproto.TrackInfo, 0, len(tracks))
 	for _, t := range tracks {
 		trackType := livekitproto.TrackType_AUDIO
+		src := livekitproto.TrackSource_MICROPHONE
 		if t.Kind == domain.TrackKindVideo {
 			trackType = livekitproto.TrackType_VIDEO
+			src = livekitproto.TrackSource_CAMERA
 		}
+		switch t.Source {
+		case "CAMERA":
+			src = livekitproto.TrackSource_CAMERA
+		case "MICROPHONE":
+			src = livekitproto.TrackSource_MICROPHONE
+		case "SCREEN_SHARE":
+			src = livekitproto.TrackSource_SCREEN_SHARE
+		case "SCREEN_SHARE_AUDIO":
+			src = livekitproto.TrackSource_SCREEN_SHARE_AUDIO
+		}
+
+		name := t.Name
+		if name == "" {
+			name = t.SID
+		}
+
 		protoTracks = append(protoTracks, &livekitproto.TrackInfo{
 			Sid:       t.SID,
 			Type:      trackType,
-			Name:      t.ID,
+			Name:      name,
 			Muted:     t.Paused,
+			Width:     t.Width,
+			Height:    t.Height,
+			Source:    src,
 			Simulcast: len(t.SimulcastEncodings) > 0,
 		})
 	}

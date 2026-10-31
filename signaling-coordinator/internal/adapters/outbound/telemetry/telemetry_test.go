@@ -28,6 +28,8 @@ func TestLogger_SecurityRedaction(t *testing.T) {
 	logger.Info("user join attempt",
 		"token", "super-secret-jwt-token-12345",
 		"access_token", "secret-token-xyz",
+		"license_token", "lic-secret-token",
+		"license_key", "ed25519-secret-key",
 		"ice_pwd", "secret-ice-password",
 		"sdp", "v=0\r\no=- 123 2 IN IP4 127.0.0.1\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111",
 		"room_id", "room-101",
@@ -42,6 +44,12 @@ func TestLogger_SecurityRedaction(t *testing.T) {
 	if strings.Contains(logOutput, "secret-token-xyz") {
 		t.Fatalf("expected access_token to be redacted, got:\n%s", logOutput)
 	}
+	if strings.Contains(logOutput, "lic-secret-token") {
+		t.Fatalf("expected license_token to be redacted, got:\n%s", logOutput)
+	}
+	if strings.Contains(logOutput, "ed25519-secret-key") {
+		t.Fatalf("expected license_key to be redacted, got:\n%s", logOutput)
+	}
 	if strings.Contains(logOutput, "secret-ice-password") {
 		t.Fatalf("expected ice_pwd to be redacted, got:\n%s", logOutput)
 	}
@@ -50,8 +58,8 @@ func TestLogger_SecurityRedaction(t *testing.T) {
 	if strings.Contains(logOutput, "v=0\r\no=-") {
 		t.Fatalf("expected raw SDP to be redacted when LogRawSDP=false, got:\n%s", logOutput)
 	}
-	if !strings.Contains(logOutput, "[SDP len=") {
-		t.Fatalf("expected [SDP len=...] placeholder, got:\n%s", logOutput)
+	if !strings.Contains(logOutput, "[SDP len=") || !strings.Contains(logOutput, "m_lines=") {
+		t.Fatalf("expected [SDP len=... m_lines=...] placeholder, got:\n%s", logOutput)
 	}
 
 	// Verify it's valid JSON
@@ -61,6 +69,12 @@ func TestLogger_SecurityRedaction(t *testing.T) {
 	}
 	if parsed["token"] != "[REDACTED]" {
 		t.Fatalf("expected [REDACTED] for token, got %v", parsed["token"])
+	}
+	if parsed["license_token"] != "[REDACTED]" {
+		t.Fatalf("expected [REDACTED] for license_token, got %v", parsed["license_token"])
+	}
+	if parsed["license_key"] != "[REDACTED]" {
+		t.Fatalf("expected [REDACTED] for license_key, got %v", parsed["license_key"])
 	}
 	if parsed["ice_pwd"] != "[REDACTED]" {
 		t.Fatalf("expected [REDACTED] for ice_pwd, got %v", parsed["ice_pwd"])

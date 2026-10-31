@@ -8,20 +8,21 @@ import (
 )
 
 // ParticipantSession manages the lifecycle and SDP negotiation state machine for a single participant.
-// States: Stable -> WaitingForAnswer -> Stable (or Closed).
+// States: Stable -> WaitingForAnswer -> Stable (or TimedOut / Closed).
 type ParticipantSession struct {
 	mu sync.Mutex
 
-	participant      *domain.Participant
-	pubTransport     *domain.TransportInfo
-	subTransport     *domain.TransportInfo
-	responder        ports.PeerResponderPort
-	negotiationState domain.NegotiationState
-	slotTable             *domain.SDPSlotTable
-	pendingTracks         []*domain.Track
-	closed                bool
-	pubTransportConnected bool
-	subTransportConnected bool
+	participant            *domain.Participant
+	pubTransport           *domain.TransportInfo
+	subTransport           *domain.TransportInfo
+	responder              ports.PeerResponderPort
+	negotiationState       domain.NegotiationState
+	slotTable              *domain.SDPSlotTable
+	pendingTracks          []*domain.Track
+	pendingIceRestartOffer bool
+	closed                 bool
+	pubTransportConnected  bool
+	subTransportConnected  bool
 }
 
 func NewParticipantSession(
@@ -91,7 +92,7 @@ func (s *ParticipantSession) State() domain.NegotiationState {
 	return s.negotiationState
 }
 
-// StartOfferTransition transitions from Stable -> WaitingForAnswer.
+// StartOfferTransition transitions from Stable (or TimedOut recovery) -> WaitingForAnswer.
 // Returns ErrNegotiationGlare if already in WaitingForAnswer.
 func (s *ParticipantSession) StartOfferTransition() error {
 	s.mu.Lock()
@@ -109,8 +110,8 @@ func (s *ParticipantSession) StartOfferTransition() error {
 	return nil
 }
 
-// AnswerReceivedTransition transitions from WaitingForAnswer -> Stable.
-func (s *ParticipantSession) AnswerReceivedTransition() error {
+// TimeoutOfferTransition transitions from WaitingForAnswer -> TimedOut when a peer fails to answer in time.
+func (s *ParticipantSession) TimeoutOfferTransition() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -119,6 +120,24 @@ func (s *ParticipantSession) AnswerReceivedTransition() error {
 	}
 
 	if s.negotiationState != domain.NegotiationStateWaitingForAnswer {
+		return domain.ErrInvalidNegotiationState
+	}
+
+	s.negotiationState = domain.NegotiationStateTimedOut
+	return nil
+}
+
+// AnswerReceivedTransition transitions from WaitingForAnswer (or late TimedOut) -> Stable.
+func (s *ParticipantSession) AnswerReceivedTransition() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return domain.ErrRoomClosed
+	}
+
+	if s.negotiationState != domain.NegotiationStateWaitingForAnswer &&
+		s.negotiationState != domain.NegotiationStateTimedOut {
 		return domain.ErrInvalidNegotiationState
 	}
 
@@ -144,6 +163,22 @@ func (s *ParticipantSession) PopPendingTracks() []*domain.Track {
 	tracks := s.pendingTracks
 	s.pendingTracks = make([]*domain.Track, 0)
 	return tracks
+}
+
+// MarkPendingIceRestart queues an ICE restart offer when the session is currently WaitingForAnswer.
+func (s *ParticipantSession) MarkPendingIceRestart() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingIceRestartOffer = true
+}
+
+// ConsumePendingIceRestart returns and clears whether an ICE restart offer was deferred.
+func (s *ParticipantSession) ConsumePendingIceRestart() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending := s.pendingIceRestartOffer
+	s.pendingIceRestartOffer = false
+	return pending
 }
 
 func (s *ParticipantSession) Close() error {

@@ -23,6 +23,7 @@ type ParsedTrack struct {
 	Channels          uint32
 	CName             string
 	RtpParametersJSON string
+	SimulcastRIDs     []string
 }
 
 type ParsedPublisherOffer struct {
@@ -296,23 +297,73 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			})
 		}
 
+		// Parse header extensions (a=extmap) from session and media level
+		headerExtensions := make([]map[string]interface{}, 0)
+		extmapSeen := make(map[int]bool)
+		for _, attr := range append(s.Attributes, md.Attributes...) {
+			if strings.EqualFold(attr.Key, "extmap") {
+				fields := strings.Fields(attr.Value)
+				if len(fields) >= 2 {
+					idStr := strings.Split(fields[0], "/")[0]
+					if id, err := strconv.Atoi(idStr); err == nil && !extmapSeen[id] {
+						extmapSeen[id] = true
+						headerExtensions = append(headerExtensions, map[string]interface{}{
+							"id":  id,
+							"uri": fields[1],
+						})
+					}
+				}
+			}
+		}
+
+		// Parse Simulcast RIDs (a=rid)
+		var simulcastRIDs []string
+		for _, attr := range md.Attributes {
+			if strings.EqualFold(attr.Key, "rid") {
+				fields := strings.Fields(attr.Value)
+				if len(fields) >= 1 {
+					simulcastRIDs = append(simulcastRIDs, fields[0])
+				}
+			}
+		}
+
+		encodings := make([]map[string]interface{}, 0)
+		if len(simulcastRIDs) > 0 {
+			for idx, rid := range simulcastRIDs {
+				enc := map[string]interface{}{
+					"rid": rid,
+				}
+				if idx == 0 && ssrc > 0 {
+					enc["ssrc"] = ssrc
+					if rtxSSRC > 0 {
+						enc["rtx"] = map[string]interface{}{
+							"ssrc": rtxSSRC,
+						}
+					}
+				}
+				encodings = append(encodings, enc)
+			}
+		} else {
+			enc := map[string]interface{}{}
+			if ssrc > 0 {
+				enc["ssrc"] = ssrc
+			}
+			if rtxSSRC > 0 {
+				enc["rtx"] = map[string]interface{}{
+					"ssrc": rtxSSRC,
+				}
+			}
+			encodings = append(encodings, enc)
+		}
+
 		rtpParams := map[string]interface{}{
 			"codecs":           codecs,
-			"headerExtensions": []map[string]interface{}{},
-			"encodings": []map[string]interface{}{
-				{
-					"ssrc": ssrc,
-				},
-			},
-			"rtcp": rtcpParams,
+			"headerExtensions": headerExtensions,
+			"encodings":        encodings,
+			"rtcp":             rtcpParams,
 		}
 		if mid != "" {
 			rtpParams["mid"] = mid
-		}
-		if rtxSSRC > 0 {
-			rtpParams["encodings"].([]map[string]interface{})[0]["rtx"] = map[string]interface{}{
-				"ssrc": rtxSSRC,
-			}
 		}
 		rtpJSON, _ := json.Marshal(rtpParams)
 
@@ -328,6 +379,7 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			Channels:          channels,
 			CName:             cname,
 			RtpParametersJSON: string(rtpJSON),
+			SimulcastRIDs:     simulcastRIDs,
 		})
 	}
 
@@ -448,9 +500,9 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 			ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "recvonly"})
 			ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "rtcp-mux"})
 
-			// Retain rtpmap and rtcp-fb from offer
+			// Retain rtpmap, rtcp-fb, fmtp, and extmap from offer per RFC 8285 / RFC 8866
 			for _, attr := range md.Attributes {
-				if attr.Key == "rtpmap" || attr.Key == "rtcp-fb" || attr.Key == "fmtp" {
+				if attr.Key == "rtpmap" || attr.Key == "rtcp-fb" || attr.Key == "fmtp" || attr.Key == "extmap" {
 					ansMd.Attributes = append(ansMd.Attributes, attr)
 				}
 			}

@@ -15,6 +15,7 @@ type Config struct {
 	TraceSampleRate float64 `json:"trace_sample_rate" yaml:"trace_sample_rate"`
 	OtlpEndpoint    string  `json:"otlp_endpoint" yaml:"otlp_endpoint"`
 	MetricsEnabled  bool    `json:"metrics_enabled" yaml:"metrics_enabled"`
+	MetricsAddr     string  `json:"metrics_addr" yaml:"metrics_addr"`
 }
 
 func LoadConfigFromEnv() Config {
@@ -26,6 +27,7 @@ func LoadConfigFromEnv() Config {
 		TraceSampleRate: getEnvFloat("OBS_TRACE_SAMPLE_RATE", 1.0),
 		OtlpEndpoint:    getEnv("OBS_OTLP_ENDPOINT", ""),
 		MetricsEnabled:  getEnvBool("OBS_METRICS_ENABLED", true),
+		MetricsAddr:     getEnv("OBS_METRICS_ADDR", ""),
 	}
 	return cfg
 }

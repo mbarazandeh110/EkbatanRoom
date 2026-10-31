@@ -12,12 +12,17 @@ import (
 )
 
 var sensitiveKeys = map[string]bool{
-	"token":        true,
-	"access_token": true,
-	"ice_pwd":      true,
-	"secret":       true,
-	"password":     true,
-	"credential":   true,
+	"token":               true,
+	"access_token":        true,
+	"license_token":       true,
+	"license_key":         true,
+	"ekbatan_license_key": true,
+	"ice_pwd":             true,
+	"secret":              true,
+	"password":            true,
+	"credential":          true,
+	"jwt":                 true,
+	"authorization":       true,
 }
 
 // otelContextHandler wraps slog.Handler to inject active trace_id and span_id into log records.
@@ -78,7 +83,11 @@ func SetupLogger(cfg Config, w io.Writer) *slog.Logger {
 				return a
 			}
 			strVal := a.Value.String()
-			return slog.String(a.Key, fmt.Sprintf("[SDP len=%d]", len(strVal)))
+			mLines := strings.Count(strVal, "\nm=")
+			if strings.HasPrefix(strVal, "m=") {
+				mLines++
+			}
+			return slog.String(a.Key, fmt.Sprintf("[SDP len=%d m_lines=%d]", len(strVal), mLines))
 		}
 
 		return a

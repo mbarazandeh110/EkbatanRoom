@@ -638,7 +638,8 @@ func TestRoomActor_PublishTracks_ExplicitTrackSID(t *testing.T) {
 	if err := actor.SetTrackMuted(ctx, "alice", explicitSID, true); err != nil {
 		t.Fatalf("SetTrackMuted failed with explicit TrackSID: %v", err)
 	}
-	if !track.Paused {
+	mutedTrack, ok := session.Participant().GetTrack(explicitSID)
+	if !ok || !mutedTrack.Paused {
 		t.Fatalf("expected track to be paused/muted")
 	}
 }

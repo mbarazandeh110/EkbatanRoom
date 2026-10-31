@@ -244,6 +244,9 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Telemetry.MetricsEnabled = b
 		}
 	}
+	if v := os.Getenv("OBS_METRICS_ADDR"); v != "" {
+		cfg.Telemetry.MetricsAddr = strings.TrimSpace(v)
+	}
 }
 
 // Validate checks that all required configuration settings are valid and consistent.

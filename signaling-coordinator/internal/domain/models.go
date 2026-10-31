@@ -64,6 +64,45 @@ type ConnectTransportCommand struct {
 	RemoteFingerprints []DtlsFingerprintInfo
 }
 
+type CreatePipeTransportCommand struct {
+	RequestID  string
+	RouterID   string
+	EnableSrtp bool
+	EnableRtx  bool
+}
+
+type PipeTransportInfo struct {
+	PipeTransportID    string
+	IP                 string
+	Port               uint32
+	SrtpParametersJSON string
+}
+
+type ConnectPipeTransportCommand struct {
+	RouterID                 string
+	PipeTransportID          string
+	RemoteIP                 string
+	RemotePort               uint32
+	RemoteSrtpParametersJSON string
+}
+
+type PipeProduceCommand struct {
+	RequestID         string
+	RouterID          string
+	PipeTransportID   string
+	SourceProducerID  string
+	Kind              TrackKind
+	RtpParametersJSON string
+	Paused            bool
+}
+
+type PipeConsumeCommand struct {
+	RequestID       string
+	RouterID        string
+	PipeTransportID string
+	ProducerID      string
+}
+
 type ProduceCommand struct {
 	RequestID           string
 	RouterID            string
@@ -127,6 +166,10 @@ type IceServer struct {
 
 type TrackPublishCommand struct {
 	TrackSID          string
+	Name              string
+	Source            string
+	Width             uint32
+	Height            uint32
 	Kind              TrackKind
 	SSRC              uint32
 	RTXSSRC           uint32
@@ -136,6 +179,7 @@ type TrackPublishCommand struct {
 	ClockRate         uint32
 	CName             string
 	RtpParametersJSON string
+	SimulcastRIDs     []string
 }
 
 type JoinResult struct {

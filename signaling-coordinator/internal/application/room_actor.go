@@ -4,16 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
-	"ekbatan-room/signaling-coordinator/internal/adapters/outbound/telemetry"
 	"ekbatan-room/signaling-coordinator/internal/domain"
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
+
+type noopTelemetryMetrics struct{}
+
+func (noopTelemetryMetrics) IncActiveRooms() {}
+func (noopTelemetryMetrics) DecActiveRooms() {}
+func (noopTelemetryMetrics) IncGlareQueued() {}
 
 // defaultWebRTCRtpCapabilitiesJSON provides fallback standard WebRTC codecs (Opus, VP8, H264)
 // with standard RTCP feedback (PLI/FIR/NACK) so mediasoup router.can_consume() validation succeeds
@@ -30,6 +40,7 @@ type RoomActor struct {
 	routerPort       ports.RouterEnginePort
 	transportPort    ports.TransportEnginePort
 	mediaStreamPort  ports.MediaStreamPort
+	metricsPort      ports.TelemetryMetricsPort
 	iceServers       []domain.IceServer
 	closed           bool
 }
@@ -91,15 +102,44 @@ func NewRoomActor(
 	transportPort ports.TransportEnginePort,
 	mediaStreamPort ports.MediaStreamPort,
 	iceServers []domain.IceServer,
+	metricsPort ...ports.TelemetryMetricsPort,
 ) *RoomActor {
+	var mp ports.TelemetryMetricsPort = noopTelemetryMetrics{}
+	if len(metricsPort) > 0 && metricsPort[0] != nil {
+		mp = metricsPort[0]
+	}
 	return &RoomActor{
 		room:            domain.NewRoom(roomID, ""),
 		sessions:        make(map[string]*ParticipantSession),
 		routerPort:      routerPort,
 		transportPort:   transportPort,
 		mediaStreamPort: mediaStreamPort,
+		metricsPort:     mp,
 		iceServers:      iceServers,
 	}
+}
+
+func (a *RoomActor) startSpan(ctx context.Context, name string, participantID string, state domain.NegotiationState) (context.Context, trace.Span) {
+	attrs := []attribute.KeyValue{
+		attribute.String("room.id", a.room.ID),
+	}
+	if participantID != "" {
+		attrs = append(attrs, attribute.String("participant.id", participantID))
+	}
+	if state != "" {
+		attrs = append(attrs, attribute.String("negotiation.state", string(state)))
+	}
+	return otel.GetTracerProvider().Tracer("ekbatan-room/signaling-coordinator").Start(
+		ctx,
+		name,
+		trace.WithAttributes(attrs...),
+	)
+}
+
+func (a *RoomActor) RouterID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.room.RouterID
 }
 
 func (a *RoomActor) Join(
@@ -108,10 +148,15 @@ func (a *RoomActor) Join(
 	participantName string,
 	responder ports.PeerResponderPort,
 ) (*domain.JoinResult, error) {
+	ctx, span := a.startSpan(ctx, "HandleJoin", participantID, domain.NegotiationStateStable)
+	defer span.End()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.closed || !a.room.IsActive() {
+		span.RecordError(domain.ErrRoomClosed)
+		span.SetStatus(codes.Error, domain.ErrRoomClosed.Error())
 		return nil, domain.ErrRoomClosed
 	}
 
@@ -119,7 +164,10 @@ func (a *RoomActor) Join(
 	if a.room.RouterID == "" {
 		routerInfo, err := a.routerPort.CreateRouter(ctx, a.room.ID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create media router for room %s: %w", a.room.ID, err)
+			wrappedErr := fmt.Errorf("failed to create media router for room %s: %w", a.room.ID, err)
+			span.RecordError(wrappedErr)
+			span.SetStatus(codes.Error, wrappedErr.Error())
+			return nil, wrappedErr
 		}
 		a.room.RouterID = routerInfo.RouterID
 		a.room.SetRtpCapabilitiesJSON(routerInfo.RtpCapabilitiesJSON)
@@ -134,7 +182,10 @@ func (a *RoomActor) Join(
 		EnableSctp:  true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create publisher transport: %w", err)
+		wrappedErr := fmt.Errorf("failed to create publisher transport: %w", err)
+		span.RecordError(wrappedErr)
+		span.SetStatus(codes.Error, wrappedErr.Error())
+		return nil, wrappedErr
 	}
 
 	// 3. Provision Subscriber WebRTC transport on the SFU node
@@ -146,9 +197,11 @@ func (a *RoomActor) Join(
 		EnableSctp:  true,
 	})
 	if err != nil {
-		// Clean up publisher transport on failure
 		_ = a.transportPort.CloseTransport(ctx, a.room.RouterID, pubTransport.TransportID)
-		return nil, fmt.Errorf("failed to create subscriber transport: %w", err)
+		wrappedErr := fmt.Errorf("failed to create subscriber transport: %w", err)
+		span.RecordError(wrappedErr)
+		span.SetStatus(codes.Error, wrappedErr.Error())
+		return nil, wrappedErr
 	}
 
 	// 4. Create and enroll participant in domain
@@ -161,6 +214,8 @@ func (a *RoomActor) Join(
 	if err := a.room.AddParticipant(p); err != nil {
 		_ = a.transportPort.CloseTransport(ctx, a.room.RouterID, pubTransport.TransportID)
 		_ = a.transportPort.CloseTransport(ctx, a.room.RouterID, subTransport.TransportID)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
@@ -180,12 +235,66 @@ func (a *RoomActor) Join(
 	if responder != nil {
 		if err := responder.SendJoinResponse(joinRes); err != nil {
 			_ = a.leaveLocked(ctx, participantID)
-			return nil, fmt.Errorf("failed to send join response: %w", err)
+			wrappedErr := fmt.Errorf("failed to send join response: %w", err)
+			span.RecordError(wrappedErr)
+			span.SetStatus(codes.Error, wrappedErr.Error())
+			return nil, wrappedErr
 		}
 	}
 
 	// Broadcast participant joined update to existing participants
 	a.broadcastParticipantUpdateLocked()
+
+	// 5. Subscribe the newly joined participant to all already-published tracks in the room (Late Joiner support)
+	consumedExistingCount := 0
+	for otherID, otherSession := range a.sessions {
+		if otherID == participantID {
+			continue
+		}
+		otherParticipant := otherSession.Participant()
+		for _, t := range otherParticipant.ListTracks() {
+			consRes, err := a.mediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
+				RequestID:             uuid.NewString(),
+				RouterID:              a.room.RouterID,
+				SubscriberTransportID: p.SubscriberTransportID,
+				ProducerID:            t.ID,
+				RtpCapabilitiesJSON:   a.getRtpCapabilitiesJSON(),
+				Paused:                false,
+			})
+			if err != nil {
+				continue
+			}
+
+			pubSID := t.PublisherSID
+			if pubSID == "" {
+				pubSID = otherParticipant.SID
+			}
+
+			session.SlotTable().AllocOrRecycleSlot(
+				t.Kind,
+				t.SID,
+				t.ID,
+				consRes.ConsumerID,
+				consRes.SSRC,
+				consRes.RTXSSRC,
+				consRes.PayloadType,
+				consRes.RTXPayloadType,
+				consRes.ClockRate,
+				consRes.CodecMimeType,
+				pubSID,
+			)
+			p.AddSubscription(consRes.ConsumerID, t.ID)
+			consumedExistingCount++
+		}
+	}
+
+	if consumedExistingCount > 0 && session.State() == domain.NegotiationStateStable {
+		if err := session.StartOfferTransition(); err == nil {
+			if session.Responder() != nil {
+				_ = session.Responder().SendSubscriberOffer(session.SlotTable().ListSlots(), p.SID)
+			}
+		}
+	}
 
 	return joinRes, nil
 }
@@ -284,11 +393,16 @@ func (a *RoomActor) PublishTracks(
 	fingerprints []domain.DtlsFingerprintInfo,
 	tracks []domain.TrackPublishCommand,
 ) (*domain.TransportInfo, error) {
+	ctx, span := a.startSpan(ctx, "HandleOffer", participantID, domain.NegotiationStateStable)
+	defer span.End()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	session, exists := a.sessions[participantID]
 	if !exists {
+		span.RecordError(domain.ErrParticipantNotFound)
+		span.SetStatus(codes.Error, domain.ErrParticipantNotFound.Error())
 		return nil, domain.ErrParticipantNotFound
 	}
 	p := session.Participant()
@@ -302,7 +416,10 @@ func (a *RoomActor) PublishTracks(
 			RemoteFingerprints: fingerprints,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to connect publisher transport: %w", err)
+			wrappedErr := fmt.Errorf("failed to connect publisher transport: %w", err)
+			span.RecordError(wrappedErr)
+			span.SetStatus(codes.Error, wrappedErr.Error())
+			return nil, wrappedErr
 		}
 		session.SetPubTransportConnected(true)
 	}
@@ -340,12 +457,24 @@ func (a *RoomActor) PublishTracks(
 			Paused:            false,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to produce track %s: %w", tc.Kind, err)
+			wrappedErr := fmt.Errorf("failed to produce track %s: %w", tc.Kind, err)
+			span.RecordError(wrappedErr)
+			span.SetStatus(codes.Error, wrappedErr.Error())
+			return nil, wrappedErr
+		}
+
+		trackName := tc.Name
+		if trackName == "" {
+			trackName = prodRes.ProducerID
 		}
 
 		domainTrack := &domain.Track{
 			ID:                 prodRes.ProducerID,
 			SID:                trackSID,
+			Name:               trackName,
+			Source:             tc.Source,
+			Width:              tc.Width,
+			Height:             tc.Height,
 			PublisherID:        participantID,
 			PublisherSID:       p.SID,
 			Kind:               tc.Kind,
@@ -373,7 +502,9 @@ func (a *RoomActor) PublishTracks(
 
 			if otherSession.State() == domain.NegotiationStateWaitingForAnswer {
 				// Concurrency / Glare handling: queue tracks until current negotiation completes
-				telemetry.DefaultMetrics().IncGlareQueued()
+				if a.metricsPort != nil {
+					a.metricsPort.IncGlareQueued()
+				}
 				for _, t := range publishedTracks {
 					otherSession.QueuePendingTrack(t)
 				}
@@ -422,11 +553,16 @@ func (a *RoomActor) PublishTracks(
 }
 
 func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID string, dtlsRole string, fingerprints []domain.DtlsFingerprintInfo) error {
+	ctx, span := a.startSpan(ctx, "TriggerSubscriberNegotiation", participantID, domain.NegotiationStateWaitingForAnswer)
+	defer span.End()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	session, exists := a.sessions[participantID]
 	if !exists {
+		span.RecordError(domain.ErrParticipantNotFound)
+		span.SetStatus(codes.Error, domain.ErrParticipantNotFound.Error())
 		return domain.ErrParticipantNotFound
 	}
 
@@ -446,11 +582,15 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 	}
 
 	if err := session.AnswerReceivedTransition(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 
-	// Drain any queued pending tracks
+	// Drain any queued pending tracks or deferred ICE restart offer
 	pending := session.PopPendingTracks()
+	needsIceOffer := session.ConsumePendingIceRestart()
+
 	if len(pending) > 0 {
 		for _, t := range pending {
 			consRes, err := a.mediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
@@ -485,7 +625,9 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 			)
 			p.AddSubscription(consRes.ConsumerID, t.ID)
 		}
+	}
 
+	if len(pending) > 0 || needsIceOffer {
 		if err := session.StartOfferTransition(); err == nil {
 			if session.Responder() != nil {
 				_ = session.Responder().SendSubscriberOffer(session.SlotTable().ListSlots(), p.SID)
@@ -531,12 +673,13 @@ func (a *RoomActor) SetTrackMuted(ctx context.Context, participantID, trackSID s
 		})
 	}
 
-	// Notify other participants that this track was muted
+	// Notify participants via both TrackMuted and ParticipantUpdate so all SDKs stay synchronized
 	for _, s := range a.sessions {
 		if s.Responder() != nil {
 			_ = s.Responder().SendTrackMuted(trackSID, muted)
 		}
 	}
+	a.broadcastParticipantUpdateLocked()
 	return nil
 }
 
@@ -570,30 +713,53 @@ func (a *RoomActor) SetConsumerLayers(ctx context.Context, participantID, consum
 }
 
 func (a *RoomActor) RestartPublisherIce(ctx context.Context, participantID string) (*domain.IceInfo, error) {
+	ctx, span := a.startSpan(ctx, "HandleIceRestart.Publisher", participantID, domain.NegotiationStateStable)
+	defer span.End()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	session, exists := a.sessions[participantID]
 	if !exists {
+		span.RecordError(domain.ErrParticipantNotFound)
+		span.SetStatus(codes.Error, domain.ErrParticipantNotFound.Error())
 		return nil, domain.ErrParticipantNotFound
 	}
 
 	p := session.Participant()
-	return a.transportPort.RestartIce(ctx, a.room.RouterID, p.PublisherTransportID)
+	pubTransport := session.PubTransport()
+	iceInfo, err := a.transportPort.RestartIce(ctx, a.room.RouterID, p.PublisherTransportID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	if pubTransport != nil {
+		pubTransport.IceUfrag = iceInfo.IceUfrag
+		pubTransport.IcePwd = iceInfo.IcePwd
+	}
+	return iceInfo, nil
 }
 
 func (a *RoomActor) RestartSubscriberIce(ctx context.Context, participantID string) (*domain.IceInfo, error) {
+	ctx, span := a.startSpan(ctx, "HandleIceRestart.Subscriber", participantID, domain.NegotiationStateStable)
+	defer span.End()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	session, exists := a.sessions[participantID]
 	if !exists {
+		span.RecordError(domain.ErrParticipantNotFound)
+		span.SetStatus(codes.Error, domain.ErrParticipantNotFound.Error())
 		return nil, domain.ErrParticipantNotFound
 	}
 
 	p := session.Participant()
 	iceInfo, err := a.transportPort.RestartIce(ctx, a.room.RouterID, p.SubscriberTransportID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
@@ -603,13 +769,15 @@ func (a *RoomActor) RestartSubscriberIce(ctx context.Context, participantID stri
 		subTransport.IcePwd = iceInfo.IcePwd
 	}
 
-	// Send updated subscriber offer with new ICE credentials
+	// Send updated subscriber offer with new ICE credentials or queue if WaitingForAnswer
 	if session.State() == domain.NegotiationStateStable {
 		if err := session.StartOfferTransition(); err == nil {
 			if session.Responder() != nil {
 				_ = session.Responder().SendSubscriberOffer(session.SlotTable().ListSlots(), p.SID)
 			}
 		}
+	} else if session.State() == domain.NegotiationStateWaitingForAnswer {
+		session.MarkPendingIceRestart()
 	}
 
 	return iceInfo, nil
@@ -644,4 +812,51 @@ func (a *RoomActor) Close(ctx context.Context) error {
 		_ = a.routerPort.CloseRouter(ctx, a.room.RouterID)
 	}
 	return nil
+}
+
+// HandleNodeEvent processes media engine events (ActiveSpeaker, MediaScore, LayerChanged, ResourceClosed) for this room.
+func (a *RoomActor) HandleNodeEvent(ctx context.Context, evt *domain.NodeEvent) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.closed || evt == nil {
+		return
+	}
+
+	if evt.ActiveSpeaker != nil {
+		slog.Debug("active speaker detected in room",
+			"room_id", a.room.ID,
+			"peer_id", evt.ActiveSpeaker.PeerID,
+			"producer_id", evt.ActiveSpeaker.ProducerID,
+			"volume_dbfs", evt.ActiveSpeaker.VolumeDBFS,
+		)
+	}
+
+	if evt.MediaScore != nil {
+		slog.Debug("media score updated",
+			"room_id", a.room.ID,
+			"peer_id", evt.MediaScore.PeerID,
+			"resource_id", evt.MediaScore.ResourceID,
+			"score", evt.MediaScore.Score,
+		)
+	}
+
+	if evt.LayerChanged != nil {
+		slog.Debug("consumer layer changed",
+			"room_id", a.room.ID,
+			"peer_id", evt.LayerChanged.PeerID,
+			"consumer_id", evt.LayerChanged.ConsumerID,
+			"spatial_layer", evt.LayerChanged.CurrentSpatialLayer,
+			"temporal_layer", evt.LayerChanged.CurrentTemporalLayer,
+		)
+	}
+
+	if evt.ResourceClosed != nil {
+		slog.Warn("media engine resource closed unexpectedly",
+			"room_id", a.room.ID,
+			"resource_type", evt.ResourceClosed.ResourceType,
+			"resource_id", evt.ResourceClosed.ResourceID,
+			"reason", evt.ResourceClosed.Reason,
+		)
+	}
 }

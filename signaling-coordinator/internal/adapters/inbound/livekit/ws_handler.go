@@ -119,11 +119,17 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	type pendingAddTrackInfo struct {
-		sid  string
-		cid  string
-		kind domain.TrackKind
+		sid    string
+		cid    string
+		kind   domain.TrackKind
+		name   string
+		source string
+		width  uint32
+		height uint32
 	}
 	var pendingAddTracks []pendingAddTrackInfo
+	publishedMIDs := make(map[string]string)
+	publishedSSRCs := make(map[uint32]string)
 
 	// 2. Main incoming message read loop
 	for {
@@ -181,12 +187,29 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			trackCmds := make([]domain.TrackPublishCommand, 0, len(parsed.Tracks))
 			midToTrackId := make(map[string]string)
 			for _, t := range parsed.Tracks {
+				var existingSID string
+				if t.MID != "" {
+					existingSID = publishedMIDs[t.MID]
+				}
+				if existingSID == "" && t.SSRC != 0 {
+					existingSID = publishedSSRCs[t.SSRC]
+				}
+
 				var assignedSID string
-				for i, pat := range pendingAddTracks {
-					if pat.kind == t.Kind {
-						assignedSID = pat.sid
-						pendingAddTracks = append(pendingAddTracks[:i], pendingAddTracks[i+1:]...)
-						break
+				var patInfo pendingAddTrackInfo
+
+				if existingSID != "" {
+					// Track was previously published; retain its existing SID without consuming new pendingAddTracks
+					assignedSID = existingSID
+				} else {
+					// New track in renegotiation or initial publish; allocate from pendingAddTracks
+					for i, pat := range pendingAddTracks {
+						if pat.kind == t.Kind {
+							assignedSID = pat.sid
+							patInfo = pat
+							pendingAddTracks = append(pendingAddTracks[:i], pendingAddTracks[i+1:]...)
+							break
+						}
 					}
 				}
 
@@ -200,12 +223,20 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					ClockRate:         t.ClockRate,
 					CName:             t.CName,
 					RtpParametersJSON: t.RtpParametersJSON,
+					Name:              patInfo.name,
+					Source:            patInfo.source,
+					Width:             patInfo.width,
+					Height:            patInfo.height,
 				}
 
 				if assignedSID != "" {
 					trackCmd.TrackSID = assignedSID
 					if t.MID != "" {
 						midToTrackId[t.MID] = assignedSID
+						publishedMIDs[t.MID] = assignedSID
+					}
+					if t.SSRC != 0 {
+						publishedSSRCs[t.SSRC] = assignedSID
 					}
 				} else {
 					if t.MID != "" {
@@ -268,10 +299,25 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if addTrack.GetType() == livekitproto.TrackType_VIDEO {
 				kind = domain.TrackKindVideo
 			}
+			sourceStr := "CAMERA"
+			switch addTrack.GetSource() {
+			case livekitproto.TrackSource_CAMERA:
+				sourceStr = "CAMERA"
+			case livekitproto.TrackSource_MICROPHONE:
+				sourceStr = "MICROPHONE"
+			case livekitproto.TrackSource_SCREEN_SHARE:
+				sourceStr = "SCREEN_SHARE"
+			case livekitproto.TrackSource_SCREEN_SHARE_AUDIO:
+				sourceStr = "SCREEN_SHARE_AUDIO"
+			}
 			pendingAddTracks = append(pendingAddTracks, pendingAddTrackInfo{
-				sid:  trackSID,
-				cid:  addTrack.GetCid(),
-				kind: kind,
+				sid:    trackSID,
+				cid:    addTrack.GetCid(),
+				kind:   kind,
+				name:   addTrack.GetName(),
+				source: sourceStr,
+				width:  addTrack.GetWidth(),
+				height: addTrack.GetHeight(),
 			})
 
 			slog.InfoContext(ctx, "received add track request",

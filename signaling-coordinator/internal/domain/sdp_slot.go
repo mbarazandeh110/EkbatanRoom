@@ -10,6 +10,7 @@ type NegotiationState string
 const (
 	NegotiationStateStable           NegotiationState = "stable"
 	NegotiationStateWaitingForAnswer NegotiationState = "waiting_for_answer"
+	NegotiationStateTimedOut         NegotiationState = "timed_out"
 	NegotiationStateClosed           NegotiationState = "closed"
 )
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync"
 
-	"ekbatan-room/signaling-coordinator/internal/adapters/outbound/telemetry"
 	"ekbatan-room/signaling-coordinator/internal/domain"
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
@@ -15,13 +14,15 @@ var _ ports.RoomCoordinatorPort = (*RoomManager)(nil)
 type RoomManager struct {
 	mu sync.RWMutex
 
-	rooms           map[string]*RoomActor
-	routerPort      ports.RouterEnginePort
-	transportPort   ports.TransportEnginePort
-	mediaStreamPort ports.MediaStreamPort
-	iceServers      []domain.IceServer
-	licenseMgr      *LicenseManager
-	nodeRegistry    *NodeRegistry
+	rooms             map[string]*RoomActor
+	routerPort        ports.RouterEnginePort
+	transportPort     ports.TransportEnginePort
+	mediaStreamPort   ports.MediaStreamPort
+	iceServers        []domain.IceServer
+	licenseMgr        *LicenseManager
+	nodeRegistry      *NodeRegistry
+	placementStrategy ports.RoomPlacementStrategy
+	metricsPort       ports.TelemetryMetricsPort
 }
 
 // NewRoomManager creates a new RoomManager with constructor-injected ports.
@@ -45,14 +46,52 @@ func NewRoomManager(
 		mediaStreamPort: mediaStreamPort,
 		iceServers:      iceServers,
 		licenseMgr:      lm,
+		metricsPort:     noopTelemetryMetrics{},
 	}
 }
 
-// SetNodeRegistry associates a NodeRegistry with the RoomManager.
-func (m *RoomManager) SetNodeRegistry(nr *NodeRegistry) {
+// SetMetricsPort sets the TelemetryMetricsPort for metric reporting.
+func (m *RoomManager) SetMetricsPort(mp ports.TelemetryMetricsPort) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if mp == nil {
+		m.metricsPort = noopTelemetryMetrics{}
+	} else {
+		m.metricsPort = mp
+	}
+}
+
+// SetPlacementStrategy overrides or sets the room placement strategy.
+func (m *RoomManager) SetPlacementStrategy(ps ports.RoomPlacementStrategy) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.placementStrategy = ps
+}
+
+// SetNodeRegistry associates a NodeRegistry with the RoomManager, wires default placement, and registers event handler.
+func (m *RoomManager) SetNodeRegistry(nr *NodeRegistry) {
+	m.mu.Lock()
 	m.nodeRegistry = nr
+	if m.placementStrategy == nil && nr != nil {
+		m.placementStrategy = NewDefaultPlacementStrategy(nr)
+	}
+	m.mu.Unlock()
+
+	if nr != nil {
+		nr.SetEventHandler(NodeEventHandlerFunc(func(ctx context.Context, nodeID string, evt *domain.NodeEvent) {
+			if evt == nil || evt.RouterID == "" {
+				return
+			}
+			m.mu.RLock()
+			defer m.mu.RUnlock()
+			for _, actor := range m.rooms {
+				if actor.RouterID() == evt.RouterID {
+					actor.HandleNodeEvent(ctx, evt)
+					break
+				}
+			}
+		}))
+	}
 }
 
 // NodeRegistry returns the associated NodeRegistry, if any.
@@ -109,7 +148,17 @@ func (m *RoomManager) Join(
 		}
 	}
 
-	// 2. Count total active peers to enforce max_concurrent_peers (lock-free via atomic counts)
+	// 2. Room placement check
+	if isNewRoom && m.placementStrategy != nil {
+		if _, err := m.placementStrategy.SelectNodeForNewRoom(ctx, roomID); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+	} else if !isNewRoom && m.placementStrategy != nil {
+		_, _, _ = m.placementStrategy.ResolveNodeForPeerJoin(ctx, roomID, participantID)
+	}
+
+	// 3. Count total active peers to enforce max_concurrent_peers
 	totalPeers := 0
 	for _, a := range m.rooms {
 		totalPeers += a.ParticipantCount()
@@ -122,13 +171,14 @@ func (m *RoomManager) Join(
 			m.transportPort,
 			m.mediaStreamPort,
 			m.iceServers,
+			m.metricsPort,
 		)
 		m.rooms[roomID] = actor
-		telemetry.DefaultMetrics().IncActiveRooms()
+		m.metricsPort.IncActiveRooms()
 	}
 	m.mu.Unlock()
 
-	// 3. Check peer limit without holding global m.mu lock
+	// 4. Check peer limit without holding global m.mu lock
 	if m.licenseMgr != nil {
 		isNewPeer := true
 		if !isNewRoom {
@@ -142,7 +192,7 @@ func (m *RoomManager) Join(
 				if isNewRoom {
 					m.mu.Lock()
 					delete(m.rooms, roomID)
-					telemetry.DefaultMetrics().DecActiveRooms()
+					m.metricsPort.DecActiveRooms()
 					m.mu.Unlock()
 					_ = actor.Close(ctx)
 				}
@@ -156,7 +206,7 @@ func (m *RoomManager) Join(
 		m.mu.Lock()
 		if isNewRoom && actor.ParticipantCount() == 0 {
 			delete(m.rooms, roomID)
-			telemetry.DefaultMetrics().DecActiveRooms()
+			m.metricsPort.DecActiveRooms()
 			_ = actor.Close(ctx)
 		}
 		m.mu.Unlock()
@@ -176,7 +226,7 @@ func (m *RoomManager) Leave(ctx context.Context, roomID, participantID string) e
 	m.mu.Lock()
 	if actor.ParticipantCount() == 0 {
 		delete(m.rooms, roomID)
-		telemetry.DefaultMetrics().DecActiveRooms()
+		m.metricsPort.DecActiveRooms()
 		_ = actor.Close(ctx)
 	}
 	m.mu.Unlock()
@@ -192,7 +242,7 @@ func (m *RoomManager) Close(ctx context.Context) error {
 	for roomID, actor := range m.rooms {
 		_ = actor.Close(ctx)
 		delete(m.rooms, roomID)
-		telemetry.DefaultMetrics().DecActiveRooms()
+		m.metricsPort.DecActiveRooms()
 	}
 	return nil
 }
