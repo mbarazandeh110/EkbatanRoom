@@ -1178,7 +1178,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-024
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -1222,4 +1222,12 @@ STATUS: OPEN
    - Retain `"encrypt": false` on all allowed entries per REQ-023.
 
 4. RESOLUTION & ARCHITECTURAL TRIAGE:
-   - Decision: PENDING
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-024]: In `internal/adapters/inbound/livekit/sdp_mapper.go` (`ParsePublisherOffer`), defined `supportedRtpHeaderExtensionURIs` matching the exact whitelist supported by Mediasoup Rust `RtpHeaderExtensionUri` enum (`sdes:mid`, `sdes:rtp-stream-id`, `sdes:repaired-rtp-stream-id`, `abs-send-time`, `transport-wide-cc`, `ssrc-audio-level`, `dependency-descriptor`, `video-orientation`, `abs-capture-time`, `playout-delay`, and `packet-id`).
+     2. In the `a=extmap` parsing loop, filtered out unsupported extension URIs announced by Chromium (such as `urn:ietf:params:rtp-hdrext:toffset`, `video-content-type`, `video-timing`, and `color-space`). This completely eliminates serde deserialization failures (`unknown variant urn:ietf:params:rtp-hdrext:toffset`) and subsequent gRPC `InvalidArgument` errors in `sfu-media-node` when producing video tracks, enabling Alice's `publishTracks()` to succeed immediately.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added `supportedRtpHeaderExtensionURIs` whitelist and filtered `a=extmap` entries during SDP offer parsing.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added unit test `TestSDPMapper_FilterUnsupportedHeaderExtensions_REQ024` asserting that unsupported URIs are stripped while supported URIs are preserved with `"encrypt": false`.
+   - Verification: All tests pass cleanly under `go test -v -race -count=1 ./...` and `go vet ./...` exits 0.
+===================================================================

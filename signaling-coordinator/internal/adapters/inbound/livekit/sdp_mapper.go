@@ -38,6 +38,24 @@ type ParsedSubscriberAnswer struct {
 	RemoteFingerprints []domain.DtlsFingerprintInfo
 }
 
+// supportedRtpHeaderExtensionURIs lists the exact RTP header extension URIs supported
+// by Mediasoup's RtpHeaderExtensionUri enum in sfu-media-node (REQ-024). Any extensions
+// outside this list (e.g. toffset, video-content-type, video-timing, color-space) will
+// trigger deserialization failures in Mediasoup and must be filtered out.
+var supportedRtpHeaderExtensionURIs = map[string]bool{
+	"urn:ietf:params:rtp-hdrext:sdes:mid":                                                       true,
+	"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id":                                            true,
+	"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id":                                   true,
+	"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time":                               true,
+	"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01":               true,
+	"urn:ietf:params:rtp-hdrext:ssrc-audio-level":                                              true,
+	"https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension": true,
+	"urn:3gpp:video-orientation":                                                               true,
+	"http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time":                            true,
+	"http://www.webrtc.org/experiments/rtp-hdrext/playout-delay":                               true,
+	"urn:mediasoup:params:rtp-hdrext:packet-id":                                                true,
+}
+
 // ParsePublisherOffer parses the client's publisher SDP offer.
 func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 	var s sdp.SessionDescription
@@ -403,11 +421,13 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 				fields := strings.Fields(attr.Value)
 				if len(fields) >= 2 {
 					idStr := strings.Split(fields[0], "/")[0]
-					if id, err := strconv.Atoi(idStr); err == nil && !extmapSeen[id] {
+					uri := fields[1]
+					// REQ-024: Only include header extensions supported by Mediasoup's RtpHeaderExtensionUri enum
+					if id, err := strconv.Atoi(idStr); err == nil && !extmapSeen[id] && supportedRtpHeaderExtensionURIs[uri] {
 						extmapSeen[id] = true
 						headerExtensions = append(headerExtensions, map[string]interface{}{
 							"id":      id,
-							"uri":     fields[1],
+							"uri":     uri,
 							"encrypt": false,
 						})
 					}

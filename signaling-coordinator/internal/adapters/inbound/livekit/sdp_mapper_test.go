@@ -802,3 +802,98 @@ a=ssrc-group:FID 918035962 3504424756
 		t.Fatalf("expected RtpParametersJSON to contain \"encrypt\":false, got: %s", track.RtpParametersJSON)
 	}
 }
+
+func TestSDPMapper_FilterUnsupportedHeaderExtensions_REQ024(t *testing.T) {
+	// SDP matching Chromium publisher offer with unsupported WebRTC extension URIs
+	sdpOffer := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE video-0
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:video-0
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:96 VP8/90000
+a=extmap:14 urn:ietf:params:rtp-hdrext:toffset
+a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time
+a=extmap:13 urn:3gpp:video-orientation
+a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=extmap:5 http://www.webrtc.org/experiments/rtp-hdrext/playout-delay
+a=extmap:6 http://www.webrtc.org/experiments/rtp-hdrext/video-content-type
+a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing
+a=extmap:8 http://www.webrtc.org/experiments/rtp-hdrext/color-space
+a=extmap:4 urn:ietf:params:rtp-hdrext:sdes:mid
+a=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id
+a=extmap:11 urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id
+a=ssrc:918035962 cname:1PoCmU0GQ07gag4o
+`
+
+	parsed, err := livekit.ParsePublisherOffer(sdpOffer)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+
+	if len(parsed.Tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(parsed.Tracks))
+	}
+
+	track := parsed.Tracks[0]
+
+	var rtpParams struct {
+		HeaderExtensions []struct {
+			ID      int    `json:"id"`
+			URI     string `json:"uri"`
+			Encrypt bool   `json:"encrypt"`
+		} `json:"headerExtensions"`
+	}
+
+	if err := json.Unmarshal([]byte(track.RtpParametersJSON), &rtpParams); err != nil {
+		t.Fatalf("failed to unmarshal RtpParametersJSON: %v", err)
+	}
+
+	// Unsupported URIs must be excluded
+	unsupportedURIs := []string{
+		"urn:ietf:params:rtp-hdrext:toffset",
+		"http://www.webrtc.org/experiments/rtp-hdrext/video-content-type",
+		"http://www.webrtc.org/experiments/rtp-hdrext/video-timing",
+		"http://www.webrtc.org/experiments/rtp-hdrext/color-space",
+	}
+
+	for _, unsupp := range unsupportedURIs {
+		if strings.Contains(track.RtpParametersJSON, unsupp) {
+			t.Fatalf("RtpParametersJSON must NOT contain unsupported extension URI: %s", unsupp)
+		}
+	}
+
+	// Supported URIs must be retained
+	expectedIDs := map[int]string{
+		2:  "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+		13: "urn:3gpp:video-orientation",
+		3:  "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+		5:  "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay",
+		4:  "urn:ietf:params:rtp-hdrext:sdes:mid",
+		10: "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+		11: "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id",
+	}
+
+	if len(rtpParams.HeaderExtensions) != len(expectedIDs) {
+		t.Fatalf("expected %d supported header extensions, got %d: %+v", len(expectedIDs), len(rtpParams.HeaderExtensions), rtpParams.HeaderExtensions)
+	}
+
+	for _, ext := range rtpParams.HeaderExtensions {
+		expURI, found := expectedIDs[ext.ID]
+		if !found {
+			t.Fatalf("unexpected header extension ID %d with URI %s", ext.ID, ext.URI)
+		}
+		if ext.URI != expURI {
+			t.Fatalf("expected extension ID %d to have URI %s, got %s", ext.ID, expURI, ext.URI)
+		}
+		if ext.Encrypt != false {
+			t.Fatalf("expected extension ID %d to have encrypt: false, got: %v", ext.ID, ext.Encrypt)
+		}
+	}
+}
+
