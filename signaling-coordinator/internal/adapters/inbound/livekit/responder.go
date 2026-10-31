@@ -2,6 +2,7 @@ package livekit
 
 import (
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
@@ -64,6 +65,12 @@ func (r *LiveKitResponder) send(msg *livekitproto.SignalResponse) error {
 	if err != nil {
 		return err
 	}
+
+	writeTimeout := time.Duration(r.cfg.PingTimeout) * time.Second
+	if writeTimeout <= 0 {
+		writeTimeout = 10 * time.Second
+	}
+	_ = r.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 
 	telemetry.DefaultMetrics().RecordWSMessage("livekit", "signal_response", "ok")
 	return r.conn.WriteMessage(websocket.BinaryMessage, data)

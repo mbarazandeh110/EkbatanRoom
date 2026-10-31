@@ -20,6 +20,7 @@ type ParticipantSession struct {
 	slotTable              *domain.SDPSlotTable
 	pendingTracks          []*domain.Track
 	pendingIceRestartOffer bool
+	pendingRenegotiation   bool
 	closed                 bool
 	pubTransportConnected  bool
 	subTransportConnected  bool
@@ -178,6 +179,22 @@ func (s *ParticipantSession) ConsumePendingIceRestart() bool {
 	defer s.mu.Unlock()
 	pending := s.pendingIceRestartOffer
 	s.pendingIceRestartOffer = false
+	return pending
+}
+
+// MarkPendingRenegotiation marks that a renegotiation (e.g. peer left or track removed) is pending once current answer completes.
+func (s *ParticipantSession) MarkPendingRenegotiation() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingRenegotiation = true
+}
+
+// ConsumePendingRenegotiation returns and clears whether a renegotiation was deferred.
+func (s *ParticipantSession) ConsumePendingRenegotiation() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending := s.pendingRenegotiation
+	s.pendingRenegotiation = false
 	return pending
 }
 

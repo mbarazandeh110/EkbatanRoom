@@ -6,19 +6,34 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"sync"
 
 	"ekbatan-room/signaling-coordinator/internal/domain"
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
 
-const (
+var (
 	// SoftThresholdPercent defines the load boundary (70%) after which a node stops receiving new rooms.
 	SoftThresholdPercent float32 = 70.0
 	// HardThresholdPercent defines the load boundary (85%) after which new transports on this node are blocked,
 	// triggering inter-node PipeTransport spillover/cascading.
 	HardThresholdPercent float32 = 85.0
 )
+
+func init() {
+	if val := os.Getenv("SFU_SOFT_THRESHOLD_PERCENT"); val != "" {
+		if parsed, err := strconv.ParseFloat(val, 32); err == nil && parsed > 0 && parsed <= 100 {
+			SoftThresholdPercent = float32(parsed)
+		}
+	}
+	if val := os.Getenv("SFU_HARD_THRESHOLD_PERCENT"); val != "" {
+		if parsed, err := strconv.ParseFloat(val, 32); err == nil && parsed > 0 && parsed <= 100 {
+			HardThresholdPercent = float32(parsed)
+		}
+	}
+}
 
 // EnterprisePlacementStrategy implements ports.RoomPlacementStrategy for the commercial Enterprise edition.
 // It leverages real-time worker loads, capacity weights, and Soft/Hard thresholds for multi-node cascading.
@@ -146,11 +161,15 @@ func (s *EnterprisePlacementStrategy) ResolveNodeForPeerJoin(ctx context.Context
 		if capInfo != nil && !capInfo.IsDraining && capInfo.EffectiveLoadPercent < HardThresholdPercent {
 			return primaryNodeID, "", nil
 		}
+		var loadVal float32 = 0
+		if capInfo != nil {
+			loadVal = capInfo.EffectiveLoadPercent
+		}
 		slog.Warn("primary node for room reached hard threshold or is draining, evaluating spillover node",
 			"room_id", roomID,
 			"peer_id", peerID,
 			"primary_node", primaryNodeID,
-			"effective_load", capInfo.EffectiveLoadPercent,
+			"effective_load", loadVal,
 		)
 	}
 
@@ -192,4 +211,11 @@ func (s *EnterprisePlacementStrategy) ResolveNodeForPeerJoin(ctx context.Context
 	}
 
 	return "", "", domain.ErrNoNodesAvailable
+}
+
+// RemoveRoom cleans up the room's placement record when the room is closed.
+func (s *EnterprisePlacementStrategy) RemoveRoom(roomID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.roomNodes, roomID)
 }

@@ -32,7 +32,7 @@ type LicenseClaims struct {
 
 func main() {
 	genKeys := flag.Bool("gen-keys", false, "Generate new Ed25519 keypair")
-	privHex := flag.String("priv-key", "02dc0bfacd35d5f44baada453877d98d2dfadcfa175d67f211195a6eba102eb4", "Private key in hex")
+	privHex := flag.String("priv-key", "", "Private key in hex (or set EKBATAN_LICENSE_PRIVATE_KEY env var)")
 	customer := flag.String("customer", "enterprise-client", "Customer identifier")
 	tier := flag.String("tier", "enterprise", "License tier (community/enterprise)")
 	days := flag.Int("days", 365, "Validity duration in days (0 for perpetual)")
@@ -54,7 +54,16 @@ func main() {
 		return
 	}
 
-	privSeed, err := hex.DecodeString(*privHex)
+	keyHex := *privHex
+	if keyHex == "" {
+		keyHex = os.Getenv("EKBATAN_LICENSE_PRIVATE_KEY")
+	}
+	if keyHex == "" {
+		fmt.Fprintf(os.Stderr, "Error: private key required. Provide via -priv-key flag or EKBATAN_LICENSE_PRIVATE_KEY env var\n")
+		os.Exit(1)
+	}
+
+	privSeed, err := hex.DecodeString(keyHex)
 	if err != nil || len(privSeed) != 32 {
 		fmt.Fprintf(os.Stderr, "Invalid private key seed: must be 32-byte hex\n")
 		os.Exit(1)

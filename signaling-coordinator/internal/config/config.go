@@ -91,7 +91,7 @@ func DefaultConfig() Config {
 			LogFormat:       "json",
 			LogRawSDP:       false,
 			TracingEnabled:  false,
-			TraceSampleRate: 1.0,
+			TraceSampleRate: 0.1,
 			OtlpEndpoint:    "",
 			MetricsEnabled:  true,
 		},

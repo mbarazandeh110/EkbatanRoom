@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"ekbatan-room/signaling-coordinator/internal/domain"
 	"ekbatan-room/signaling-coordinator/internal/ports"
@@ -116,8 +117,11 @@ func (r *NodeRegistry) RegisterNode(ctx context.Context, nodeID string, client p
 	nodeCtx, cancel := context.WithCancel(ctx)
 	eventsChan, err := client.WatchNodeEvents(nodeCtx, r.coordinatorID, licenseToken)
 	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to initiate watch node events for node %s: %w", nodeID, err)
+		slog.Warn("initial watch node events failed on registration, will retry in background",
+			"node_id", nodeID,
+			"error", err,
+		)
+		eventsChan = nil
 	}
 
 	node := &RegisteredNode{
@@ -140,21 +144,59 @@ func (r *NodeRegistry) RegisterNode(ctx context.Context, nodeID string, client p
 		"cluster_total_nodes", len(r.nodes),
 	)
 
-	// 4. Start background listener for node events
+	// 4. Start background listener for node events with reconnect backoff
 	go r.listenNodeEvents(nodeCtx, nodeID, node, eventsChan)
 
 	return node, nil
 }
 
-func (r *NodeRegistry) listenNodeEvents(ctx context.Context, nodeID string, node *RegisteredNode, eventsChan <-chan *domain.NodeEvent) {
+func (r *NodeRegistry) listenNodeEvents(ctx context.Context, nodeID string, node *RegisteredNode, initialChan <-chan *domain.NodeEvent) {
+	eventsChan := initialChan
+	backoff := 500 * time.Millisecond
+	maxBackoff := 10 * time.Second
+
 	for {
+		if eventsChan == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+
+			licenseToken := ""
+			if r.licenseMgr != nil {
+				licenseToken = r.licenseMgr.GetToken()
+			}
+
+			ch, err := node.Client().WatchNodeEvents(ctx, r.coordinatorID, licenseToken)
+			if err != nil {
+				slog.Debug("retrying watch node events connection", "node_id", nodeID, "error", err, "next_backoff", backoff)
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
+			}
+
+			// Successfully reconnected
+			slog.Info("watch node events connection established", "node_id", nodeID)
+			eventsChan = ch
+			backoff = 500 * time.Millisecond
+
+			// Refresh node capacity upon reconnect
+			if capInfo, err := node.Client().GetNodeCapacity(ctx); err == nil && capInfo != nil {
+				node.updateCapacity(capInfo)
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			return
 		case evt, ok := <-eventsChan:
 			if !ok {
-				slog.Warn("media node event stream terminated", "node_id", nodeID)
-				return
+				slog.Warn("media node event stream terminated, scheduling reconnect", "node_id", nodeID)
+				eventsChan = nil
+				continue
 			}
 			if evt != nil {
 				if evt.NodeCapacity != nil {

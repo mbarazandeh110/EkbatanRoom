@@ -743,5 +743,123 @@ func TestRoomManager_CloseGracefullyReleasesAllRooms(t *testing.T) {
 	}
 }
 
+func TestRoomActor_ProducerResourceClosedEvent_InactivatesSlotAndRenegotiates(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	iceServers := []domain.IceServer{{URLs: []string{"stun:stun.example.com"}}}
+	actor := application.NewRoomActor("room-prod-close", engine, engine, engine, iceServers)
+
+	respAlice := newMockResponder()
+	_, err := actor.Join(ctx, "alice", "Alice", respAlice)
+	if err != nil {
+		t.Fatalf("Alice Join failed: %v", err)
+	}
+
+	respBob := newMockResponder()
+	_, err = actor.Join(ctx, "bob", "Bob", respBob)
+	if err != nil {
+		t.Fatalf("Bob Join failed: %v", err)
+	}
+
+	_, err = actor.PublishTracks(ctx, "alice", "client", nil, []domain.TrackPublishCommand{
+		{
+			Kind:     domain.TrackKindVideo,
+			TrackSID: "TR_alice_cam",
+			Codec:    "VP8",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PublishTracks failed: %v", err)
+	}
+
+	// Verify Bob has an active slot
+	sessBob, _ := actor.GetSession("bob")
+	activeSlots := sessBob.SlotTable().ActiveSlots()
+	if len(activeSlots) != 1 || activeSlots[0].TrackSID != "TR_alice_cam" {
+		t.Fatalf("expected Bob to have active slot for TR_alice_cam, got %+v", activeSlots)
+	}
+
+	sessAlice, _ := actor.GetSession("alice")
+	aliceTracks := sessAlice.Participant().ListTracks()
+	if len(aliceTracks) == 0 {
+		t.Fatalf("expected Alice to have published tracks")
+	}
+	actualProducerID := aliceTracks[0].ID
+
+	// Bob answers initial offer to transition to Stable
+	if err := actor.HandleSubscriberAnswer(ctx, "bob", "client", nil); err != nil {
+		t.Fatalf("Bob HandleSubscriberAnswer failed: %v", err)
+	}
+
+	respBob.offers = nil
+
+	// Simulate SFU node sending ResourceClosed event for Alice's producer
+	actor.HandleNodeEvent(ctx, &domain.NodeEvent{
+		RouterID: actor.RouterID(),
+		ResourceClosed: &domain.ResourceClosedEvent{
+			ResourceType: domain.ResourceTypeProducer,
+			ResourceID:   actualProducerID,
+			Reason:       "network timeout",
+		},
+	})
+
+	// Bob's slot should now be inactivated
+	activeAfter := sessBob.SlotTable().ActiveSlots()
+	if len(activeAfter) != 0 {
+		t.Fatalf("expected Bob to have 0 active slots after producer closed, got %d", len(activeAfter))
+	}
+
+	// Bob should have received a renegotiation subscriber offer
+	if len(respBob.offers) < 1 {
+		t.Fatalf("expected Bob to receive subscriber offer after producer closed, got %d", len(respBob.offers))
+	}
+}
+
+func TestRoomActor_LeaveDuringWaitingForAnswer_PendingRenegotiation(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	iceServers := []domain.IceServer{{URLs: []string{"stun:stun.example.com"}}}
+	actor := application.NewRoomActor("room-pending-reneg", engine, engine, engine, iceServers)
+
+	respAlice := newMockResponder()
+	_, _ = actor.Join(ctx, "alice", "Alice", respAlice)
+	respBob := newMockResponder()
+	_, _ = actor.Join(ctx, "bob", "Bob", respBob)
+
+	// Alice publishes track
+	_, _ = actor.PublishTracks(ctx, "alice", "client", nil, []domain.TrackPublishCommand{
+		{Kind: domain.TrackKindAudio, TrackSID: "TR_alice_mic"},
+	})
+
+	sessBob, _ := actor.GetSession("bob")
+	// Bob is now in WaitingForAnswer because SendSubscriberOffer was sent
+	if sessBob.State() != domain.NegotiationStateWaitingForAnswer {
+		t.Fatalf("expected Bob to be WaitingForAnswer, got %v", sessBob.State())
+	}
+
+	// Now Alice leaves while Bob is WaitingForAnswer
+	respBob.offers = nil
+	_ = actor.Leave(ctx, "alice")
+
+	// Since Bob was WaitingForAnswer, offer was not sent immediately, but pending renegotiation marked
+	if len(respBob.offers) != 0 {
+		t.Fatalf("expected no new offer while Bob is waiting for answer, got %d", len(respBob.offers))
+	}
+
+	// Bob finishes answering the previous offer
+	err := actor.HandleSubscriberAnswer(ctx, "bob", "client", nil)
+	if err != nil {
+		t.Fatalf("HandleSubscriberAnswer failed: %v", err)
+	}
+
+	// Now Bob should have received the deferred renegotiation offer!
+	if len(respBob.offers) != 1 {
+		t.Fatalf("expected Bob to receive deferred renegotiation offer upon answer, got %d", len(respBob.offers))
+	}
+	if sessBob.State() != domain.NegotiationStateWaitingForAnswer {
+		t.Fatalf("expected Bob to enter WaitingForAnswer for the new offer, got %v", sessBob.State())
+	}
+}
+
 
 

@@ -95,6 +95,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	slog.InfoContext(ctx, "livekit participant connecting",
 		"room_id", roomID,
+		"peer_id", identity,
 		"identity", identity,
 		"name", name,
 	)
@@ -104,6 +105,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.ErrorContext(ctx, "livekit join handshake failed",
 			"room_id", roomID,
+			"peer_id", identity,
 			"identity", identity,
 			"error", err,
 		)
@@ -112,6 +114,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.InfoContext(ctx, "livekit participant joined",
 		"room_id", roomID,
+		"peer_id", identity,
 		"identity", identity,
 	)
 	defer func() {
@@ -138,6 +141,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				slog.WarnContext(ctx, "livekit websocket read error",
 					"room_id", roomID,
+					"peer_id", identity,
 					"identity", identity,
 					"error", err,
 				)
@@ -155,6 +159,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := proto.Unmarshal(data, &req); err != nil {
 			slog.ErrorContext(ctx, "livekit proto unmarshal error",
 				"room_id", roomID,
+				"peer_id", identity,
 				"identity", identity,
 				"error", err,
 			)
@@ -168,6 +173,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			offerID := msg.Offer.GetId()
 			slog.DebugContext(ctx, "received publisher offer",
 				"room_id", roomID,
+				"peer_id", identity,
 				"identity", identity,
 				"offer_id", offerID,
 				"sdp", msg.Offer.GetSdp(),
@@ -270,6 +276,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			slog.DebugContext(ctx, "sending publisher answer",
 				"room_id", roomID,
+				"peer_id", identity,
 				"identity", identity,
 				"offer_id", offerID,
 				"sdp", answerSDP,
@@ -322,6 +329,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			slog.InfoContext(ctx, "received add track request",
 				"room_id", roomID,
+				"peer_id", identity,
 				"identity", identity,
 				"cid", addTrack.GetCid(),
 				"track_sid", trackSID,
@@ -356,6 +364,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ansStart := time.Now()
 			slog.DebugContext(ctx, "received subscriber answer",
 				"room_id", roomID,
+				"peer_id", identity,
 				"identity", identity,
 				"sdp", msg.Answer.GetSdp(),
 			)
@@ -386,6 +395,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			target := int(msg.Trickle.GetTarget())
 			slog.DebugContext(ctx, "received trickle candidate",
 				"room_id", roomID,
+				"peer_id", identity,
 				"identity", identity,
 				"target", target,
 			)
@@ -400,6 +410,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case *livekitproto.SignalRequest_Mute:
 			slog.InfoContext(ctx, "livekit mute request",
 				"room_id", roomID,
+				"peer_id", identity,
 				"identity", identity,
 				"track_sid", msg.Mute.GetSid(),
 				"muted", msg.Mute.GetMuted(),
@@ -417,6 +428,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			trackSettings := msg.TrackSetting
 			slog.InfoContext(ctx, "livekit track setting request",
 				"room_id", roomID,
+				"peer_id", identity,
 				"identity", identity,
 				"quality", trackSettings.GetQuality(),
 			)
@@ -445,6 +457,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case *livekitproto.SignalRequest_Leave:
 			slog.InfoContext(ctx, "livekit participant leaving",
 				"room_id", roomID,
+				"peer_id", identity,
 				"identity", identity,
 			)
 			return

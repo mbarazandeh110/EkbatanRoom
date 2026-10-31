@@ -105,16 +105,27 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 		var rtxSSRC uint32
 		cname := "default"
 
+		type fidPair struct {
+			media uint32
+			rtx   uint32
+		}
+		var fidPairs []fidPair
+
 		// 1. Scan for a=ssrc-group:FID <mediaSSRC> <rtxSSRC> first (regardless of order in SDP)
 		for _, attr := range md.Attributes {
 			if strings.EqualFold(attr.Key, "ssrc-group") {
 				fields := strings.Fields(attr.Value)
 				if len(fields) >= 3 && strings.EqualFold(fields[0], "FID") {
-					if mediaVal, err := strconv.ParseUint(fields[1], 10, 32); err == nil && ssrc == 0 {
-						ssrc = uint32(mediaVal)
-					}
-					if rtxVal, err := strconv.ParseUint(fields[2], 10, 32); err == nil && rtxSSRC == 0 {
-						rtxSSRC = uint32(rtxVal)
+					mediaVal, err1 := strconv.ParseUint(fields[1], 10, 32)
+					rtxVal, err2 := strconv.ParseUint(fields[2], 10, 32)
+					if err1 == nil && err2 == nil {
+						fidPairs = append(fidPairs, fidPair{media: uint32(mediaVal), rtx: uint32(rtxVal)})
+						if ssrc == 0 {
+							ssrc = uint32(mediaVal)
+						}
+						if rtxSSRC == 0 {
+							rtxSSRC = uint32(rtxVal)
+						}
 					}
 				}
 			}
@@ -333,7 +344,14 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 				enc := map[string]interface{}{
 					"rid": rid,
 				}
-				if idx == 0 && ssrc > 0 {
+				if idx < len(fidPairs) {
+					enc["ssrc"] = fidPairs[idx].media
+					if fidPairs[idx].rtx > 0 {
+						enc["rtx"] = map[string]interface{}{
+							"ssrc": fidPairs[idx].rtx,
+						}
+					}
+				} else if idx == 0 && ssrc > 0 {
 					enc["ssrc"] = ssrc
 					if rtxSSRC > 0 {
 						enc["rtx"] = map[string]interface{}{
@@ -584,6 +602,8 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 		sdp.Attribute{Key: "ice-options", Value: "trickle"},
 		sdp.Attribute{Key: "ice-lite"},
 		sdp.Attribute{Key: "setup", Value: "actpass"},
+		sdp.Attribute{Key: "extmap", Value: "1 urn:ietf:params:rtp-hdrext:sdes:mid"},
+		sdp.Attribute{Key: "extmap", Value: "2 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"},
 	)
 
 	if fp := selectPrimaryFingerprint(transport.DtlsFingerprints); fp != nil {

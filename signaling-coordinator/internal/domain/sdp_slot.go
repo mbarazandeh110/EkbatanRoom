@@ -130,11 +130,12 @@ func (t *SDPSlotTable) InactivateSlot(consumerID string) (*SDPSlot, bool) {
 
 	for _, slot := range t.slots {
 		if slot.ConsumerID == consumerID && slot.Active {
+			snapshot := *slot
 			slot.Active = false
 			slot.ConsumerID = ""
 			slot.TrackSID = ""
 			slot.ProducerID = ""
-			return slot, true
+			return &snapshot, true
 		}
 	}
 	return nil, false
@@ -147,11 +148,12 @@ func (t *SDPSlotTable) InactivateSlotByTrackSID(trackSID string) (*SDPSlot, bool
 
 	for _, slot := range t.slots {
 		if slot.TrackSID == trackSID && slot.Active {
+			snapshot := *slot
 			slot.Active = false
 			slot.ConsumerID = ""
 			slot.TrackSID = ""
 			slot.ProducerID = ""
-			return slot, true
+			return &snapshot, true
 		}
 	}
 	return nil, false

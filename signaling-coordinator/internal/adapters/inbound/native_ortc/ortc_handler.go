@@ -39,8 +39,8 @@ func (h *NativeOrtcHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	telemetry.DefaultMetrics().IncActiveParticipants("native_ortc")
-	defer telemetry.DefaultMetrics().DecActiveParticipants("native_ortc")
+	telemetry.DefaultMetrics().IncActiveParticipants("ortc")
+	defer telemetry.DefaultMetrics().DecActiveParticipants("ortc")
 
 	// Skeleton message loop for native ORTC protocol
 	for {
@@ -49,7 +49,7 @@ func (h *NativeOrtcHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
-			telemetry.DefaultMetrics().RecordWSMessage("native_ortc", "packet", "ok")
+			telemetry.DefaultMetrics().RecordWSMessage("ortc", "packet", "ok")
 			// Acknowledge received ORTC packet
 			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ack","len":`+strconv.Itoa(len(data))+`}`))
 		}

@@ -10,6 +10,10 @@ import (
 
 var _ ports.RoomCoordinatorPort = (*RoomManager)(nil)
 
+type roomPlacementCleaner interface {
+	RemoveRoom(roomID string)
+}
+
 // RoomManager coordinates room instances and dispatches incoming signaling requests to RoomActors.
 type RoomManager struct {
 	mu sync.RWMutex
@@ -131,6 +135,12 @@ func (m *RoomManager) ActivePeersCount() int {
 	return total
 }
 
+func (m *RoomManager) cleanupRoomPlacementLocked(roomID string) {
+	if cleaner, ok := m.placementStrategy.(roomPlacementCleaner); ok {
+		cleaner.RemoveRoom(roomID)
+	}
+}
+
 func (m *RoomManager) Join(
 	ctx context.Context,
 	roomID, participantID, participantName string,
@@ -149,13 +159,20 @@ func (m *RoomManager) Join(
 	}
 
 	// 2. Room placement check
+	var selectedNodeID string
 	if isNewRoom && m.placementStrategy != nil {
-		if _, err := m.placementStrategy.SelectNodeForNewRoom(ctx, roomID); err != nil {
+		nodeID, err := m.placementStrategy.SelectNodeForNewRoom(ctx, roomID)
+		if err != nil {
 			m.mu.Unlock()
 			return nil, err
 		}
+		selectedNodeID = nodeID
 	} else if !isNewRoom && m.placementStrategy != nil {
-		_, _, _ = m.placementStrategy.ResolveNodeForPeerJoin(ctx, roomID, participantID)
+		_, _, err := m.placementStrategy.ResolveNodeForPeerJoin(ctx, roomID, participantID)
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
 	}
 
 	// 3. Count total active peers to enforce max_concurrent_peers
@@ -165,17 +182,38 @@ func (m *RoomManager) Join(
 	}
 
 	if isNewRoom {
+		routerPort := m.routerPort
+		transportPort := m.transportPort
+		mediaStreamPort := m.mediaStreamPort
+
+		if selectedNodeID != "" && m.nodeRegistry != nil {
+			if node, err := m.nodeRegistry.GetNode(selectedNodeID); err == nil && node != nil {
+				client := node.Client()
+				if rp, ok := client.(ports.RouterEnginePort); ok {
+					routerPort = rp
+				}
+				if tp, ok := client.(ports.TransportEnginePort); ok {
+					transportPort = tp
+				}
+				if mp, ok := client.(ports.MediaStreamPort); ok {
+					mediaStreamPort = mp
+				}
+			}
+		}
+
 		actor = NewRoomActor(
 			roomID,
-			m.routerPort,
-			m.transportPort,
-			m.mediaStreamPort,
+			routerPort,
+			transportPort,
+			mediaStreamPort,
 			m.iceServers,
 			m.metricsPort,
 		)
 		m.rooms[roomID] = actor
 		m.metricsPort.IncActiveRooms()
 	}
+
+	actor.BeginJoin()
 	m.mu.Unlock()
 
 	// 4. Check peer limit without holding global m.mu lock
@@ -189,23 +227,27 @@ func (m *RoomManager) Join(
 
 		if isNewPeer {
 			if err := m.licenseMgr.CheckCanJoinPeer(totalPeers); err != nil {
-				if isNewRoom {
-					m.mu.Lock()
+				actor.EndJoin()
+				m.mu.Lock()
+				if isNewRoom && actor.IsEmptyAndIdle() {
 					delete(m.rooms, roomID)
+					m.cleanupRoomPlacementLocked(roomID)
 					m.metricsPort.DecActiveRooms()
-					m.mu.Unlock()
 					_ = actor.Close(ctx)
 				}
+				m.mu.Unlock()
 				return nil, err
 			}
 		}
 	}
 
 	res, err := actor.Join(ctx, participantID, participantName, responder)
+	actor.EndJoin()
 	if err != nil {
 		m.mu.Lock()
-		if isNewRoom && actor.ParticipantCount() == 0 {
+		if isNewRoom && actor.IsEmptyAndIdle() {
 			delete(m.rooms, roomID)
+			m.cleanupRoomPlacementLocked(roomID)
 			m.metricsPort.DecActiveRooms()
 			_ = actor.Close(ctx)
 		}
@@ -224,8 +266,9 @@ func (m *RoomManager) Leave(ctx context.Context, roomID, participantID string) e
 
 	// Clean up empty room so room quota is immediately reclaimed
 	m.mu.Lock()
-	if actor.ParticipantCount() == 0 {
+	if actor.IsEmptyAndIdle() {
 		delete(m.rooms, roomID)
+		m.cleanupRoomPlacementLocked(roomID)
 		m.metricsPort.DecActiveRooms()
 		_ = actor.Close(ctx)
 	}
@@ -242,6 +285,7 @@ func (m *RoomManager) Close(ctx context.Context) error {
 	for roomID, actor := range m.rooms {
 		_ = actor.Close(ctx)
 		delete(m.rooms, roomID)
+		m.cleanupRoomPlacementLocked(roomID)
 		m.metricsPort.DecActiveRooms()
 	}
 	return nil

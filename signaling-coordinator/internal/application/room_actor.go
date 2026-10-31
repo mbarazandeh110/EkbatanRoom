@@ -37,6 +37,7 @@ type RoomActor struct {
 	room             *domain.Room
 	sessions         map[string]*ParticipantSession
 	participantCount atomic.Int64
+	inFlightJoins    atomic.Int64
 	routerPort       ports.RouterEnginePort
 	transportPort    ports.TransportEnginePort
 	mediaStreamPort  ports.MediaStreamPort
@@ -140,6 +141,20 @@ func (a *RoomActor) RouterID() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.room.RouterID
+}
+
+func (a *RoomActor) BeginJoin() {
+	a.inFlightJoins.Add(1)
+}
+
+func (a *RoomActor) EndJoin() {
+	a.inFlightJoins.Add(-1)
+}
+
+func (a *RoomActor) IsEmptyAndIdle() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.sessions) == 0 && a.inFlightJoins.Load() == 0
 }
 
 func (a *RoomActor) Join(
@@ -332,11 +347,15 @@ func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) error
 				otherSession.Participant().RemoveSubscription(slot.ConsumerID)
 			}
 		}
-		if inactivatedCount > 0 && otherSession.State() == domain.NegotiationStateStable {
-			if err := otherSession.StartOfferTransition(); err == nil {
-				if otherSession.Responder() != nil {
-					_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), otherSession.Participant().SID)
+		if inactivatedCount > 0 {
+			if otherSession.State() == domain.NegotiationStateStable {
+				if err := otherSession.StartOfferTransition(); err == nil {
+					if otherSession.Responder() != nil {
+						_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), otherSession.Participant().SID)
+					}
 				}
+			} else {
+				otherSession.MarkPendingRenegotiation()
 			}
 		}
 	}
@@ -429,12 +448,10 @@ func (a *RoomActor) PublishTracks(
 	// 2. Produce each NEW track on SFU node
 	for _, tc := range tracks {
 		var alreadyPublished *domain.Track
-		if tc.SSRC > 0 {
-			for _, existing := range p.ListTracks() {
-				if existing.SSRC == tc.SSRC {
-					alreadyPublished = existing
-					break
-				}
+		for _, existing := range p.ListTracks() {
+			if (tc.SSRC > 0 && existing.SSRC == tc.SSRC) || (tc.TrackSID != "" && existing.SID == tc.TrackSID) {
+				alreadyPublished = existing
+				break
 			}
 		}
 		if alreadyPublished != nil {
@@ -543,7 +560,7 @@ func (a *RoomActor) PublishTracks(
 
 			if err := otherSession.StartOfferTransition(); err == nil {
 				if otherSession.Responder() != nil {
-					_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), p.SID)
+					_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), otherSession.Participant().SID)
 				}
 			}
 		}
@@ -587,9 +604,10 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 		return err
 	}
 
-	// Drain any queued pending tracks or deferred ICE restart offer
+	// Drain any queued pending tracks or deferred ICE restart offer or pending renegotiation
 	pending := session.PopPendingTracks()
 	needsIceOffer := session.ConsumePendingIceRestart()
+	needsRenegotiation := session.ConsumePendingRenegotiation()
 
 	if len(pending) > 0 {
 		for _, t := range pending {
@@ -607,7 +625,11 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 
 			pubSID := t.PublisherSID
 			if pubSID == "" {
-				pubSID = p.SID
+				if pubSess, ok := a.sessions[t.PublisherID]; ok {
+					pubSID = pubSess.Participant().SID
+				} else {
+					pubSID = p.SID
+				}
 			}
 
 			session.SlotTable().AllocOrRecycleSlot(
@@ -627,7 +649,7 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 		}
 	}
 
-	if len(pending) > 0 || needsIceOffer {
+	if len(pending) > 0 || needsIceOffer || needsRenegotiation {
 		if err := session.StartOfferTransition(); err == nil {
 			if session.Responder() != nil {
 				_ = session.Responder().SendSubscriberOffer(session.SlotTable().ListSlots(), p.SID)
@@ -858,5 +880,40 @@ func (a *RoomActor) HandleNodeEvent(ctx context.Context, evt *domain.NodeEvent) 
 			"resource_id", evt.ResourceClosed.ResourceID,
 			"reason", evt.ResourceClosed.Reason,
 		)
+		if evt.ResourceClosed.ResourceType == domain.ResourceTypeProducer {
+			producerID := evt.ResourceClosed.ResourceID
+			var targetTrackSID string
+			for _, session := range a.sessions {
+				p := session.Participant()
+				for _, tr := range p.ListTracks() {
+					if tr.ID == producerID {
+						targetTrackSID = tr.SID
+						_, _ = p.RemoveTrack(producerID)
+						break
+					}
+				}
+				if targetTrackSID != "" {
+					break
+				}
+			}
+
+			if targetTrackSID != "" {
+				for _, otherSession := range a.sessions {
+					if slot, ok := otherSession.SlotTable().InactivateSlotByTrackSID(targetTrackSID); ok {
+						otherSession.Participant().RemoveSubscription(slot.ConsumerID)
+						if otherSession.State() == domain.NegotiationStateStable {
+							if err := otherSession.StartOfferTransition(); err == nil {
+								if otherSession.Responder() != nil {
+									_ = otherSession.Responder().SendSubscriberOffer(otherSession.SlotTable().ListSlots(), otherSession.Participant().SID)
+								}
+							}
+						} else {
+							otherSession.MarkPendingRenegotiation()
+						}
+					}
+				}
+				a.broadcastParticipantUpdateLocked()
+			}
+		}
 	}
 }

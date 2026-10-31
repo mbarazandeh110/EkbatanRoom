@@ -61,3 +61,10 @@ func (s *CommunityPlacementStrategy) ResolveNodeForPeerJoin(ctx context.Context,
 	nodeID, err := s.SelectNodeForNewRoom(ctx, roomID)
 	return nodeID, "", err
 }
+
+// RemoveRoom cleans up the room's placement record when the room is closed.
+func (s *CommunityPlacementStrategy) RemoveRoom(roomID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.roomNodes, roomID)
+}

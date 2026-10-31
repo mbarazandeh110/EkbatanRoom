@@ -182,10 +182,9 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%s", cfg.Server.Port),
-		Handler:      mux,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
+		Addr:              fmt.Sprintf(":%s", cfg.Server.Port),
+		Handler:           mux,
+		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 	}
 
 	// 7. Graceful shutdown handler
