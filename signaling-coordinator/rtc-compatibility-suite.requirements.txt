@@ -1148,16 +1148,19 @@ STATUS: OPEN
      1. **RTX Codec PT Lookup by `apt`:**
         When adding the `video/rtx` codec to `codecs`, lookup the RTX payload type where `fmtp.apt == primaryMediaCodec.payloadType`.
         For VP8 (PT 96), set `payloadType: 97` (matching `a=fmtp:97 apt=96`), NOT 103.
-     2. **Populate `headerExtensions`:**
-        Parse all `a=extmap:<id> <uri>` from the media section and populate `headerExtensions`:
+     2. **Populate `headerExtensions` (with required `encrypt: false` field):**
+        Parse all `a=extmap:<id> <uri>` from the media section and populate `headerExtensions`.
+        IMPORTANT: In Mediasoup Rust `RtpHeaderExtensionParameters`, `encrypt` is a required boolean field (without `#[serde(default)]`). Each entry MUST include `"encrypt": false`:
         ```json
         "headerExtensions": [
-          {"id": 4, "uri": "urn:ietf:params:rtp-hdrext:sdes:mid"},
-          {"id": 2, "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"},
-          {"id": 3, "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"}
+          {"id": 4, "uri": "urn:ietf:params:rtp-hdrext:sdes:mid", "encrypt": false},
+          {"id": 2, "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time", "encrypt": false},
+          {"id": 3, "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01", "encrypt": false}
         ]
         ```
         (or all supported URIs present in the offer).
+   - Error encountered when `encrypt` is missing:
+     `rpc error: code = InvalidArgument desc = Invalid rtp_parameters_json: missing field encrypt at line 1 column 299`
    - This ensures Mediasoup registers the producer with exact RFC 4588 RTX parameters and active RTP header extensions, allowing `CreateRtpStream` to instantiate the media stream for VP8 (SSRC `918035962`), forward packets to Bob, and render video frames.
 
 4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
