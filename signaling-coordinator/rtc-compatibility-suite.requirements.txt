@@ -1231,3 +1231,60 @@ STATUS: IMPLEMENTED
      - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added unit test `TestSDPMapper_FilterUnsupportedHeaderExtensions_REQ024` asserting that unsupported URIs are stripped while supported URIs are preserved with `"encrypt": false`.
    - Verification: All tests pass cleanly under `go test -v -race -count=1 ./...` and `go vet ./...` exits 0.
 ===================================================================
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-025
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | WebRTC SDP Negotiation] Exclude `video/red` and `video/ulpfec` codecs from publisher video SDP answer in `GeneratePublisherAnswer`
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In Gate 2 test (`02-bidirectional-rtp.spec.ts`), audio transmission works with 100% fidelity.
+   - For video, Alice encodes and sends 124KB of VP8 video. However, `sfu-media-node` (Mediasoup worker) drops every video packet with:
+     ```log
+     WARN: RTC::Producer::ReceiveRtpPacket() | no stream found for received packet [ssrc:1953789974]
+     DEBUG: RTC::Producer::GetRtpStream() | ignoring RTX packet for not yet created RtpStream (ssrc lookup)
+     ```
+   - Tracing of the WebRTC negotiation and Mediasoup packet dispatch explains the root cause:
+     1. In Alice's publisher SDP offer, Chromium includes standard recovery codecs:
+        ```sdp
+        m=video 9 UDP/TLS/RTP/SAVPF 96 97 39 40 98 99 100 101 102 103 104
+        a=rtpmap:96 VP8/90000
+        a=rtpmap:97 rtx/90000
+        a=fmtp:97 apt=96
+        a=rtpmap:102 red/90000
+        a=rtpmap:103 rtx/90000
+        a=fmtp:103 apt=102
+        a=rtpmap:104 ulpfec/90000
+        ```
+     2. In `internal/adapters/inbound/livekit/sdp_mapper.go` (`GeneratePublisherAnswer`), the coordinator currently mirrors all video codecs from the offer into the publisher answer:
+        ```sdp
+        m=video 47894 UDP/TLS/RTP/SAVPF 96 97 39 40 98 99 100 101 102 103 104
+        ...
+        a=rtpmap:102 red/90000
+        a=rtpmap:104 ulpfec/90000
+        ```
+     3. Per RFC 2198 (RED) and RFC 5109 (ULPFEC), when `red/90000` and `ulpfec/90000` are negotiated in an SDP answer, Chromium wraps all outgoing primary video RTP packets inside a RED container and stamps the RTP packet header with **Payload Type 102 (RED)** rather than 96 (VP8).
+     4. However, `signaling-coordinator` registers the video producer with `sfu-media-node` using `codecs: [{"payloadType": 96, "mimeType": "video/VP8"}, {"payloadType": 97, "mimeType": "video/rtx"}]`. Mediasoup's SFU router does not support or unwrap `video/red`.
+     5. When Mediasoup receives Alice's video packets, `packet->GetPayloadType()` is **102**. In `Producer::GetRtpStream`:
+        ```cpp
+        const bool isMediaPacket = (mediaCodec->payloadType == payloadType); // 96 == 102 -> false
+        ```
+        Because `isMediaPacket` evaluates to `false`, `CreateRtpStream` is never called, and the packet is dropped with `no stream found for received packet [ssrc:1953789974]`.
+     6. Retransmission (RTX) packets arrive with PT 97, matching `rtxCodec->payloadType: 97`. But because the primary media stream was never created, Mediasoup logs `ignoring RTX packet for not yet created RtpStream (ssrc lookup)`.
+   - In official LiveKit server, publisher answers for video never include `red` or `ulpfec`. Loss recovery is handled exclusively via NACK / PLI / FIR and RTX (RFC 4588).
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`GeneratePublisherAnswer`):
+     1. When constructing the answer for video media sections, filter out `red` and `ulpfec` codecs (and any RTX codecs whose `apt` points to RED).
+     2. Specifically, exclude payload types corresponding to `video/red`, `video/ulpfec`, and their RTX pairs from the `m=video` line and from `a=rtpmap` / `a=fmtp` / `a=rtcp-fb` lines.
+     3. Keep only the supported primary video codecs (such as `VP8` PT 96 with its RTX PT 97).
+   - When Chromium receives an answer without `red` or `ulpfec`, it transmits native VP8 RTP packets with **Payload Type 96**.
+   - Mediasoup will match `payloadType == 96`, execute `CreateRtpStream`, register the incoming stream, and forward video frames to Bob, enabling `waitForRemoteTrack('video')` and video rendering assertions to pass.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: PENDING

@@ -1,0 +1,67 @@
+# ==============================================================================
+# SFU Media Node Configuration File (YAML)
+# ==============================================================================
+
+network:
+  listen_ip: "0.0.0.0"
+  announced_ip: "127.0.0.1"
+  rtc_min_port: 40000
+  rtc_max_port: 49999
+  grpc_port: 50051
+
+worker:
+  worker_count: 1
+  capacity_weight: 1000
+  spillover_threshold_percent: 80.0
+  log_level: "debug"
+  log_tags:
+    - info
+    - ice
+    - dtls
+    - rtp
+    - srtp
+    - rtcp
+    - rtx
+    - bwe
+    - score
+  dtls_certificate_file: null
+  dtls_private_key_file: null
+
+webrtc_transport:
+  initial_available_outgoing_bitrate: 1000000
+  max_incoming_bitrate: null
+  min_outgoing_bitrate: null
+  max_outgoing_bitrate: null
+  max_send_message_size: 5000000
+  max_receive_message_size: 5000000
+  sctp_send_buffer_size: 7000000
+  sctp_per_stream_send_queue_limit: 5000000
+  sctp_max_receiver_window_buffer_size: 7000000
+  send_buffer_size: null
+  recv_buffer_size: null
+
+plain_transport:
+  max_send_message_size: 5000000
+  max_receive_message_size: 5000000
+  sctp_send_buffer_size: 7000000
+
+audio_level_observer:
+  interval_ms: 500
+  threshold_dbov: -80
+
+router_codecs:
+  enable_opus: true
+  enable_vp8: true
+  enable_h264: true
+  enable_vp9: false
+  google_start_bitrate: 1000
+
+observability:
+  log_level: "debug"
+  log_format: "json"
+  metrics_enabled: true
+  metrics_addr: "0.0.0.0:9090"
+  tracing_enabled: false
+  otlp_endpoint: "http://localhost:4317"
+  trace_sample_rate: 1.0
+  log_raw_sdp: true
