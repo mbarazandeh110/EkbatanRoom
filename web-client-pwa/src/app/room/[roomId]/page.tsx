@@ -47,10 +47,28 @@ export default function RoomPage({
     initialCameraEnabled: boolean;
     initialMicEnabled: boolean;
   }) => {
-    // Connect to room engine
+    // 1. Request signed token from /api/token
+    const identity = `${options.participantName.toLowerCase().replace(/[^a-z0-9]/g, "-") || "user"}-${Math.random().toString(36).substring(2, 6)}`;
+    const tokenRes = await fetch("/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        room: roomId,
+        identity,
+        name: options.participantName,
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      throw new Error(`Failed to obtain access token: ${tokenRes.statusText}`);
+    }
+
+    const { token, url } = await tokenRes.json();
+
+    // 2. Connect to room engine with valid JWT
     await controller.joinRoom({
-      url: process.env.NEXT_PUBLIC_LIVEKIT_WS_URL || "ws://localhost:7880",
-      token: "demo-token",
+      url: url || process.env.NEXT_PUBLIC_LIVEKIT_WS_URL || "ws://localhost:7880",
+      token,
       roomName: roomId,
       participantName: options.participantName,
     });
