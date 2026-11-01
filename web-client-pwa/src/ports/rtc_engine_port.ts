@@ -24,6 +24,7 @@ export interface ConnectOptions {
   token: string;
   roomName?: string;
   participantName?: string;
+  lanIp?: string;
 }
 
 export interface PublishTrackOptions {

@@ -26,6 +26,48 @@ import {
 } from "../../ports/rtc_engine_port";
 import { TelemetryPort } from "../../ports/telemetry_port";
 
+let isPeerConnectionPatched = false;
+let currentTargetLanIp: string | null = null;
+
+function ensurePeerConnectionPatched(lanIp?: string) {
+  if (lanIp) {
+    currentTargetLanIp = lanIp;
+  }
+  if (
+    typeof window === "undefined" ||
+    !window.RTCPeerConnection ||
+    isPeerConnectionPatched
+  ) {
+    return;
+  }
+  isPeerConnectionPatched = true;
+
+  const origSetRemote = window.RTCPeerConnection.prototype.setRemoteDescription;
+  window.RTCPeerConnection.prototype.setRemoteDescription = async function (desc) {
+    if (currentTargetLanIp && desc && desc.sdp && desc.sdp.includes("127.0.0.1")) {
+      const rewrittenSdp = desc.sdp.replaceAll("127.0.0.1", currentTargetLanIp);
+      return (origSetRemote as any).call(this, { type: desc.type, sdp: rewrittenSdp });
+    }
+    return (origSetRemote as any).call(this, desc);
+  };
+
+  const origAddIce = window.RTCPeerConnection.prototype.addIceCandidate;
+  window.RTCPeerConnection.prototype.addIceCandidate = async function (cand) {
+    if (
+      currentTargetLanIp &&
+      cand &&
+      typeof cand === "object" &&
+      "candidate" in cand &&
+      typeof cand.candidate === "string" &&
+      cand.candidate.includes("127.0.0.1")
+    ) {
+      const rewrittenCand = cand.candidate.replaceAll("127.0.0.1", currentTargetLanIp);
+      return (origAddIce as any).call(this, { ...cand, candidate: rewrittenCand });
+    }
+    return (origAddIce as any).call(this, cand);
+  };
+}
+
 export class LiveKitEngineAdapter implements RtcEnginePort {
   private room: Room | null = null;
   private eventListeners: {
@@ -149,6 +191,21 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
     if (!this.room) {
       this.room = this.roomFactory();
       this.bindRoomEvents(this.room);
+    }
+
+    const targetLanIp =
+      options.lanIp ||
+      (typeof process !== "undefined"
+        ? process.env.NEXT_PUBLIC_SFU_ANNOUNCED_IP
+        : undefined) ||
+      (typeof window !== "undefined" &&
+      window.location.hostname !== "localhost" &&
+      /^(\d{1,3}\.){3}\d{1,3}$/.test(window.location.hostname)
+        ? window.location.hostname
+        : undefined);
+
+    if (targetLanIp) {
+      ensurePeerConnectionPatched(targetLanIp);
     }
 
     this.telemetry?.log("info", "livekit_connecting", {

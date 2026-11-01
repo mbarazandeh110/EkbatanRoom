@@ -1,5 +1,32 @@
 import { NextResponse } from "next/server";
 import { SignJWT } from "jose";
+import os from "os";
+
+function getLocalLanIp(): string | undefined {
+  try {
+    const ifaces = os.networkInterfaces();
+    const candidates: string[] = [];
+    for (const [name, list] of Object.entries(ifaces)) {
+      if (!list) continue;
+      for (const iface of list) {
+        if (iface.family === "IPv4" && !iface.internal) {
+          const isVirtual =
+            name.startsWith("docker") ||
+            name.startsWith("br-") ||
+            name.startsWith("veth") ||
+            name.startsWith("tun");
+          if (!isVirtual) {
+            return iface.address;
+          }
+          candidates.push(iface.address);
+        }
+      }
+    }
+    return candidates[0];
+  } catch {
+    return undefined;
+  }
+}
 
 export async function POST(request: Request) {
   const requestId =
@@ -64,10 +91,13 @@ export async function POST(request: Request) {
     };
     console.log(JSON.stringify(logEntry));
 
+    const lanIp = process.env.NEXT_PUBLIC_SFU_ANNOUNCED_IP || getLocalLanIp();
+
     return NextResponse.json(
       {
         token,
         url: wsUrl,
+        lanIp,
       },
       {
         status: 200,

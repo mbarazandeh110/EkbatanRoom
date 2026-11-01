@@ -63,7 +63,7 @@ export default function RoomPage({
       throw new Error(`Failed to obtain access token: ${tokenRes.statusText}`);
     }
 
-    const { token, url } = await tokenRes.json();
+    const { token, url, lanIp } = await tokenRes.json();
 
     // 2. Connect to room engine with valid JWT
     await controller.joinRoom({
@@ -71,6 +71,7 @@ export default function RoomPage({
       token,
       roomName: roomId,
       participantName: options.participantName,
+      lanIp,
     });
 
     // Publish local media tracks if requested
