@@ -897,3 +897,168 @@ a=ssrc:918035962 cname:1PoCmU0GQ07gag4o
 	}
 }
 
+func TestSDPMapper_GeneratePublisherAnswer_ExcludeRedAndUlpfec_REQ025(t *testing.T) {
+	offerWithRedAndUlpfec := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0 1
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=mid:0
+a=sendonly
+a=setup:actpass
+a=rtpmap:111 opus/48000/2
+m=video 9 UDP/TLS/RTP/SAVPF 96 97 39 40 98 99 100 101 102 103 104
+c=IN IP4 0.0.0.0
+a=mid:1
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:96 VP8/90000
+a=rtpmap:97 rtx/90000
+a=fmtp:97 apt=96
+a=rtpmap:39 H264/90000
+a=rtpmap:40 rtx/90000
+a=fmtp:40 apt=39
+a=rtpmap:98 VP9/90000
+a=rtpmap:99 rtx/90000
+a=fmtp:99 apt=98
+a=rtpmap:100 AV1/90000
+a=rtpmap:101 rtx/90000
+a=fmtp:101 apt=100
+a=rtpmap:102 red/90000
+a=rtpmap:103 rtx/90000
+a=fmtp:103 apt=102
+a=rtpmap:104 ulpfec/90000
+a=rtcp-fb:96 nack
+a=rtcp-fb:96 nack pli
+a=rtcp-fb:102 nack
+a=rtcp-fb:104 nack
+a=rtcp-fb:* goog-remb
+a=extmap:4 urn:ietf:params:rtp-hdrext:sdes:mid
+a=ssrc:918035962 cname:test-cname
+a=ssrc:3504424756 cname:test-cname
+a=ssrc-group:FID 918035962 3504424756
+`
+
+	transport := &domain.TransportInfo{
+		TransportID: "pub-transport-req025",
+		IceUfrag:    "server-ufrag",
+		IcePwd:      "server-pwd",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00"},
+		},
+	}
+
+	answer, err := livekit.GeneratePublisherAnswer(offerWithRedAndUlpfec, transport)
+	if err != nil {
+		t.Fatalf("GeneratePublisherAnswer failed: %v", err)
+	}
+
+	// 1. Audio m-line must be retained
+	if !strings.Contains(answer, "m=audio 9 UDP/TLS/RTP/SAVPF 111") {
+		t.Fatalf("expected audio m-line retained in answer, got:\n%s", answer)
+	}
+	if !strings.Contains(answer, "a=rtpmap:111 opus/48000/2") {
+		t.Fatalf("expected audio rtpmap in answer, got:\n%s", answer)
+	}
+
+	// 2. Video m-line must NOT contain excluded payload types 102 (red), 103 (rtx for red), 104 (ulpfec)
+	expectedVideoMLine := "m=video 9 UDP/TLS/RTP/SAVPF 96 97 39 40 98 99 100 101"
+	if !strings.Contains(answer, expectedVideoMLine) {
+		t.Fatalf("expected video m-line with formats 96 97 39 40 98 99 100 101, got:\n%s", answer)
+	}
+
+	excludedSubstrings := []string{
+		" 102",
+		" 103",
+		" 104",
+		"a=rtpmap:102",
+		"a=rtpmap:103",
+		"a=fmtp:103",
+		"a=rtpmap:104",
+		"a=rtcp-fb:102",
+		"a=rtcp-fb:104",
+		"red/90000",
+		"ulpfec/90000",
+	}
+	for _, excl := range excludedSubstrings {
+		if strings.Contains(answer, excl) {
+			t.Fatalf("answer must NOT contain excluded pattern %q, got:\n%s", excl, answer)
+		}
+	}
+
+	// 3. Supported video codecs and RTX pairs must be retained
+	requiredSubstrings := []string{
+		"a=rtpmap:96 VP8/90000",
+		"a=rtpmap:97 rtx/90000",
+		"a=fmtp:97 apt=96",
+		"a=rtpmap:39 H264/90000",
+		"a=rtpmap:40 rtx/90000",
+		"a=fmtp:40 apt=39",
+		"a=rtpmap:98 VP9/90000",
+		"a=rtpmap:99 rtx/90000",
+		"a=fmtp:99 apt=98",
+		"a=rtpmap:100 AV1/90000",
+		"a=rtpmap:101 rtx/90000",
+		"a=fmtp:101 apt=100",
+		"a=rtcp-fb:96 nack",
+		"a=rtcp-fb:96 nack pli",
+		"a=rtcp-fb:* goog-remb",
+		"a=extmap:4 urn:ietf:params:rtp-hdrext:sdes:mid",
+	}
+	for _, req := range requiredSubstrings {
+		if !strings.Contains(answer, req) {
+			t.Fatalf("answer must contain required pattern %q, got:\n%s", req, answer)
+		}
+	}
+}
+
+func TestSDPMapper_ParsePublisherOffer_SkipsRedAndUlpfec(t *testing.T) {
+	// Offer where red (102) and ulpfec (104) appear before VP8 (96)
+	offerRedFirst := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=video 9 UDP/TLS/RTP/SAVPF 102 103 104 96 97
+c=IN IP4 0.0.0.0
+a=mid:video-0
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:102 red/90000
+a=rtpmap:103 rtx/90000
+a=fmtp:103 apt=102
+a=rtpmap:104 ulpfec/90000
+a=rtpmap:96 VP8/90000
+a=rtpmap:97 rtx/90000
+a=fmtp:97 apt=96
+a=ssrc:918035962 cname:test-cname
+a=ssrc:3504424756 cname:test-cname
+a=ssrc-group:FID 918035962 3504424756
+`
+
+	parsed, err := livekit.ParsePublisherOffer(offerRedFirst)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+
+	if len(parsed.Tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(parsed.Tracks))
+	}
+
+	track := parsed.Tracks[0]
+	// Primary codec must be VP8 (PT 96), NOT RED (PT 102) or ULPFEC (PT 104)
+	if track.PayloadType != 96 {
+		t.Fatalf("expected primary payloadType 96 (VP8), got %d (%s)", track.PayloadType, track.Codec)
+	}
+	if track.Codec != "VP8" {
+		t.Fatalf("expected codec name VP8, got %s", track.Codec)
+	}
+	if track.RTXPayloadType != 97 {
+		t.Fatalf("expected RTX payloadType 97, got %d", track.RTXPayloadType)
+	}
+}
+
+

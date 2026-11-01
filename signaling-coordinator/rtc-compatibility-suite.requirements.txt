@@ -1236,7 +1236,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-025
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -1287,4 +1287,13 @@ STATUS: OPEN
    - Mediasoup will match `payloadType == 96`, execute `CreateRtpStream`, register the incoming stream, and forward video frames to Bob, enabling `waitForRemoteTrack('video')` and video rendering assertions to pass.
 
 4. RESOLUTION & ARCHITECTURAL TRIAGE:
-   - Decision: PENDING
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-025]: In `internal/adapters/inbound/livekit/sdp_mapper.go` (`GeneratePublisherAnswer`), implemented `findExcludedVideoPayloadTypes` which scans video media descriptions for RFC 2198 (`red`) and RFC 5109 (`ulpfec`) codecs as well as their associated RFC 4588 RTX retransmission pairs (`a=fmtp:<rtxPT> apt=<redPT>`). Excluded those payload types from the answer's `m=video` format list and from `a=rtpmap`, `a=fmtp`, and `a=rtcp-fb` attribute lines.
+     2. In `ParsePublisherOffer`, added an explicit guard to skip FEC and redundancy wrapper codecs (`red`, `ulpfec`) when determining the primary media codec, guaranteeing that standard video codecs (such as VP8 or H264) are always selected.
+     3. By excluding RED and ULPFEC from publisher SDP answers, Chromium transmits native unencapsulated VP8 video RTP packets with Payload Type 96, matching the primary codec registered with Mediasoup's SFU producer and allowing `CreateRtpStream` to successfully instantiate the video stream and forward RTP packets to subscribers.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added `findExcludedVideoPayloadTypes` and filtered RED/ULPFEC and their RTX pairs from video SDP answers in `GeneratePublisherAnswer`, and skipped FEC wrapper codecs in `ParsePublisherOffer`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added unit tests `TestSDPMapper_GeneratePublisherAnswer_ExcludeRedAndUlpfec_REQ025` and `TestSDPMapper_ParsePublisherOffer_SkipsRedAndUlpfec`.
+   - Verification: All tests pass cleanly under `go test -v -race -count=1 ./...` and `go vet ./...` exits 0.
+===================================================================

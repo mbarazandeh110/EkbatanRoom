@@ -237,6 +237,9 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 							rate, _ := strconv.ParseUint(subParts[1], 10, 32)
 							if strings.EqualFold(name, "rtx") {
 								rtxCandidates = append(rtxCandidates, uint32(payloadNum))
+							} else if strings.EqualFold(name, "red") || strings.EqualFold(name, "ulpfec") || strings.HasPrefix(strings.ToLower(name), "flexfec") {
+								// REQ-025: Skip FEC/redundancy wrapper codecs when determining primary media codec
+								continue
 							} else if pt == 0 {
 								pt = uint32(payloadNum)
 								codecName = name
@@ -536,6 +539,55 @@ func selectPrimaryFingerprint(fps []domain.DtlsFingerprintInfo) *domain.DtlsFing
 	return &fps[0]
 }
 
+// findExcludedVideoPayloadTypes identifies video payload types that must be excluded from SDP answers,
+// specifically RFC 2198 (RED) and RFC 5109 (ULPFEC) codecs and their associated RTX retransmission pairs (RFC 4588).
+// When negotiated in an SDP answer, Chromium encapsulates video frames in RED (PT 102), which causes
+// Mediasoup's SFU producer to drop packets due to payload type mismatch with the primary codec (e.g. VP8 PT 96).
+func findExcludedVideoPayloadTypes(md *sdp.MediaDescription) map[string]bool {
+	ptToCodec := make(map[string]string)
+	rtxToApt := make(map[string]string)
+
+	for _, attr := range md.Attributes {
+		if strings.EqualFold(attr.Key, "rtpmap") {
+			parts := strings.SplitN(strings.TrimSpace(attr.Value), " ", 2)
+			if len(parts) == 2 {
+				pt := parts[0]
+				subParts := strings.Split(parts[1], "/")
+				if len(subParts) >= 1 {
+					ptToCodec[pt] = strings.ToLower(strings.TrimSpace(subParts[0]))
+				}
+			}
+		} else if strings.EqualFold(attr.Key, "fmtp") {
+			parts := strings.SplitN(strings.TrimSpace(attr.Value), " ", 2)
+			if len(parts) == 2 {
+				fmtpPT := parts[0]
+				paramPairs := strings.Split(parts[1], ";")
+				for _, pair := range paramPairs {
+					kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+					if len(kv) == 2 && strings.EqualFold(strings.TrimSpace(kv[0]), "apt") {
+						rtxToApt[fmtpPT] = strings.TrimSpace(kv[1])
+					}
+				}
+			}
+		}
+	}
+
+	excluded := make(map[string]bool)
+	for pt, codec := range ptToCodec {
+		if codec == "red" || codec == "ulpfec" || strings.HasPrefix(codec, "flexfec") {
+			excluded[pt] = true
+		}
+	}
+
+	for rtxPT, aptPT := range rtxToApt {
+		if excluded[aptPT] {
+			excluded[rtxPT] = true
+		}
+	}
+
+	return excluded
+}
+
 // GeneratePublisherAnswer generates an SDP answer responding to the client's publisher offer.
 // Crucial DTLS requirement: always responds with a=setup:passive.
 func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (string, error) {
@@ -599,10 +651,27 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 	for _, md := range s.MediaDescriptions {
 		mid, _ := md.Attribute("mid")
 		isApp := strings.EqualFold(md.MediaName.Media, "application")
+		isVideo := strings.EqualFold(md.MediaName.Media, "video")
+
+		var excludedPTs map[string]bool
+		if isVideo {
+			excludedPTs = findExcludedVideoPayloadTypes(md)
+		}
 
 		protos := []string{"UDP/TLS/RTP/SAVPF"}
 		if isApp && len(md.MediaName.Protos) > 0 {
 			protos = md.MediaName.Protos
+		}
+
+		formats := md.MediaName.Formats
+		if isVideo && len(excludedPTs) > 0 {
+			filteredFormats := make([]string, 0, len(md.MediaName.Formats))
+			for _, f := range md.MediaName.Formats {
+				if !excludedPTs[f] {
+					filteredFormats = append(filteredFormats, f)
+				}
+			}
+			formats = filteredFormats
 		}
 
 		ansMd := &sdp.MediaDescription{
@@ -610,7 +679,7 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 				Media:   md.MediaName.Media,
 				Port:    sdp.RangedPort{Value: 9},
 				Protos:  protos,
-				Formats: md.MediaName.Formats,
+				Formats: formats,
 			},
 			ConnectionInformation: &sdp.ConnectionInformation{
 				NetworkType: "IN",
@@ -628,8 +697,18 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 			ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "rtcp-mux"})
 
 			// Retain rtpmap, rtcp-fb, fmtp, and extmap from offer per RFC 8285 / RFC 8866
+			// REQ-025: Filter out red, ulpfec, and their RTX pairs from video SDP answers
 			for _, attr := range md.Attributes {
-				if attr.Key == "rtpmap" || attr.Key == "rtcp-fb" || attr.Key == "fmtp" || attr.Key == "extmap" {
+				k := strings.ToLower(attr.Key)
+				if k == "rtpmap" || k == "fmtp" || k == "rtcp-fb" {
+					if isVideo && len(excludedPTs) > 0 {
+						fields := strings.Fields(attr.Value)
+						if len(fields) > 0 && fields[0] != "*" && excludedPTs[fields[0]] {
+							continue
+						}
+					}
+					ansMd.Attributes = append(ansMd.Attributes, attr)
+				} else if k == "extmap" {
 					ansMd.Attributes = append(ansMd.Attributes, attr)
 				}
 			}
