@@ -156,7 +156,24 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
       roomName: options.roomName,
     });
 
-    await this.room.connect(options.url, options.token);
+    const defaultIceServers: RTCIceServer[] = [
+      { urls: "stun:stun.l.google.com:19302" },
+    ];
+    let customIceServers: RTCIceServer[] | undefined;
+    if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_RTC_ICE_SERVERS) {
+      try {
+        customIceServers = JSON.parse(process.env.NEXT_PUBLIC_RTC_ICE_SERVERS);
+      } catch {
+        // ignore parse error
+      }
+    }
+
+    await this.room.connect(options.url, options.token, {
+      autoSubscribe: true,
+      rtcConfig: {
+        iceServers: customIceServers || defaultIceServers,
+      },
+    });
   }
 
   public async disconnect(): Promise<void> {

@@ -1,0 +1,21 @@
+===================================================================
+RFC / REQUIREMENT ID: REQ-001
+SOURCE SERVICE: web-client-pwa
+TARGET SERVICE: sfu-media-node
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Network / WebRTC Security] Automatic Non-Loopback IP detection or documentation for MEDIASOUP_ANNOUNCED_IP
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When `sfu-media-node` starts with default settings (or without `MEDIASOUP_ANNOUNCED_IP`), it announces `127.0.0.1` as the WebRTC ICE host candidate.
+   - Per the W3C WebRTC specification and Chromium/WebKit WebRTC IP handling policy (RFC 8828), standard web browsers (Google Chrome, Edge, Safari, Firefox) running without `--allow-loopback-in-peer-connection` explicitly DISALLOW WebRTC PeerConnections to loopback addresses (`127.0.0.1` and `::1`).
+   - When a user joins from a standard browser, Chromium silently ignores the `127.0.0.1` ICE candidate.
+   - Consequently, no valid ICE candidate pairs are formed, the RTCPeerConnection remains in `connecting` state, and after 15 seconds `livekit-client` aborts with:
+     `ConnectionError: could not establish pc connection`
+   - When `sfu-media-node` is started with `MEDIASOUP_ANNOUNCED_IP=<non-loopback-ip>` (e.g., the LAN interface IP `192.168.x.x`), WebRTC connection succeeds immediately in under 60ms.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - When `MEDIASOUP_ANNOUNCED_IP` is not explicitly set, `sfu-media-node` SHOULD automatically detect the primary non-loopback network interface IP (e.g., `192.168.x.x` or `10.x.x.x`) instead of falling back to `127.0.0.1`.
+   - Alternatively, documentation and default `.env` / `config.yaml` should explicitly mandate setting `MEDIASOUP_ANNOUNCED_IP` to the host's actual network IP for browser compatibility.
