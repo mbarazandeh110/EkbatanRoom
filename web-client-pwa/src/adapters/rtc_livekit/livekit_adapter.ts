@@ -38,6 +38,7 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
       new Room({
         adaptiveStream: true,
         dynacast: true,
+        singlePeerConnection: false,
       })
   ) {}
 

@@ -1,0 +1,22 @@
+===================================================================
+RFC / REQUIREMENT ID: REQ-001
+SOURCE SERVICE: web-client-pwa
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Security / CORS] Enable Cross-Origin Resource Sharing (CORS) headers on HTTP endpoints (/rtc/v1/validate)
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When official `livekit-client` (v2.23.0) runs in standard web browsers (Google Chrome, Firefox, Safari) without `--disable-web-security`, it probes `/rtc/v1/validate` using `fetch()` when the initial `/rtc/v1` WebSocket fails with 404.
+   - The browser blocks cross-origin requests from web client origins (e.g. `http://localhost:3000`) to `http://localhost:7880` because `signaling-coordinator` does not return CORS headers (`Access-Control-Allow-Origin: *` or configured client origin, plus `Access-Control-Allow-Headers: *` and `OPTIONS` preflight support).
+   - This causes `fetch()` to fail with `TypeError: Failed to fetch`.
+   - `SignalClient.ts:1362` converts this into `ConnectionError.serverUnreachable("Failed to fetch")`, terminating the connection attempt before the client can execute its graceful fallback to `/rtc`.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - All HTTP endpoints served by `signaling-coordinator` (especially `/rtc/v1/validate`, `/healthz`, and any future HTTP validate/signaling handlers) MUST respond with standard CORS headers:
+     * `Access-Control-Allow-Origin: *` (or matching request `Origin`)
+     * `Access-Control-Allow-Methods: GET, POST, OPTIONS`
+     * `Access-Control-Allow-Headers: *`
+   - Handle HTTP `OPTIONS` requests on these paths with HTTP `204 No Content` or `200 OK`.
