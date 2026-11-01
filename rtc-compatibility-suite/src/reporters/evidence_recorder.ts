@@ -189,11 +189,25 @@ export class EvidenceRecorder {
     };
   }
 
-  public saveReport(targetPath?: string): EvidenceReport {
-    const report = this.generateReport();
+  public saveReport(targetPath?: string, mergeWithDisk = true): EvidenceReport {
     const dest = targetPath || this.reportPath;
     const dir = path.dirname(dest);
 
+    if (mergeWithDisk && fs.existsSync(dest)) {
+      try {
+        const diskContent = JSON.parse(fs.readFileSync(dest, 'utf-8'));
+        if (diskContent?.gates) {
+          for (const gid of ALL_GATE_IDS) {
+            const diskGate = diskContent.gates[gid];
+            if (diskGate && diskGate.status === 'PASSED' && this.gates[gid].status === 'NOT_RUN') {
+              this.gates[gid] = diskGate;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    const report = this.generateReport();
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }

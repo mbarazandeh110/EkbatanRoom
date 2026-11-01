@@ -8,10 +8,35 @@ export class ParticipantClientController implements IParticipantController {
   private identity: string;
   private roomId: string;
 
+  private activeWebSockets: WebSocket[] = [];
+  private wsListeners: Array<(direction: 'inbound' | 'outbound', payload: string | Buffer) => void> = [];
+
   constructor(page: Page, identity: string, roomId = 'default-room') {
     this.page = page;
     this.identity = identity;
     this.roomId = roomId;
+
+    this.page.on('websocket', (ws: WebSocket) => {
+      this.activeWebSockets.push(ws);
+      ws.on('framesent', (event) => {
+        for (const listener of this.wsListeners) {
+          try {
+            listener('outbound', event.payload);
+          } catch (e) {
+            console.error('Error in wsListener outbound:', e);
+          }
+        }
+      });
+      ws.on('framereceived', (event) => {
+        for (const listener of this.wsListeners) {
+          try {
+            listener('inbound', event.payload);
+          } catch (e) {
+            console.error('Error in wsListener inbound:', e);
+          }
+        }
+      });
+    });
   }
 
   public getIdentity(): string {
@@ -128,6 +153,25 @@ export class ParticipantClientController implements IParticipantController {
     );
   }
 
+  public async waitForRemoteParticipantCount(expectedCount: number, timeoutMs = 15000): Promise<void> {
+    await this.page.waitForFunction(
+      (count) => {
+        const state = window.testHarness.getState();
+        return state.remoteParticipants.length === count;
+      },
+      expectedCount,
+      { timeout: timeoutMs }
+    );
+  }
+
+  public async getIceConnectionState(): Promise<string> {
+    return this.page.evaluate(() => {
+      const room = (window.testHarness as any)?.room;
+      const pc = room?.engine?.pcManager?.publisher?.pc ?? room?.engine?.pcManager?.publisher;
+      return pc?.iceConnectionState || 'unknown';
+    });
+  }
+
   public async waitForRemoteTrack(kind: 'audio' | 'video', timeoutMs = 15000): Promise<void> {
     const selector = kind === 'video' ? '#remote-video' : '#remote-audio';
     await this.page.waitForFunction(
@@ -152,15 +196,14 @@ export class ParticipantClientController implements IParticipantController {
 
   public attachWebSocketListener(
     onFrame: (direction: 'inbound' | 'outbound', payload: string | Buffer) => void
-  ): void {
-    this.page.on('websocket', (ws: WebSocket) => {
-      ws.on('framesent', (event) => {
-        onFrame('outbound', event.payload);
-      });
-      ws.on('framereceived', (event) => {
-        onFrame('inbound', event.payload);
-      });
-    });
+  ): () => void {
+    this.wsListeners.push(onFrame);
+    return () => {
+      const idx = this.wsListeners.indexOf(onFrame);
+      if (idx !== -1) {
+        this.wsListeners.splice(idx, 1);
+      }
+    };
   }
 
   public attachConsoleListener(onLog: (line: string) => void): void {

@@ -29,7 +29,7 @@ test.describe('Slice 1 — Harness Foundation & Evidence Infrastructure', () => 
 
     // Save evidence report to disk
     const reportPath = path.resolve(process.cwd(), 'test-results/evidence-report.json');
-    const report = sharedEvidenceRecorder.saveReport(reportPath);
+    const report = sharedEvidenceRecorder.saveReport(reportPath, false);
 
     expect(fs.existsSync(reportPath)).toBe(true);
     expect(report.sdkVersion).toBe('2.23.0');

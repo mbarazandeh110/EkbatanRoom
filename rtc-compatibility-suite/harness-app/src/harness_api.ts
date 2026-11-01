@@ -255,12 +255,15 @@ export class HarnessController {
     if (!this.room || !this.room.engine) {
       throw new Error('Room or engine not available for ICE restart');
     }
-    // Room in official livekit-client exposes restartIce or engine.restartIce
-    const engine = (this.room as unknown as { engine: { restartIce: () => Promise<void> } }).engine;
-    if (engine && typeof engine.restartIce === 'function') {
+    const engine = this.room.engine as any;
+    if (engine.pcManager && typeof engine.pcManager.triggerIceRestart === 'function') {
+      await engine.pcManager.triggerIceRestart();
+    } else if (typeof engine.restartIce === 'function') {
       await engine.restartIce();
+    } else if (typeof engine.restartConnection === 'function') {
+      await engine.restartConnection();
     } else {
-      throw new Error('restartIce not supported by engine');
+      throw new Error('ICE restart not supported by engine or pcManager');
     }
   }
 

@@ -18,9 +18,13 @@ export interface JoinOptions {
 
 export interface IParticipantController {
   join(url: string, token: string, options?: JoinOptions): Promise<void>;
-  publishTracks(options: { audio?: boolean; video?: boolean }): Promise<void>;
+  publishTracks(options: { audio?: boolean; video?: boolean; simulcast?: boolean }): Promise<void>;
   setMicrophoneEnabled(enabled: boolean): Promise<void>;
   setCameraEnabled(enabled: boolean): Promise<void>;
+  setVideoQuality(quality: 'low' | 'medium' | 'high'): Promise<void>;
+  restartIce(): Promise<void>;
+  waitForRemoteParticipant(participantIdentity?: string, timeoutMs?: number): Promise<void>;
+  waitForRemoteTrack(kind: 'audio' | 'video', timeoutMs?: number): Promise<void>;
   getStats(): Promise<RtpMetricsSnapshot>;
   leave(): Promise<void>;
 }
