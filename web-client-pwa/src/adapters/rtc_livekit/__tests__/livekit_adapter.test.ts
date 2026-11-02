@@ -172,4 +172,113 @@ describe("LiveKitEngineAdapter", () => {
       { participantId: "speaker-1", audioLevel: 0.9 },
     ]);
   });
+
+  it("hydrates existing remote participants and pre-subscribed tracks upon connection", async () => {
+    const mockAttach = vi.fn().mockReturnValue({ remove: vi.fn(), parentElement: null });
+    const mockPub = {
+      trackSid: "audio-pub-1",
+      source: "microphone",
+      isMuted: false,
+      isEnabled: true,
+      isSubscribed: true,
+      track: {
+        sid: "audio-track-1",
+        kind: "audio",
+        attach: mockAttach,
+        mediaStreamTrack: {},
+      },
+    };
+
+    const mockExistingParticipant = {
+      sid: "remote-p1",
+      identity: "alice",
+      name: "Alice",
+      isSpeaking: false,
+      audioLevel: 0,
+      isMicrophoneEnabled: true,
+      isCameraEnabled: true,
+      isScreenShareEnabled: false,
+      joinedAt: new Date(),
+      trackPublications: new Map([["audio-pub-1", mockPub]]),
+    };
+
+    mockRoom.remoteParticipants.set("remote-p1", mockExistingParticipant);
+
+    const joinedListener = vi.fn();
+    const trackSubscribedListener = vi.fn();
+    adapter.on("participantJoined", joinedListener);
+    adapter.on("trackSubscribed", trackSubscribedListener);
+
+    await adapter.connect({
+      url: "ws://localhost:7880",
+      token: "jwt-token-123",
+      roomName: "test-room",
+    });
+
+    expect(joinedListener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "remote-p1",
+        name: "Alice",
+        isLocal: false,
+      })
+    );
+    expect(trackSubscribedListener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "audio-pub-1",
+        kind: "audio",
+        source: "microphone",
+        participantId: "remote-p1",
+      }),
+      expect.objectContaining({ id: "remote-p1" })
+    );
+    expect(mockAttach).toHaveBeenCalled();
+  });
+
+  it("attaches audio tracks on TrackSubscribed and detaches on TrackUnsubscribed/disconnect", async () => {
+    await adapter.connect({
+      url: "ws://localhost:7880",
+      token: "jwt-token-123",
+    });
+
+    const mockRemove = vi.fn();
+    const mockEl = { remove: mockRemove, parentElement: null };
+    const mockAudioTrack = {
+      sid: "audio-track-dynamic",
+      kind: "audio",
+      attach: vi.fn().mockReturnValue(mockEl),
+      detach: vi.fn().mockReturnValue([mockEl]),
+      mediaStreamTrack: {},
+    };
+
+    const mockPub = {
+      trackSid: "pub-dyn",
+      source: "microphone",
+      isMuted: false,
+      isEnabled: true,
+    };
+
+    const mockParticipant = {
+      sid: "remote-p2",
+      identity: "bob",
+      name: "Bob",
+      trackPublications: new Map(),
+    };
+
+    const trackSubListener = vi.fn();
+    const trackUnsubListener = vi.fn();
+    adapter.on("trackSubscribed", trackSubListener);
+    adapter.on("trackUnsubscribed", trackUnsubListener);
+
+    mockRoom.emit("trackSubscribed", mockAudioTrack, mockPub, mockParticipant);
+    expect(mockAudioTrack.attach).toHaveBeenCalled();
+    expect(trackSubListener).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "pub-dyn", kind: "audio" }),
+      expect.objectContaining({ id: "remote-p2" })
+    );
+
+    mockRoom.emit("trackUnsubscribed", mockAudioTrack, mockPub, mockParticipant);
+    expect(mockAudioTrack.detach).toHaveBeenCalled();
+    expect(mockRemove).toHaveBeenCalled();
+    expect(trackUnsubListener).toHaveBeenCalledWith("pub-dyn", "remote-p2");
+  });
 });

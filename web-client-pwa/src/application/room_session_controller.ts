@@ -52,6 +52,9 @@ export class RoomSessionController {
     this.engine.on("trackSubscribed", (track, participant) => {
       useParticipantsStore.getState().upsertParticipant(participant);
       useParticipantsStore.getState().upsertTrack(track);
+      if (!participant.isLocal) {
+        useRoomStore.getState().addRemoteParticipantId(participant.id);
+      }
       this.telemetry?.log("debug", "track_subscribed", {
         trackId: track.id,
         source: track.source,

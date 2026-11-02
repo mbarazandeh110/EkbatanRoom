@@ -2,7 +2,7 @@
 RFC / REQUIREMENT ID: REQ-001
 SOURCE SERVICE: signaling-coordinator
 TARGET SERVICE: web-client-pwa
-STATUS: OPEN
+STATUS: RESOLVED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -40,4 +40,14 @@ STATUS: OPEN
       In the `trackSubscribed` handler, ensure that if the participant is not local, `useRoomStore.getState().addRemoteParticipantId(participant.id)` is also called as a defensive fallback so that participants with active subscribed tracks always have a corresponding `VideoTile` rendered in `VideoGrid`.
 
 4. RESOLUTION & ARCHITECTURAL TRIAGE:
-   - Decision: PENDING
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. Following Hexagonal Architecture and Port boundaries, the SDK-specific behavior of `livekit-client` (where initial participants do not fire `ParticipantConnected`) is fully encapsulated within `LiveKitEngineAdapter`. Immediately after `await this.room.connect(...)`, existing remote participants in `room.remoteParticipants` are iterated and emitted via `participantJoined` and `trackSubscribed`, guaranteeing the domain/Zustand state layer is fully hydrated with peers and tracks.
+     2. In `LiveKitEngineAdapter`, subscribed audio tracks (`track.kind === 'audio'`) are attached to HTMLAudioElements via `track.attach()`, stored in an internal `attachedAudioElements: Set<HTMLMediaElement>`, and cleanly detached/removed upon `TrackUnsubscribed` or `disconnect()`, preventing audio leaks while ensuring remote audio playback.
+     3. In `RoomSessionController`, defensive fallback was added to `trackSubscribed` to ensure that any non-local participant with incoming tracks is registered into `remoteParticipantIds` in `useRoomStore`.
+   - Modified Files & Added Tests:
+     - `src/adapters/rtc_livekit/livekit_adapter.ts`
+     - `src/application/room_session_controller.ts`
+     - `src/adapters/rtc_livekit/__tests__/livekit_adapter.test.ts`
+     - `src/application/__tests__/room_session_controller.test.ts`
+     - Verified end-to-end multi-client live join in headless Chromium (Alice and Bob real browser peers).

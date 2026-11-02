@@ -110,6 +110,7 @@ describe("RoomSessionController", () => {
     const track = useParticipantsStore.getState().tracks["track-video-99"];
     expect(track).toBeDefined();
     expect(track.source).toBe("camera");
+    expect(useRoomStore.getState().remoteParticipantIds).toContain("remote-user-99");
   });
 
   it("should toggle and update track mute state", async () => {

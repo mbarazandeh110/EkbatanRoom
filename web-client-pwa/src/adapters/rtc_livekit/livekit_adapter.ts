@@ -70,6 +70,7 @@ function ensurePeerConnectionPatched(lanIp?: string) {
 
 export class LiveKitEngineAdapter implements RtcEnginePort {
   private room: Room | null = null;
+  private attachedAudioElements: Set<HTMLMediaElement> = new Set();
   private eventListeners: {
     [K in keyof RtcEngineEvents]?: Array<RtcEngineEvents[K]>;
   } = {};
@@ -231,10 +232,52 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
         iceServers: customIceServers || defaultIceServers,
       },
     });
+
+    // Hydrate existing remote participants already present upon room connection
+    for (const participant of this.room.remoteParticipants.values()) {
+      this.emit("participantJoined", this.mapParticipant(participant));
+
+      // Inspect any tracks that might already be subscribed upon join
+      for (const pub of participant.trackPublications.values()) {
+        if (pub.track && pub.isSubscribed) {
+          if (pub.track.kind === LkTrack.Kind.Audio) {
+            try {
+              const el = pub.track.attach();
+              if (el) {
+                this.attachedAudioElements.add(el);
+                if (typeof document !== "undefined" && !el.parentElement) {
+                  el.style.display = "none";
+                  document.body.appendChild(el);
+                }
+              }
+            } catch (err) {
+              this.telemetry?.log("warn", "audio_track_attach_error", { error: String(err) });
+            }
+          }
+
+          const descriptor: TrackDescriptor = {
+            id: pub.trackSid || (pub.track.sid as string) || pub.source,
+            kind: pub.track.kind as TrackKind,
+            source: this.mapTrackSource(pub.source),
+            participantId: participant.sid || participant.identity,
+            isMuted: pub.isMuted,
+            isEnabled: pub.isEnabled,
+            mediaStreamTrack: pub.track.mediaStreamTrack,
+          };
+          this.emit("trackSubscribed", descriptor, this.mapParticipant(participant));
+        }
+      }
+    }
   }
 
   public async disconnect(): Promise<void> {
     if (this.room) {
+      for (const el of this.attachedAudioElements) {
+        if (el && typeof el.remove === "function") {
+          el.remove();
+        }
+      }
+      this.attachedAudioElements.clear();
       await this.room.disconnect();
       this.room = null;
     }
@@ -362,6 +405,21 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
     room.on(
       RoomEvent.TrackSubscribed,
       (track: any, pub: RemoteTrackPublication, participant: LkParticipant) => {
+        if (track && (track.kind === "audio" || track.kind === LkTrack.Kind.Audio)) {
+          try {
+            const el = track.attach();
+            if (el) {
+              this.attachedAudioElements.add(el);
+              if (typeof document !== "undefined" && !el.parentElement) {
+                el.style.display = "none";
+                document.body.appendChild(el);
+              }
+            }
+          } catch (err) {
+            this.telemetry?.log("warn", "audio_track_attach_error", { error: String(err) });
+          }
+        }
+
         const descriptor: TrackDescriptor = {
           id: pub.trackSid || track.sid,
           kind: track.kind as TrackKind,
@@ -378,6 +436,21 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
     room.on(
       RoomEvent.TrackUnsubscribed,
       (track: any, pub: RemoteTrackPublication, participant: LkParticipant) => {
+        if (track && (track.kind === "audio" || track.kind === LkTrack.Kind.Audio)) {
+          try {
+            const detached = track.detach();
+            const elements = Array.isArray(detached) ? detached : detached ? [detached] : [];
+            for (const el of elements) {
+              this.attachedAudioElements.delete(el);
+              if (el && typeof el.remove === "function") {
+                el.remove();
+              }
+            }
+          } catch (err) {
+            // ignore
+          }
+        }
+
         this.emit(
           "trackUnsubscribed",
           pub.trackSid || track.sid,
