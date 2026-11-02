@@ -56,6 +56,47 @@ var supportedRtpHeaderExtensionURIs = map[string]bool{
 	"urn:mediasoup:params:rtp-hdrext:packet-id":                                                true,
 }
 
+// getOfferDirection extracts the transmission direction from an m-section or the session description.
+// Defaults to "sendrecv" per RFC 3264 Section 6.1 if unspecified.
+func getOfferDirection(s *sdp.SessionDescription, md *sdp.MediaDescription) string {
+	if md.MediaName.Port.Value == 0 {
+		return "inactive"
+	}
+	for _, attr := range md.Attributes {
+		k := strings.ToLower(strings.TrimSpace(attr.Key))
+		if k == "inactive" || k == "sendonly" || k == "recvonly" || k == "sendrecv" {
+			return k
+		}
+	}
+	if s != nil {
+		for _, attr := range s.Attributes {
+			k := strings.ToLower(strings.TrimSpace(attr.Key))
+			if k == "inactive" || k == "sendonly" || k == "recvonly" || k == "sendrecv" {
+				return k
+			}
+		}
+	}
+	return "sendrecv"
+}
+
+// determinePublisherAnswerDirection calculates the conforming SDP answer direction
+// for a media section responding to a publisher offer per RFC 3264 Section 6.1.
+// Since the SFU acts as an RTP receiver on the publisher peer connection:
+// - If the stream is offered as "inactive" (or port is 0), the answer MUST be "inactive".
+// - If the stream is offered as "recvonly", the SFU cannot send, so the answer is "inactive".
+// - If the stream is offered as "sendonly" or "sendrecv", the SFU responds with "recvonly".
+func determinePublisherAnswerDirection(s *sdp.SessionDescription, md *sdp.MediaDescription) string {
+	dir := getOfferDirection(s, md)
+	switch dir {
+	case "inactive", "recvonly":
+		return "inactive"
+	case "sendonly", "sendrecv":
+		return "recvonly"
+	default:
+		return "recvonly"
+	}
+}
+
 // ParsePublisherOffer parses the client's publisher SDP offer.
 func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 	var s sdp.SessionDescription
@@ -114,6 +155,11 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 
 		kind := domain.TrackKind(md.MediaName.Media)
 		if kind != domain.TrackKindAudio && kind != domain.TrackKindVideo {
+			continue
+		}
+
+		// Inactive or recvonly m-sections do not transmit media from client to server (RFC 3264)
+		if getOfferDirection(&s, md) == "inactive" || getOfferDirection(&s, md) == "recvonly" {
 			continue
 		}
 
@@ -617,9 +663,12 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 		},
 	}
 
-	// Group BUNDLE attribute
+	// Group BUNDLE attribute (excluding rejected port 0 m-sections per RFC 8843 Section 7.3)
 	mids := make([]string, 0, len(s.MediaDescriptions))
 	for _, md := range s.MediaDescriptions {
+		if md.MediaName.Port.Value == 0 {
+			continue
+		}
 		if mid, ok := md.Attribute("mid"); ok {
 			mids = append(mids, mid)
 		}
@@ -674,10 +723,15 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 			formats = filteredFormats
 		}
 
+		port := 9
+		if md.MediaName.Port.Value == 0 {
+			port = 0
+		}
+
 		ansMd := &sdp.MediaDescription{
 			MediaName: sdp.MediaName{
 				Media:   md.MediaName.Media,
-				Port:    sdp.RangedPort{Value: 9},
+				Port:    sdp.RangedPort{Value: port},
 				Protos:  protos,
 				Formats: formats,
 			},
@@ -693,7 +747,9 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 		}
 
 		if !isApp {
-			ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "recvonly"})
+			// RFC 3264 Section 6.1: Conform direction (inactive if offer is inactive/recvonly/port 0, otherwise recvonly)
+			ansDir := determinePublisherAnswerDirection(&s, md)
+			ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: ansDir})
 			ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "rtcp-mux"})
 
 			// Retain rtpmap, rtcp-fb, fmtp, and extmap from offer per RFC 8285 / RFC 8866

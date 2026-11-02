@@ -2,7 +2,7 @@
 RFC / REQUIREMENT ID: REQ-001
 SOURCE SERVICE: sfu-media-node
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -26,3 +26,23 @@ STATUS: OPEN
    - In `signaling-coordinator`'s SDP synthesis/answering logic:
      When constructing an SDP answer to send to the browser over the signaling WebSocket:
      If the incoming offer m-section has direction `a=inactive`, the corresponding m-section in the generated SDP answer MUST also have `a=inactive`.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. Strictly preserved Hexagonal Architecture boundaries and SRP/DIP: all SDP parsing and synthesis remains completely isolated in `internal/adapters/inbound/livekit/sdp_mapper.go` without leaking SDP concepts or Pion data structures into `internal/domain` or `internal/ports`.
+     2. Implemented RFC 3264 Section 6.1 conforming direction mapping:
+        - `getOfferDirection` extracts transmission direction from media level (or inherits from session level), treating port 0 as inactive.
+        - `determinePublisherAnswerDirection` maps inactive / port 0 / recvonly offers to `a=inactive`, and sendonly / sendrecv offers to `a=recvonly`.
+        - `GeneratePublisherAnswer` sets `a=inactive` instead of `a=recvonly` for inactive or rejected m-sections, and preserves port 0 if offered with port 0.
+        - RFC 8843 Section 7.3: Excludes rejected (port 0) m-sections from the answer's `a=group:BUNDLE` attribute.
+     3. In `ParsePublisherOffer`, skipped inactive or recvonly media sections from being parsed into active publisher tracks, preventing unwanted `Produce` calls or track registration for inactive transceivers.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added `getOfferDirection`, `determinePublisherAnswerDirection`, updated `GeneratePublisherAnswer` and `ParsePublisherOffer`.
+   - Added Tests:
+     - `TestSDPMapper_GeneratePublisherAnswer_InactiveMSection_ConformsRFC3264_REQ001` in `internal/adapters/inbound/livekit/sdp_mapper_test.go`
+     - `TestSDPMapper_GeneratePublisherAnswer_AllInactive_REQ001` in `internal/adapters/inbound/livekit/sdp_mapper_test.go`
+     - `TestSDPMapper_GeneratePublisherAnswer_PortZeroRejectedMSection_REQ001` in `internal/adapters/inbound/livekit/sdp_mapper_test.go`
+     - `TestLiveKitWSHandler_OfferAnswer_InactiveMSectionConformsRFC3264_REQ001` in `internal/adapters/inbound/livekit/ws_handler_test.go`
+   - Verification: All tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
+===================================================================

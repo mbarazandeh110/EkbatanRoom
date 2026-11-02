@@ -630,4 +630,99 @@ func TestLiveKitWSHandler_AddTrack_PreservesTrackSID_ThroughOfferAndMute(t *test
 	}
 }
 
+func TestLiveKitWSHandler_OfferAnswer_InactiveMSectionConformsRFC3264_REQ001(t *testing.T) {
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc?room=conference-1&identity=alice&name=Alice"
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// 1. Drain Join response
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read join: %v", err)
+	}
+
+	// 2. Client sends Offer with active audio (sendonly) and inactive video screenshare (inactive)
+	offerSDP := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0 1
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=mid:0
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:111 opus/48000/2
+a=ssrc:1001 cname:test-cname
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:1
+a=inactive
+a=setup:actpass
+a=rtpmap:96 VP8/90000
+`
+
+	offerReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_Offer{
+			Offer: &livekitproto.SessionDescription{
+				Type: "offer",
+				Sdp:  offerSDP,
+				Id:   42,
+			},
+		},
+	}
+	offerData, _ := proto.Marshal(offerReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, offerData); err != nil {
+		t.Fatalf("failed to send offer request: %v", err)
+	}
+
+	// 3. Read Answer response
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, respData, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read answer response: %v", err)
+	}
+
+	var signalResp livekitproto.SignalResponse
+	if err := proto.Unmarshal(respData, &signalResp); err != nil {
+		t.Fatalf("failed to unmarshal answer response: %v", err)
+	}
+
+	ans := signalResp.GetAnswer()
+	if ans == nil {
+		t.Fatalf("expected Answer in response, got nil")
+	}
+	if ans.Id != 42 {
+		t.Fatalf("expected Answer.Id == 42, got %d", ans.Id)
+	}
+
+	// 4. Verify inactive m-section conforms to RFC 3264 (a=inactive, NOT a=recvonly)
+	answerSDP := ans.Sdp
+	if !strings.Contains(answerSDP, "a=mid:1") {
+		t.Fatalf("answer missing mid:1")
+	}
+	// Verify coordinator only published 1 active track (skipping inactive video)
+	coord.mu.Lock()
+	defer coord.mu.Unlock()
+	if len(coord.lastPublishedTracks) != 1 {
+		t.Fatalf("expected exactly 1 active track published, got %d", len(coord.lastPublishedTracks))
+	}
+	if coord.lastPublishedTracks[0].Kind != domain.TrackKindAudio {
+		t.Fatalf("expected audio track published, got %v", coord.lastPublishedTracks[0].Kind)
+	}
+}
+
+
 

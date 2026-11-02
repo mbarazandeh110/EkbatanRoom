@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pion/sdp/v3"
+
 	"ekbatan-room/signaling-coordinator/internal/adapters/inbound/livekit"
 	"ekbatan-room/signaling-coordinator/internal/domain"
 )
@@ -1060,5 +1062,212 @@ a=ssrc-group:FID 918035962 3504424756
 		t.Fatalf("expected RTX payloadType 97, got %d", track.RTXPayloadType)
 	}
 }
+
+func TestSDPMapper_GeneratePublisherAnswer_InactiveMSection_ConformsRFC3264_REQ001(t *testing.T) {
+	// Offer containing:
+	// - audio (sendonly)
+	// - video active camera (sendonly)
+	// - video inactive screenshare (inactive) per RFC 3264 Section 6.1
+	offerWithInactive := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0 1 2
+a=msid-semantic: WMS
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=mid:0
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:111 opus/48000/2
+a=ssrc:1001 cname:test-cname
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:1
+a=sendonly
+a=setup:actpass
+a=rtpmap:96 VP8/90000
+a=ssrc:2001 cname:test-cname
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:2
+a=inactive
+a=setup:actpass
+a=rtpmap:96 VP8/90000
+`
+
+	transport := &domain.TransportInfo{
+		TransportID: "pub-transport",
+		IceUfrag:    "server-ufrag",
+		IcePwd:      "server-pwd",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "FF:EE:DD:CC:BB:AA"},
+		},
+		IceCandidates: []domain.IceCandidateInfo{
+			{SDPCandidateLine: "candidate:1 1 udp 2130706431 127.0.0.1 50000 typ host"},
+		},
+	}
+
+	// 1. Verify ParsePublisherOffer skips the inactive track (only returns 2 active tracks)
+	parsed, err := livekit.ParsePublisherOffer(offerWithInactive)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+	if len(parsed.Tracks) != 2 {
+		t.Fatalf("expected 2 active tracks, got %d", len(parsed.Tracks))
+	}
+	if parsed.Tracks[0].MID != "0" || parsed.Tracks[1].MID != "1" {
+		t.Fatalf("unexpected active track MIDs: %v, %v", parsed.Tracks[0].MID, parsed.Tracks[1].MID)
+	}
+
+	// 2. Verify GeneratePublisherAnswer sets a=inactive for mid:2 and a=recvonly for mid:0, mid:1
+	answerSDPStr, err := livekit.GeneratePublisherAnswer(offerWithInactive, transport)
+	if err != nil {
+		t.Fatalf("GeneratePublisherAnswer failed: %v", err)
+	}
+
+	var ans sdp.SessionDescription
+	if err := ans.Unmarshal([]byte(answerSDPStr)); err != nil {
+		t.Fatalf("failed to unmarshal answer SDP: %v", err)
+	}
+
+	if len(ans.MediaDescriptions) != 3 {
+		t.Fatalf("expected 3 media descriptions in answer, got %d", len(ans.MediaDescriptions))
+	}
+
+	// Media 0 (audio): must be recvonly
+	md0 := ans.MediaDescriptions[0]
+	if _, ok := md0.Attribute("recvonly"); !ok {
+		t.Fatalf("expected mid:0 to have a=recvonly")
+	}
+	if _, ok := md0.Attribute("inactive"); ok {
+		t.Fatalf("mid:0 must NOT have a=inactive")
+	}
+
+	// Media 1 (video camera): must be recvonly
+	md1 := ans.MediaDescriptions[1]
+	if _, ok := md1.Attribute("recvonly"); !ok {
+		t.Fatalf("expected mid:1 to have a=recvonly")
+	}
+	if _, ok := md1.Attribute("inactive"); ok {
+		t.Fatalf("mid:1 must NOT have a=inactive")
+	}
+
+	// Media 2 (video screenshare inactive): MUST be inactive per RFC 3264 Section 6.1
+	md2 := ans.MediaDescriptions[2]
+	if _, ok := md2.Attribute("inactive"); !ok {
+		t.Fatalf("expected mid:2 to have a=inactive per RFC 3264, got attributes: %v", md2.Attributes)
+	}
+	if _, ok := md2.Attribute("recvonly"); ok {
+		t.Fatalf("mid:2 must NOT have a=recvonly, would cause browser Incompatible send direction rejection")
+	}
+}
+
+func TestSDPMapper_GeneratePublisherAnswer_AllInactive_REQ001(t *testing.T) {
+	allInactiveOffer := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:0
+a=inactive
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:96 VP8/90000
+`
+
+	transport := &domain.TransportInfo{
+		TransportID: "pub-transport",
+		IceUfrag:    "server-ufrag",
+		IcePwd:      "server-pwd",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "FF:EE:DD:CC:BB:AA"},
+		},
+	}
+
+	parsed, err := livekit.ParsePublisherOffer(allInactiveOffer)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+	if len(parsed.Tracks) != 0 {
+		t.Fatalf("expected 0 tracks for all-inactive offer, got %d", len(parsed.Tracks))
+	}
+
+	answer, err := livekit.GeneratePublisherAnswer(allInactiveOffer, transport)
+	if err != nil {
+		t.Fatalf("GeneratePublisherAnswer failed: %v", err)
+	}
+
+	if strings.Contains(answer, "a=recvonly") {
+		t.Fatalf("answer for all-inactive offer must not contain a=recvonly, got:\n%s", answer)
+	}
+	if !strings.Contains(answer, "a=inactive") {
+		t.Fatalf("answer for all-inactive offer must contain a=inactive, got:\n%s", answer)
+	}
+}
+
+func TestSDPMapper_GeneratePublisherAnswer_PortZeroRejectedMSection_REQ001(t *testing.T) {
+	offerWithPortZero := `v=0
+o=- 70837583765872365 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0 1
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=mid:0
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:111 opus/48000/2
+m=video 0 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:1
+a=rtpmap:96 VP8/90000
+`
+
+	transport := &domain.TransportInfo{
+		TransportID: "pub-transport",
+		IceUfrag:    "server-ufrag",
+		IcePwd:      "server-pwd",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "FF:EE:DD:CC:BB:AA"},
+		},
+	}
+
+	answerSDPStr, err := livekit.GeneratePublisherAnswer(offerWithPortZero, transport)
+	if err != nil {
+		t.Fatalf("GeneratePublisherAnswer failed: %v", err)
+	}
+
+	var ans sdp.SessionDescription
+	if err := ans.Unmarshal([]byte(answerSDPStr)); err != nil {
+		t.Fatalf("failed to unmarshal answer SDP: %v", err)
+	}
+
+	if len(ans.MediaDescriptions) != 2 {
+		t.Fatalf("expected 2 media descriptions, got %d", len(ans.MediaDescriptions))
+	}
+
+	// m=video port must be 0 per RFC 3264 Section 8.2
+	if ans.MediaDescriptions[1].MediaName.Port.Value != 0 {
+		t.Fatalf("expected rejected m-section port to be 0, got %d", ans.MediaDescriptions[1].MediaName.Port.Value)
+	}
+	if _, ok := ans.MediaDescriptions[1].Attribute("inactive"); !ok {
+		t.Fatalf("expected rejected m-section to have a=inactive")
+	}
+
+	// BUNDLE must only contain active mid "0", excluding rejected mid "1" per RFC 8843 Section 7.3
+	groupAttr, ok := ans.Attribute("group")
+	if !ok {
+		t.Fatalf("expected group attribute in answer")
+	}
+	if strings.Contains(groupAttr, "1") {
+		t.Fatalf("rejected mid 1 must be excluded from BUNDLE group, got: %s", groupAttr)
+	}
+}
+
 
 
