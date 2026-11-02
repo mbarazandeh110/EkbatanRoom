@@ -2,7 +2,7 @@
 RFC / REQUIREMENT ID: REQ-001
 SOURCE SERVICE: web-client-pwa
 TARGET SERVICE: sfu-media-node
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -20,11 +20,28 @@ STATUS: OPEN
    - When `MEDIASOUP_ANNOUNCED_IP` is not explicitly set, `sfu-media-node` SHOULD automatically detect the primary non-loopback network interface IP (e.g., `192.168.x.x` or `10.x.x.x`) instead of falling back to `127.0.0.1`.
    - Alternatively, documentation and default `.env` / `config.yaml` should explicitly mandate setting `MEDIASOUP_ANNOUNCED_IP` to the host's actual network IP for browser compatibility.
 
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     Automatic non-loopback IP detection via OS routing table probing (`detect_primary_non_loopback_ip`) has been implemented in `src/config.rs`.
+     When `MEDIASOUP_ANNOUNCED_IP` is omitted, set to `"auto"`, or left `null` in `config.yaml`, `sfu-media-node` automatically detects the host's primary non-loopback IP (e.g. `10.x.x.x` or `192.168.x.x`) and uses it as the announced address in ICE candidates. This resolves the RFC 8828 loopback rejection in Chromium/WebKit browsers and eliminates the "could not establish pc connection" error.
+     If all routing probes fail (e.g., in strictly isolated offline testing environments without a default route), it safely falls back to `127.0.0.1`.
+     Setting `MEDIASOUP_ANNOUNCED_IP=none` explicitly disables announced_address, and setting an explicit IP overrides the auto-detection.
+     `config.yaml` and `config.example.yaml` have been updated with `announced_ip: null` (auto-detect), and `README.md` documentation has been updated.
+   - Modified Files:
+     * `src/config.rs`
+     * `config.yaml`
+     * `config.example.yaml`
+     * `README.md`
+   - Added Unit Tests:
+     * `config::tests::test_detect_primary_non_loopback_ip`
+     * `config::tests::test_announced_ip_yaml_auto_and_none`
+
 ===================================================================
 RFC / REQUIREMENT ID: REQ-002
 SOURCE SERVICE: web-client-pwa
 TARGET SERVICE: sfu-media-node
-STATUS: OPEN
+STATUS: REJECTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -45,3 +62,13 @@ STATUS: OPEN
 
 3. EXPECTED BOUNDARY BEHAVIOR:
    - When generating an SDP answer, if the incoming offer's m-section has direction `a=inactive`, the answer's corresponding m-section MUST also be set to `a=inactive`.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: REJECTED (Out of Domain Scope / Architectural Boundary Violation)
+   - Architectural Justification:
+     Per `.agents/rules.md` Section 1.1, Section 4.3.2, and `SIGNALING_CONTRACT.md`, `sfu-media-node` is a pure ORTC Media Plane built on `mediasoup-rust`. It communicates exclusively via gRPC (`proto/sfu/v1/media_engine.proto`) using ORTC structures (`RtpParameters`, `RtpCapabilities`, `DtlsParameters`).
+     `sfu-media-node` has ZERO knowledge of SDP syntax, SDP offer/answer negotiation, transceiver media directions (`a=sendrecv`, `a=recvonly`, `a=sendonly`, `a=inactive`), or LiveKit protocol frames.
+     All SDP offer/answer translation between browser clients and mediasoup ORTC objects is exclusively handled by `signaling-coordinator` (the Go service).
+     Per our Cross-Service RFC protocol (`.agents/skills/cross-service-rfc/SKILL.md`), this requirement is REJECTED for `sfu-media-node` and has been forwarded as an outbound Cross-Service RFC to `signaling-coordinator` in `../signaling-coordinator/sfu-media-node.requirements.txt`.
+   - Forwarded Location:
+     * `../signaling-coordinator/sfu-media-node.requirements.txt` (REQ-001)

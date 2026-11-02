@@ -1,0 +1,28 @@
+===================================================================
+RFC / REQUIREMENT ID: REQ-001
+SOURCE SERVICE: sfu-media-node
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | RFC 3264 WebRTC SDP Compliance] Conform SDP Answer Direction for Inactive m-sections (`a=inactive`)
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When a client participant unpublishes a media track (such as stopping screen share or muting a track with transceiver inactivation), the browser WebRTC transceiver is transitioned to `inactive`.
+   - The browser generates an offer containing an inactive m-section per RFC 3264 Section 6.1:
+     `m=video ...`
+     `a=mid:3`
+     `a=inactive`
+   - Currently, `signaling-coordinator`'s SDP translation layer (which converts between browser SDP offers/answers and mediasoup ORTC objects) echoes `a=recvonly` (or `a=sendrecv`) in the SDP answer for that inactive m-section instead of `a=inactive`.
+   - Per RFC 3264 Section 6.1: "If a stream is offered as inactive, the answer MUST be inactive."
+   - In standard Chromium and WebKit WebRTC engines (`sdp_offer_answer.cc`), receiving `a=recvonly` in response to an `a=inactive` offer throws:
+     `Failed to execute 'setRemoteDescription' on 'RTCPeerConnection': Failed to set remote answer sdp: Incompatible send direction`
+   - This failure causes publisher renegotiation to abort (`unable to set answer`), triggers negotiation timeout after 15 seconds, and causes WebSocket signaling disconnection.
+   - Note: While `web-client-pwa` has implemented client-side fallback sanitization (`conformAnswerSdp`), RFC 3264 compliance requires the server-side SDP answer generation in `signaling-coordinator` to conform natively.
+   - (Architectural context: Originally submitted by web-client-pwa to sfu-media-node as REQ-002, but triaged and redirected here because sfu-media-node is a pure ORTC media plane without SDP handling).
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `signaling-coordinator`'s SDP synthesis/answering logic:
+     When constructing an SDP answer to send to the browser over the signaling WebSocket:
+     If the incoming offer m-section has direction `a=inactive`, the corresponding m-section in the generated SDP answer MUST also have `a=inactive`.

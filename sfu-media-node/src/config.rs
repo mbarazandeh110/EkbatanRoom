@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use thiserror::Error;
@@ -341,11 +341,39 @@ pub struct RawObservabilityConfig {
     pub log_raw_sdp: Option<bool>,
 }
 
+/// Probes the OS routing table using an unconnected UDP socket to find the
+/// primary non-loopback IP address used by this host to reach network destinations.
+/// No network packets are actually transmitted across the wire.
+pub fn detect_primary_non_loopback_ip() -> Option<IpAddr> {
+    let targets = [
+        "8.8.8.8:80",
+        "1.1.1.1:80",
+        "10.255.255.255:80",
+        "192.168.255.255:80",
+        "172.31.255.255:80",
+    ];
+    for target in targets {
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            if socket.connect(target).is_ok() {
+                if let Ok(local_addr) = socket.local_addr() {
+                    let ip = local_addr.ip();
+                    if !ip.is_loopback() && !ip.is_unspecified() {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 impl Config {
     pub fn default_values() -> Self {
         Self {
             listen_ip: IpAddr::from([0, 0, 0, 0]),
-            announced_ip: Some("127.0.0.1".to_string()),
+            announced_ip: detect_primary_non_loopback_ip()
+                .map(|ip| ip.to_string())
+                .or_else(|| Some("127.0.0.1".to_string())),
             rtc_min_port: 40000,
             rtc_max_port: 49999,
             grpc_port: 50051,
@@ -447,7 +475,13 @@ impl Config {
             }
             if let Some(ann) = net.announced_ip {
                 let trimmed = ann.trim();
-                if !trimmed.is_empty() {
+                if trimmed.eq_ignore_ascii_case("auto") {
+                    self.announced_ip = detect_primary_non_loopback_ip()
+                        .map(|ip| ip.to_string())
+                        .or_else(|| Some("127.0.0.1".to_string()));
+                } else if trimmed.eq_ignore_ascii_case("none") {
+                    self.announced_ip = None;
+                } else if !trimmed.is_empty() {
                     self.announced_ip = Some(trimmed.to_string());
                 }
             }
@@ -563,7 +597,13 @@ impl Config {
             .or_else(|_| std::env::var("MEDIASOUP_ANNOUNCED_ADDRESS"))
         {
             let trimmed = val.trim();
-            if !trimmed.is_empty() {
+            if trimmed.eq_ignore_ascii_case("auto") {
+                self.announced_ip = detect_primary_non_loopback_ip()
+                    .map(|ip| ip.to_string())
+                    .or_else(|| Some("127.0.0.1".to_string()));
+            } else if trimmed.eq_ignore_ascii_case("none") {
+                self.announced_ip = None;
+            } else if !trimmed.is_empty() {
                 self.announced_ip = Some(trimmed.to_string());
             }
         }
@@ -1005,5 +1045,55 @@ router_codecs:
         std::env::remove_var("GRPC_PORT");
         std::env::remove_var("MEDIASOUP_WORKER_LOG_LEVEL");
         let _ = std::fs::remove_file(file_path);
+    }
+
+    #[test]
+    fn test_detect_primary_non_loopback_ip() {
+        if let Some(ip) = detect_primary_non_loopback_ip() {
+            assert!(!ip.is_loopback());
+            assert!(!ip.is_unspecified());
+        }
+        let default_cfg = Config::default_values();
+        assert!(default_cfg.announced_ip.is_some());
+    }
+
+    #[test]
+    fn test_announced_ip_yaml_auto_and_none() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let yaml_auto = r#"
+network:
+  announced_ip: "auto"
+"#;
+        let temp_dir = std::env::temp_dir();
+        let path_auto = temp_dir.join("test_sfu_auto.yaml");
+        std::fs::write(&path_auto, yaml_auto).unwrap();
+        let cfg_auto = Config::try_from_file(&path_auto).unwrap();
+        assert!(cfg_auto.announced_ip.is_some());
+        let _ = std::fs::remove_file(path_auto);
+
+        let yaml_none = r#"
+network:
+  announced_ip: "none"
+"#;
+        let path_none = temp_dir.join("test_sfu_none.yaml");
+        std::fs::write(&path_none, yaml_none).unwrap();
+        let cfg_none = Config::try_from_file(&path_none).unwrap();
+        assert!(cfg_none.announced_ip.is_none());
+        let _ = std::fs::remove_file(path_none);
+
+        // Test MEDIASOUP_ANNOUNCED_IP env var overrides
+        std::env::set_var("MEDIASOUP_ANNOUNCED_IP", "198.51.100.1");
+        let cfg_env = Config::try_from_env().unwrap();
+        assert_eq!(cfg_env.announced_ip.as_deref(), Some("198.51.100.1"));
+
+        std::env::set_var("MEDIASOUP_ANNOUNCED_IP", "none");
+        let cfg_env_none = Config::try_from_env().unwrap();
+        assert!(cfg_env_none.announced_ip.is_none());
+
+        std::env::set_var("MEDIASOUP_ANNOUNCED_IP", "auto");
+        let cfg_env_auto = Config::try_from_env().unwrap();
+        assert!(cfg_env_auto.announced_ip.is_some());
+
+        std::env::remove_var("MEDIASOUP_ANNOUNCED_IP");
     }
 }

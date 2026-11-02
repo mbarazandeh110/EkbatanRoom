@@ -4,7 +4,7 @@
 
 network:
   listen_ip: "0.0.0.0"
-  announced_ip: "127.0.0.1"
+  announced_ip: null # Auto-detects primary non-loopback IP (e.g. 192.168.x.x or 10.x.x.x) or specify manually
   rtc_min_port: 40000
   rtc_max_port: 49999
   grpc_port: 50051
