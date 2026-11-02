@@ -752,6 +752,18 @@ impl Config {
             }
         }
 
+        if let Ok(s) = std::env::var("MEDIASOUP_WEBRTC_SEND_BUFFER_SIZE") {
+            if let Ok(val) = s.trim().parse::<u32>() {
+                self.webrtc_transport.send_buffer_size = Some(val);
+            }
+        }
+
+        if let Ok(s) = std::env::var("MEDIASOUP_WEBRTC_RECV_BUFFER_SIZE") {
+            if let Ok(val) = s.trim().parse::<u32>() {
+                self.webrtc_transport.recv_buffer_size = Some(val);
+            }
+        }
+
         // PlainTransport env overrides
         if let Ok(s) = std::env::var("MEDIASOUP_PLAIN_MAX_SEND_MESSAGE_SIZE") {
             if let Ok(val) = s.trim().parse::<u32>() {

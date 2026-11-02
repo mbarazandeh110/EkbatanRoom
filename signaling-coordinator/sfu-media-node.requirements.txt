@@ -46,3 +46,34 @@ STATUS: IMPLEMENTED
      - `TestLiveKitWSHandler_OfferAnswer_InactiveMSectionConformsRFC3264_REQ001` in `internal/adapters/inbound/livekit/ws_handler_test.go`
    - Verification: All tests pass cleanly under `go test -v -race -count=1 ./...` with zero race conditions.
 ===================================================================
+===================================================================
+RFC / REQUIREMENT ID: REQ-002
+SOURCE SERVICE: sfu-media-node
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Video Quality & Framerate Degradation] Decouple Temporal Layer from Spatial Layer in SignalRequest_TrackSetting and Support TrackSetting.disabled
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In `internal/adapters/inbound/livekit/ws_handler.go` lines 450-453:
+     ```go
+     spatial := int32(trackSettings.GetQuality())
+     temporal := spatial
+     for _, sid := range trackSettings.GetTrackSids() {
+         if err := h.coordinator.SetConsumerLayers(ctx, roomID, identity, sid, spatial, temporal); err != nil {
+     ```
+   - When a browser client requests lower video quality (e.g. `web-client-pwa` AdaptiveViewportManager selecting LOW quality for thumbnail / grid tiles):
+     - `trackSettings.GetQuality()` is `VideoQuality_LOW` (`0`).
+     - `temporal` is forcefully set to `0`.
+   - In `sfu-media-node` (Mediasoup SFU), setting `temporal_layer: 0` instructs the SFU to throttle the consumer down to the lowest temporal framerate (7.5 fps).
+   - This causes video playback to become extremely slow, choppy, and laggy ("خیلی کند میشه") even when bandwidth is healthy.
+   - For multi-user video grids, clients want lower spatial resolution (e.g. 180p or 360p) while preserving smooth framerate (30 fps or highest available temporal layer).
+   - Furthermore, when `trackSettings.GetDisabled()` is true (e.g. offscreen video tile), `ws_handler.go` currently ignores the `disabled` flag and does not call `SetMediaPaused(true)`.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/ws_handler.go`:
+     1. When `trackSettings.GetDisabled()` is true, pause the consumer via `SetMediaPaused(..., true)`. When false, resume via `SetMediaPaused(..., false)`.
+     2. In `SetConsumerLayers`, decouple temporal layer from spatial layer:
+        Set `temporal := -1` (or highest layer / omit temporal constraint) so the SFU does not throttle the framerate down to 7.5 fps when spatial resolution is downgraded.

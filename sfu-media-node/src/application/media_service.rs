@@ -948,6 +948,17 @@ impl MediaUseCase for MediaService {
                 SfuDomainError::Mediasoup(format!("Failed to set preferred layers: {e}"))
             })?;
 
+        // Immediately request a keyframe so that layer transition produces an Intra-frame without stalling
+        if consumer.kind() == mediasoup::prelude::MediaKind::Video {
+            if let Err(e) = consumer.request_key_frame().await {
+                tracing::debug!(
+                    consumer_id = %consumer_id,
+                    error = %e,
+                    "Failed to request keyframe after layer update"
+                );
+            }
+        }
+
         Ok(())
     }
 

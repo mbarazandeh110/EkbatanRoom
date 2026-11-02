@@ -312,8 +312,9 @@ impl TransportUseCase for TransportService {
                             tracing::warn!(transport_id = %transport.id(), "Failed to set max_incoming_bitrate: {e}");
                         }
                     }
-                    if let Some(bitrate) = self.config.webrtc_transport.min_outgoing_bitrate {
-                        if let Err(e) = transport.set_min_outgoing_bitrate(bitrate).await {
+                    let min_bitrate = self.config.webrtc_transport.min_outgoing_bitrate.unwrap_or(600_000);
+                    if min_bitrate > 0 {
+                        if let Err(e) = transport.set_min_outgoing_bitrate(min_bitrate).await {
                             tracing::warn!(transport_id = %transport.id(), "Failed to set min_outgoing_bitrate: {e}");
                         }
                     }

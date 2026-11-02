@@ -28,17 +28,17 @@ worker:
   dtls_private_key_file: null
 
 webrtc_transport:
-  initial_available_outgoing_bitrate: 1000000
-  max_incoming_bitrate: null
-  min_outgoing_bitrate: null
-  max_outgoing_bitrate: null
+  initial_available_outgoing_bitrate: 3000000 # 3 Mbps initial outgoing bandwidth per subscriber transport
+  max_incoming_bitrate: 4000000 # 4 Mbps incoming cap per publisher
+  min_outgoing_bitrate: 600000 # 600 kbps minimum floor to prevent BWE collapse & video freezing
+  max_outgoing_bitrate: 15000000 # 15 Mbps max limit
   max_send_message_size: 5000000
   max_receive_message_size: 5000000
   sctp_send_buffer_size: 7000000
   sctp_per_stream_send_queue_limit: 5000000
   sctp_max_receiver_window_buffer_size: 7000000
-  send_buffer_size: null
-  recv_buffer_size: null
+  send_buffer_size: 1048576 # 1 MB UDP send buffer (prevents kernel buffer overruns on bursts)
+  recv_buffer_size: 1048576 # 1 MB UDP recv buffer
 
 plain_transport:
   max_send_message_size: 5000000
