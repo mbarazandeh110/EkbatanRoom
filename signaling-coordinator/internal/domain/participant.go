@@ -91,6 +91,12 @@ func (p *Participant) SetDisconnected() {
 	p.State = ParticipantStateDisconnected
 }
 
+func (p *Participant) GetState() ParticipantState {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.State
+}
+
 func (p *Participant) AddTrack(t *Track) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

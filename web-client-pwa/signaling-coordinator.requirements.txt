@@ -1,0 +1,43 @@
+===================================================================
+RFC / REQUIREMENT ID: REQ-001
+SOURCE SERVICE: signaling-coordinator
+TARGET SERVICE: web-client-pwa
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Critical | Media Playback & Participant Rendering]
+   Late joiners cannot view existing participants' streams (camera, screen share) or hear audio due to missing initial participant hydration and unattached audio tracks in web-client-pwa.
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When a new participant (Bob) joins a room where an existing participant (Alice) has already published audio, camera, or screen share:
+     1. In official `livekit-client` JS SDK (`src/room/Room.ts` line 1096 and line 2961):
+        ```typescript
+        // populate remote participants, these should not trigger new events
+        this.handleParticipantUpdates([pi, ...joinResponse.otherParticipants]);
+        ```
+        LiveKit client INTENTIONALLY DOES NOT fire `RoomEvent.ParticipantConnected` for participants who were already in the room when the connection was established (because the room is still in `ConnectionState.Connecting`).
+     2. In `src/adapters/rtc_livekit/livekit_adapter.ts` (line 354):
+        The adapter ONLY listens to `room.on(RoomEvent.ParticipantConnected, ...)`. After `await this.room.connect(...)`, it never inspects or emits `participantJoined` for participants already present in `this.room.remoteParticipants`.
+     3. In `src/application/room_session_controller.ts` (lines 35-39):
+        `useRoomStore.getState().addRemoteParticipantId(participant.id)` is ONLY called inside the `participantJoined` event listener.
+        Because `participantJoined` was never fired for existing participants, `useRoomStore.getState().remoteParticipantIds` remains an empty array `[]` on Bob's client.
+     4. In `src/components/stage/VideoGrid.tsx` (lines 19-22):
+        `allParticipantIds` is computed solely from `localParticipantId` and `remoteParticipantIds`. Because `remoteParticipantIds` is empty, no `VideoTile` component is ever mounted for Alice!
+        Consequently, Alice's camera video and screen share have no `<video>` element on Bob's DOM to attach to.
+     5. In `src/application/room_session_controller.ts` (lines 52-60):
+        The `trackSubscribed` handler upserts the track and participant into `useParticipantsStore`, but fails to ensure `participant.id` is added to `useRoomStore.getState().remoteParticipantIds`.
+     6. In `src/components/stage/VideoTile.tsx` and across the entire `web-client-pwa` codebase:
+        There is zero audio playback logic. No `<audio>` elements exist, and `track.attach()` is never called for audio tracks (`track.kind === 'audio'`). Even though audio RTP packets are received via WebRTC, the browser never routes them to audio output devices.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   1. In `src/adapters/rtc_livekit/livekit_adapter.ts`:
+      Immediately after `await this.room.connect(...)` resolves, iterate `this.room.remoteParticipants.values()` and emit `participantJoined` for each existing participant so the application layer is hydrated with all current peers.
+   2. In `src/adapters/rtc_livekit/livekit_adapter.ts` (or `room_session_controller.ts`):
+      When `RoomEvent.TrackSubscribed` fires:
+      If `track.kind === 'audio'`, invoke `const el = track.attach();` (or mount an `<audio autoPlay />` element in the DOM) so remote participant audio is played through the user's speakers/headphones.
+   3. In `src/application/room_session_controller.ts`:
+      In the `trackSubscribed` handler, ensure that if the participant is not local, `useRoomStore.getState().addRemoteParticipantId(participant.id)` is also called as a defensive fallback so that participants with active subscribed tracks always have a corresponding `VideoTile` rendered in `VideoGrid`.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: PENDING

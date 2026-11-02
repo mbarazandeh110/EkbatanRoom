@@ -127,6 +127,17 @@ func mapDomainTracksToProto(tracks []*domain.Track) []*livekitproto.TrackInfo {
 	return protoTracks
 }
 
+func mapDomainParticipantStateToProto(st domain.ParticipantState) livekitproto.ParticipantInfo_State {
+	switch st {
+	case domain.ParticipantStateJoining:
+		return livekitproto.ParticipantInfo_JOINING
+	case domain.ParticipantStateDisconnected:
+		return livekitproto.ParticipantInfo_DISCONNECTED
+	default:
+		return livekitproto.ParticipantInfo_JOINED
+	}
+}
+
 func (r *LiveKitResponder) SendJoinResponse(res *domain.JoinResult) error {
 	r.mu.Lock()
 	r.subTransport = res.SubscriberTransport
@@ -141,7 +152,7 @@ func (r *LiveKitResponder) SendJoinResponse(res *domain.JoinResult) error {
 			Sid:        p.SID,
 			Identity:   p.ID,
 			Name:       p.Name,
-			State:      livekitproto.ParticipantInfo_JOINED,
+			State:      mapDomainParticipantStateToProto(p.GetState()),
 			Tracks:     mapDomainTracksToProto(p.ListTracks()),
 			Permission: defaultParticipantPermission(),
 		})
@@ -244,7 +255,7 @@ func (r *LiveKitResponder) SendParticipantUpdate(participants []*domain.Particip
 			Sid:        p.SID,
 			Identity:   p.ID,
 			Name:       p.Name,
-			State:      livekitproto.ParticipantInfo_JOINED,
+			State:      mapDomainParticipantStateToProto(p.GetState()),
 			Tracks:     mapDomainTracksToProto(p.ListTracks()),
 			Permission: defaultParticipantPermission(),
 		})

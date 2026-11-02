@@ -506,6 +506,7 @@ func (a *RoomActor) Leave(ctx context.Context, participantID string) error {
 	}
 
 	p := session.Participant()
+	p.SetDisconnected()
 	delete(a.sessions, participantID)
 	a.participantCount.Add(-1)
 	_, _ = a.room.RemoveParticipant(participantID)
@@ -549,6 +550,8 @@ func (a *RoomActor) Leave(ctx context.Context, participantID string) error {
 	}
 
 	broadcastResponders, broadcastParts := a.collectBroadcastLocked()
+	// Include the disconnected participant so remaining clients drop their UI tile (LiveKit contract)
+	broadcastParts = append(broadcastParts, p)
 
 	a.mu.Unlock()
 

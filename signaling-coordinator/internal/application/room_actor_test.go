@@ -203,6 +203,22 @@ func TestRoomActor_JoinAndLeaveLifecycle(t *testing.T) {
 		t.Fatalf("expected 2 transports closed for user-1, got %d", len(engine.closedTransports))
 	}
 
+	// Verify user-2 received participant update with user-1 as Disconnected
+	if len(resp2.partsUpdate) < 2 {
+		t.Fatalf("expected user-2 to receive at least 2 participant updates, got %d", len(resp2.partsUpdate))
+	}
+	latestUpdate := resp2.partsUpdate[len(resp2.partsUpdate)-1]
+	foundUser1Disconnected := false
+	for _, p := range latestUpdate {
+		if p.ID == "user-1" && p.GetState() == domain.ParticipantStateDisconnected {
+			foundUser1Disconnected = true
+			break
+		}
+	}
+	if !foundUser1Disconnected {
+		t.Fatalf("expected user-2 to receive participant update with user-1 disconnected, got: %+v", latestUpdate)
+	}
+
 	// 4. Close Room
 	if err := actor.Close(ctx); err != nil {
 		t.Fatalf("Close room failed: %v", err)
