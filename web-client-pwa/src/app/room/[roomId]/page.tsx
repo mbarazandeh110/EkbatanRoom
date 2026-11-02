@@ -39,6 +39,7 @@ export default function RoomPage({
 
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [screenTrackId, setScreenTrackId] = useState<string | null>(null);
+  const screenTrackRef = React.useRef<MediaStreamTrack | null>(null);
 
   const handleJoin = async (options: {
     participantName: string;
@@ -103,8 +104,14 @@ export default function RoomPage({
   };
 
   const handleToggleScreenShare = async () => {
-    if (isScreenSharing && screenTrackId) {
-      await controller.unpublishLocalTrack(screenTrackId);
+    if (isScreenSharing) {
+      if (screenTrackId) {
+        await controller.unpublishLocalTrack(screenTrackId).catch(() => {});
+      }
+      if (screenTrackRef.current) {
+        screenTrackRef.current.stop();
+        screenTrackRef.current = null;
+      }
       setIsScreenSharing(false);
       setScreenTrackId(null);
     } else {
@@ -112,12 +119,23 @@ export default function RoomPage({
         const stream = await mediaDevices.getDisplayMedia();
         const screenTrack = stream.getVideoTracks()[0];
         if (screenTrack) {
-          screenTrack.onended = () => {
+          screenTrackRef.current = screenTrack;
+          screenTrack.onended = async () => {
+            if (screenTrackRef.current) {
+              screenTrackRef.current.stop();
+              screenTrackRef.current = null;
+            }
             setIsScreenSharing(false);
-            setScreenTrackId(null);
+            setScreenTrackId((currentId) => {
+              if (currentId) {
+                controller.unpublishLocalTrack(currentId).catch(() => {});
+              }
+              return null;
+            });
           };
           const descriptor = await controller.publishLocalTrack(screenTrack, {
             source: "screen",
+            simulcast: false,
           });
           setIsScreenSharing(true);
           setScreenTrackId(descriptor.id);
@@ -129,6 +147,10 @@ export default function RoomPage({
   };
 
   const handleLeave = async () => {
+    if (screenTrackRef.current) {
+      screenTrackRef.current.stop();
+      screenTrackRef.current = null;
+    }
     await controller.leaveRoom();
     await mediaDevices.releaseWakeLock();
     router.push("/");

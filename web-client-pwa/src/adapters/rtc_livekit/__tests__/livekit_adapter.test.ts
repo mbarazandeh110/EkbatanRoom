@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { LiveKitEngineAdapter } from "../livekit_adapter";
+import { LiveKitEngineAdapter, conformAnswerSdp } from "../livekit_adapter";
 import { EventEmitter } from "events";
-import { VideoQuality } from "livekit-client";
+import { VideoQuality, Track } from "livekit-client";
 
 class MockLiveKitRoom extends EventEmitter {
   public state = "disconnected";
@@ -280,5 +280,104 @@ describe("LiveKitEngineAdapter", () => {
     expect(mockAudioTrack.detach).toHaveBeenCalled();
     expect(mockRemove).toHaveBeenCalled();
     expect(trackUnsubListener).toHaveBeenCalledWith("pub-dyn", "remote-p2");
+  });
+
+  it("disables simulcast when publishing screen share track", async () => {
+    await adapter.connect({
+      url: "ws://localhost:7880",
+      token: "jwt-token-123",
+    });
+
+    const mockScreenTrack = {
+      kind: "video",
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+
+    await adapter.publishTrack(mockScreenTrack, {
+      source: "screen",
+    });
+
+    expect(mockRoom.localParticipant.publishTrack).toHaveBeenCalledWith(
+      mockScreenTrack,
+      expect.objectContaining({
+        simulcast: false,
+      })
+    );
+  });
+
+  it("unpublishes track cleanly when given track sid or source name", async () => {
+    await adapter.connect({
+      url: "ws://localhost:7880",
+      token: "jwt-token-123",
+    });
+
+    const mockTrack = { sid: "screen-track-1", stop: vi.fn() };
+    const mockPublication = {
+      trackSid: "pub-screen-1",
+      track: mockTrack,
+      source: Track.Source.ScreenShare,
+    };
+    mockRoom.localParticipant.trackPublications.set("pub-screen-1", mockPublication);
+
+    // Unpublish by source name "screen"
+    await adapter.unpublishTrack("screen");
+    expect(mockRoom.localParticipant.unpublishTrack).toHaveBeenCalledWith(mockTrack, true);
+
+    // Unpublish by track sid
+    await adapter.unpublishTrack("pub-screen-1");
+    expect(mockRoom.localParticipant.unpublishTrack).toHaveBeenCalledWith(mockTrack, true);
+  });
+});
+
+describe("conformAnswerSdp", () => {
+  it("coerces answer direction to inactive if offer was inactive (RFC 3264 Section 6.1)", () => {
+    const offerSdp = [
+      "v=0",
+      "o=- 1 2 IN IP4 127.0.0.1",
+      "s=-",
+      "t=0 0",
+      "m=video 9 UDP/TLS/RTP/SAVPF 96",
+      "a=mid:3",
+      "a=inactive",
+    ].join("\r\n");
+
+    const answerSdp = [
+      "v=0",
+      "o=- 1 2 IN IP4 127.0.0.1",
+      "s=-",
+      "t=0 0",
+      "m=video 9 UDP/TLS/RTP/SAVPF 96",
+      "a=mid:3",
+      "a=recvonly",
+    ].join("\r\n");
+
+    const conformed = conformAnswerSdp(answerSdp, offerSdp);
+    expect(conformed).toContain("a=inactive");
+    expect(conformed).not.toContain("a=recvonly");
+  });
+
+  it("preserves valid offer-answer direction combinations", () => {
+    const offerSdp = [
+      "v=0",
+      "o=- 1 2 IN IP4 127.0.0.1",
+      "s=-",
+      "t=0 0",
+      "m=video 9 UDP/TLS/RTP/SAVPF 96",
+      "a=mid:1",
+      "a=sendrecv",
+    ].join("\r\n");
+
+    const answerSdp = [
+      "v=0",
+      "o=- 1 2 IN IP4 127.0.0.1",
+      "s=-",
+      "t=0 0",
+      "m=video 9 UDP/TLS/RTP/SAVPF 96",
+      "a=mid:1",
+      "a=recvonly",
+    ].join("\r\n");
+
+    const conformed = conformAnswerSdp(answerSdp, offerSdp);
+    expect(conformed).toContain("a=recvonly");
   });
 });

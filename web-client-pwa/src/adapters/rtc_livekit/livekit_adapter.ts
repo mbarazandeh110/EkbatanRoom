@@ -29,6 +29,113 @@ import { TelemetryPort } from "../../ports/telemetry_port";
 let isPeerConnectionPatched = false;
 let currentTargetLanIp: string | null = null;
 
+/**
+ * Conforms SDP Answer directions to RFC 3264 requirements based on the Local Offer.
+ * Specifically prevents "Incompatible send direction" exceptions in Chromium when
+ * an m-section was offered as inactive (e.g. unpublished screen share) but the remote
+ * answer responds with recvonly or sendrecv.
+ */
+export function conformAnswerSdp(answerSdp: string, offerSdp?: string): string {
+  if (!offerSdp || !answerSdp) return answerSdp;
+
+  const splitSections = (sdp: string) => {
+    const lines = sdp.split(/\r?\n/);
+    const sections: string[][] = [];
+    let current: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith("m=") && sections.length > 0) {
+        sections.push(current);
+        current = [line];
+      } else if (line.startsWith("m=") && sections.length === 0) {
+        sections.push(current);
+        current = [line];
+      } else {
+        current.push(line);
+      }
+    }
+    if (current.length > 0) {
+      sections.push(current);
+    }
+    return sections;
+  };
+
+  const getMidAndDir = (lines: string[]) => {
+    let mid: string | null = null;
+    let dir = "sendrecv";
+    let hasExplicitDir = false;
+    for (const l of lines) {
+      const trimmed = l.trim();
+      if (trimmed.startsWith("a=mid:")) {
+        mid = trimmed.slice(6).trim();
+      } else if (
+        trimmed === "a=sendrecv" ||
+        trimmed === "a=sendonly" ||
+        trimmed === "a=recvonly" ||
+        trimmed === "a=inactive"
+      ) {
+        dir = trimmed.slice(2).trim();
+        hasExplicitDir = true;
+      }
+    }
+    return { mid, dir, hasExplicitDir };
+  };
+
+  const offerSections = splitSections(offerSdp);
+  const offerMap = new Map<string, string>();
+  const offerByIndex: string[] = [];
+
+  for (let i = 1; i < offerSections.length; i++) {
+    const info = getMidAndDir(offerSections[i]);
+    if (info.mid) {
+      offerMap.set(info.mid, info.dir);
+    }
+    offerByIndex.push(info.dir);
+  }
+
+  const answerSections = splitSections(answerSdp);
+  let mediaIndex = 0;
+  for (let i = 1; i < answerSections.length; i++) {
+    const sec = answerSections[i];
+    const info = getMidAndDir(sec);
+    const offerDir =
+      (info.mid ? offerMap.get(info.mid) : null) ||
+      offerByIndex[mediaIndex] ||
+      "sendrecv";
+    mediaIndex++;
+
+    let validAnswerDir = info.dir;
+    if (offerDir === "inactive") {
+      validAnswerDir = "inactive";
+    } else if (offerDir === "recvonly" && (info.dir === "recvonly" || info.dir === "sendrecv")) {
+      validAnswerDir = "inactive";
+    } else if (offerDir === "sendonly" && (info.dir === "sendonly" || info.dir === "sendrecv")) {
+      validAnswerDir = "inactive";
+    }
+
+    if (validAnswerDir !== info.dir || (!info.hasExplicitDir && offerDir === "inactive")) {
+      let replaced = false;
+      for (let j = 0; j < sec.length; j++) {
+        const trimmed = sec[j].trim();
+        if (
+          trimmed === "a=sendrecv" ||
+          trimmed === "a=sendonly" ||
+          trimmed === "a=recvonly" ||
+          trimmed === "a=inactive"
+        ) {
+          sec[j] = `a=${validAnswerDir}`;
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) {
+        sec.push(`a=${validAnswerDir}`);
+      }
+    }
+  }
+
+  return answerSections.map((s) => s.join("\r\n")).join("\r\n");
+}
+
 function ensurePeerConnectionPatched(lanIp?: string) {
   if (lanIp) {
     currentTargetLanIp = lanIp;
@@ -44,8 +151,14 @@ function ensurePeerConnectionPatched(lanIp?: string) {
 
   const origSetRemote = window.RTCPeerConnection.prototype.setRemoteDescription;
   window.RTCPeerConnection.prototype.setRemoteDescription = async function (desc) {
-    if (currentTargetLanIp && desc && desc.sdp && desc.sdp.includes("127.0.0.1")) {
-      const rewrittenSdp = desc.sdp.replaceAll("127.0.0.1", currentTargetLanIp);
+    if (desc && desc.sdp) {
+      let rewrittenSdp = desc.sdp;
+      if (currentTargetLanIp && rewrittenSdp.includes("127.0.0.1")) {
+        rewrittenSdp = rewrittenSdp.replaceAll("127.0.0.1", currentTargetLanIp);
+      }
+      if (desc.type === "answer" && this.localDescription && this.localDescription.sdp) {
+        rewrittenSdp = conformAnswerSdp(rewrittenSdp, this.localDescription.sdp);
+      }
       return (origSetRemote as any).call(this, { type: desc.type, sdp: rewrittenSdp });
     }
     return (origSetRemote as any).call(this, desc);
@@ -79,7 +192,7 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
     private telemetry?: TelemetryPort,
     private roomFactory: () => Room = () =>
       new Room({
-        adaptiveStream: true,
+        adaptiveStream: false,
         dynacast: true,
         singlePeerConnection: false,
       })
@@ -305,9 +418,10 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
       throw new Error("Cannot publish track: not connected to room");
     }
 
+    const isScreenShare = options.source === "screen";
     const lkSource = this.mapDomainSourceToLk(options.source);
     const publication = await this.room.localParticipant.publishTrack(track, {
-      simulcast: options.simulcast ?? true,
+      simulcast: isScreenShare ? false : (options.simulcast ?? true),
       source: lkSource,
     });
 
@@ -326,9 +440,15 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
     if (!this.room?.localParticipant) return;
 
     for (const pub of this.room.localParticipant.trackPublications.values()) {
-      if (pub.trackSid === trackId || pub.track?.sid === trackId) {
+      if (
+        pub.trackSid === trackId ||
+        pub.track?.sid === trackId ||
+        (trackId === "screen" && pub.source === LkTrack.Source.ScreenShare) ||
+        (trackId === "camera" && pub.source === LkTrack.Source.Camera) ||
+        (trackId === "microphone" && pub.source === LkTrack.Source.Microphone)
+      ) {
         if (pub.track) {
-          await this.room.localParticipant.unpublishTrack(pub.track);
+          await this.room.localParticipant.unpublishTrack(pub.track, true);
         }
         return;
       }

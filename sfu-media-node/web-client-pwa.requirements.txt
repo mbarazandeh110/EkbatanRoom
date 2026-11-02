@@ -19,3 +19,29 @@ STATUS: OPEN
 3. EXPECTED BOUNDARY BEHAVIOR:
    - When `MEDIASOUP_ANNOUNCED_IP` is not explicitly set, `sfu-media-node` SHOULD automatically detect the primary non-loopback network interface IP (e.g., `192.168.x.x` or `10.x.x.x`) instead of falling back to `127.0.0.1`.
    - Alternatively, documentation and default `.env` / `config.yaml` should explicitly mandate setting `MEDIASOUP_ANNOUNCED_IP` to the host's actual network IP for browser compatibility.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-002
+SOURCE SERVICE: web-client-pwa
+TARGET SERVICE: sfu-media-node
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | RFC 3264 WebRTC SDP Compliance] Conform SDP Answer Direction for Inactive m-sections (`a=inactive`)
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When a client participant unpublishes a media track (for example, stopping screen share), the browser WebRTC transceiver is set to `inactive`.
+   - The browser generates an offer containing an inactive m-section per RFC 3264 Section 6.1:
+     `m=video ...`
+     `a=mid:3`
+     `a=inactive`
+   - Currently, `sfu-media-node` generates an SDP answer echoing `a=recvonly` (or `a=sendrecv`) for that m-section instead of `a=inactive`.
+   - Per RFC 3264 Section 6.1: "If a stream is offered as inactive, the answer MUST be inactive."
+   - In standard Chromium / WebKit WebRTC engines (`sdp_offer_answer.cc`), receiving `a=recvonly` in response to an `a=inactive` offer throws:
+     `Failed to execute 'setRemoteDescription' on 'RTCPeerConnection': Failed to set remote answer sdp: Incompatible send direction`
+   - This causes publisher renegotiation to fail with `unable to set answer`, negotiation timeout after 15 seconds, and websocket stream drops.
+   - Note: `web-client-pwa` has implemented client-side defense-in-depth sanitization (`conformAnswerSdp`), but `sfu-media-node` should natively conform to RFC 3264 by setting `a=inactive` in the answer when the offer m-section is `inactive`.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - When generating an SDP answer, if the incoming offer's m-section has direction `a=inactive`, the answer's corresponding m-section MUST also be set to `a=inactive`.
