@@ -483,21 +483,14 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         })
                         .detach();
 
-                    let worker_index = self
-                        .state
-                        .routers
-                        .get(&params.router_id)
-                        .map(|r| r.worker_index)
-                        .unwrap_or(0);
-
                     if params.kind == DomainMediaKind::Audio {
                         let observer_opt =
                             self.state.routers.get(&params.router_id).and_then(|r| {
-                                if worker_index == r.worker_index {
+                                if transport_worker_index == r.worker_index {
                                     Some(r.audio_level_observer.clone())
                                 } else {
                                     r.sub_routers
-                                        .get(&worker_index)
+                                        .get(&transport_worker_index)
                                         .map(|sub| sub.audio_level_observer.clone())
                                 }
                             });
@@ -512,7 +505,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                                 tracing::warn!(
                                     router_id = %params.router_id,
                                     producer_id = %producer_id,
-                                    worker_index = %worker_index,
+                                    worker_index = %transport_worker_index,
                                     error = %e,
                                     "Failed to add pipe audio producer to AudioLevelObserver"
                                 );

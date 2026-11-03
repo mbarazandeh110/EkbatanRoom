@@ -62,9 +62,9 @@
 | `MEDIASOUP_WORKER_LOG_TAGS` | `info,ice,dtls,rtp,srtp,rtcp,rtx,bwe,score` | تگ‌های فیلتر لاگ پروسه ورکر مدیاسوپ |
 | `MEDIASOUP_DTLS_CERT` | - | مسیر فایل گواهی سفارشی DTLS ورکر (پشتیبانی از `MEDIASOUP_WORKER_DTLS_CERT`) |
 | `MEDIASOUP_DTLS_KEY` | - | مسیر فایل کلید خصوصی سفارشی DTLS ورکر (پشتیبانی از `MEDIASOUP_WORKER_DTLS_KEY`) |
-| `MEDIASOUP_INITIAL_AVAILABLE_OUTGOING_BITRATE` | `3000000` | بیت‌ریت اولیه ارسالی WebRTC بر حسب bps (۳ مگابیت جهت تخصیص مناسب اتاق‌های چندکاربره) |
-| `MEDIASOUP_MIN_OUTGOING_BITRATE` | `600000` | حداقل کف خروجی WebRTC بر حسب bps (جلوگیری قطعی از فروپاشی BWE و فریز ویدیو در افت شبکه) |
-| `MEDIASOUP_MAX_OUTGOING_BITRATE` | `15000000` | سقف بیت‌ریت خروجی WebRTC بر حسب bps |
+| `MEDIASOUP_INITIAL_AVAILABLE_OUTGOING_BITRATE` | `1000000` | بیت‌ریت اولیه ارسالی WebRTC بر حسب bps (۱ مگابیت بر ثانیه) |
+| `MEDIASOUP_MIN_OUTGOING_BITRATE` | `600000` | حداقل کف خروجی WebRTC بر حسب bps (جلوگیری از فروپاشی BWE و فریز ویدیو در افت شبکه) |
+| `MEDIASOUP_MAX_OUTGOING_BITRATE` | بدون محدودیت (`None`) | سقف بیت‌ریت خروجی WebRTC بر حسب bps (در صورت تعیین اعمال می‌شود) |
 | `MEDIASOUP_CODECS_START_BITRATE` | `1000` | مقدار `x-google-start-bitrate` اولیه برای کدک‌های تصویری |
 | `SFU_WORKER_CAPACITY_WEIGHT` | `1000` | وزن ظرفیت اسمی هر ورکر جهت محاسبه درصد بار منابع فعال |
 | `SFU_WORKER_SPILLOVER_THRESHOLD_PERCENT` | `80.0` | درصد آستانه سرریز ورکر جهت ساخت Sub-Router روی کم‌بارترین ورکر دیگر |

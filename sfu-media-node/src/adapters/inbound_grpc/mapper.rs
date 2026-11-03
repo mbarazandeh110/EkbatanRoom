@@ -465,10 +465,20 @@ pub fn from_connect_transport_request(
     let dtls_role = validation::parse_dtls_role(&req.dtls_role)?;
     let fp_tuples: Vec<(String, String)> = req
         .remote_fingerprints
-        .into_iter()
-        .map(|f| (f.algorithm, f.value))
+        .iter()
+        .map(|f| (f.algorithm.clone(), f.value.clone()))
         .collect();
-    let remote_fingerprints = parse_dtls_fingerprints(&fp_tuples)?;
+    // Validate DTLS fingerprints structure at the inbound RPC boundary
+    let _ = parse_dtls_fingerprints(&fp_tuples)?;
+
+    let remote_fingerprints = req
+        .remote_fingerprints
+        .into_iter()
+        .map(|f| DtlsFingerprintInfo {
+            algorithm: f.algorithm.to_lowercase(),
+            value: f.value,
+        })
+        .collect();
 
     Ok(ConnectTransportParams {
         router_id: req.router_id,

@@ -59,11 +59,22 @@ impl TransportService {
 
 #[async_trait]
 impl TransportUseCase for TransportService {
-    #[tracing::instrument(skip(self, params), fields(router_id = %params.router_id, peer_id = %params.peer_id, request_id = %params.request_id))]
+    #[tracing::instrument(
+        skip(self, params),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %params.router_id,
+            peer_id = %params.peer_id,
+            request_id = %params.request_id
+        )
+    )]
     async fn create_transport(
         &self,
         params: CreateTransportParams,
     ) -> Result<CreateTransportResult, SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(&params.router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         if self.state.is_draining.load(Ordering::SeqCst) {
             return Err(SfuDomainError::SystemDraining(
                 "Node is draining; rejecting new transport".to_string(),
@@ -441,16 +452,27 @@ impl TransportUseCase for TransportService {
             .await
     }
 
-    #[tracing::instrument(skip(self, params), fields(router_id = %params.router_id, transport_id = %params.transport_id))]
+    #[tracing::instrument(
+        skip(self, params),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %params.router_id,
+            transport_id = %params.transport_id,
+            peer_id = tracing::field::Empty
+        )
+    )]
     async fn connect_transport(
         &self,
         params: ConnectTransportParams,
     ) -> Result<(), SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(&params.router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         validation::validate_not_empty("router_id", &params.router_id)?;
         validation::validate_not_empty("transport_id", &params.transport_id)?;
 
         // Extract transport, check router ownership, and DROP guard before .await (Deadlock fix)
-        let transport = {
+        let (transport, peer_id) = {
             let t_item = self
                 .state
                 .transports
@@ -476,8 +498,9 @@ impl TransportUseCase for TransportService {
                 )));
             }
 
-            t_item.transport.clone()
+            (t_item.transport.clone(), t_item.peer_id.clone())
         };
+        tracing::Span::current().record("peer_id", peer_id.as_str());
 
         let role = match params.dtls_role {
             crate::domain::entities::DtlsRole::Auto => {
@@ -491,10 +514,15 @@ impl TransportUseCase for TransportService {
             }
         };
 
-        let dtls_parameters = DtlsParameters {
-            role,
-            fingerprints: params.remote_fingerprints,
-        };
+        let fp_tuples: Vec<(String, String)> = params
+            .remote_fingerprints
+            .into_iter()
+            .map(|f| (f.algorithm, f.value))
+            .collect();
+        let fingerprints =
+            crate::adapters::inbound_grpc::mapper::parse_dtls_fingerprints(&fp_tuples)?;
+
+        let dtls_parameters = DtlsParameters { role, fingerprints };
 
         transport
             .connect(WebRtcTransportRemoteParameters { dtls_parameters })
@@ -504,17 +532,28 @@ impl TransportUseCase for TransportService {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(router_id = %router_id, transport_id = %transport_id))]
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %router_id,
+            transport_id = %transport_id,
+            peer_id = tracing::field::Empty
+        )
+    )]
     async fn restart_ice(
         &self,
         router_id: &str,
         transport_id: &str,
     ) -> Result<RestartIceResult, SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         validation::validate_not_empty("router_id", router_id)?;
         validation::validate_not_empty("transport_id", transport_id)?;
 
         // Extract transport, check router ownership, and DROP guard before .await (Deadlock fix)
-        let transport = {
+        let (transport, peer_id) = {
             let t_item = self.state.transports.get(transport_id).ok_or_else(|| {
                 SfuDomainError::NotFound(format!("Transport '{transport_id}' not found"))
             })?;
@@ -531,8 +570,9 @@ impl TransportUseCase for TransportService {
                 )));
             }
 
-            t_item.transport.clone()
+            (t_item.transport.clone(), t_item.peer_id.clone())
         };
+        tracing::Span::current().record("peer_id", peer_id.as_str());
 
         let new_ice = transport
             .restart_ice()
@@ -549,12 +589,24 @@ impl TransportUseCase for TransportService {
         })
     }
 
-    #[tracing::instrument(skip(self), fields(router_id = %router_id, transport_id = %transport_id))]
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %router_id,
+            transport_id = %transport_id,
+            peer_id = tracing::field::Empty
+        )
+    )]
     fn close_transport(&self, router_id: &str, transport_id: &str) -> Result<(), SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         validation::validate_not_empty("router_id", router_id)?;
         validation::validate_not_empty("transport_id", transport_id)?;
 
         if let Some((_, t_item)) = self.state.transports.remove(transport_id) {
+            tracing::Span::current().record("peer_id", t_item.peer_id.as_str());
             if t_item.router_id != router_id {
                 // Restore if router mismatch
                 self.state

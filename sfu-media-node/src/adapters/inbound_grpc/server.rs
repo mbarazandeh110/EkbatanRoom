@@ -82,6 +82,7 @@ where
             tonic::Code::Aborted => "aborted",
             tonic::Code::Unavailable => "unavailable",
             tonic::Code::Unimplemented => "unimplemented",
+            tonic::Code::PermissionDenied => "permission_denied",
             tonic::Code::Internal => "internal",
             _ => "error",
         },

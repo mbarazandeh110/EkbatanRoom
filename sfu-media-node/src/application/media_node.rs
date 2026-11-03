@@ -138,8 +138,6 @@ impl MediaNode {
 
         let system_sampler = Arc::new(SystemSampler::new());
 
-        let is_enterprise = pipe_service.is_enterprise_enabled();
-
         // Spawn periodic capacity publishing background task (every 1s, with >=3% hysteresis or 5s heartbeat)
         let sampler_clone = system_sampler.clone();
         let worker_pool_clone = worker_pool.clone();
@@ -147,21 +145,34 @@ impl MediaNode {
         let event_hub_clone = event_hub.clone();
         let metrics_clone = metrics.clone();
         let config_clone = config.clone();
+        let pipe_service_clone = pipe_service.clone();
 
         let capacity_task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
             let mut heartbeat_ticks = 0u32;
             let mut last_published_load = 0.0f32;
+            let mut last_enterprise_state = pipe_service_clone.is_enterprise_enabled();
 
             loop {
                 ticker.tick().await;
+
+                // Dynamically check current enterprise state & license validity on every tick
+                let current_is_enterprise = pipe_service_clone.is_enterprise_enabled();
+                if let Some(lic) = state_clone.get_active_license() {
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let is_valid = lic.is_valid_at(now_secs);
+                    metrics_clone.update_license_status(is_valid, lic.expires_at);
+                }
 
                 let info = compute_node_capacity(
                     worker_pool_clone.as_ref(),
                     &config_clone,
                     &sampler_clone,
                     &state_clone,
-                    is_enterprise,
+                    current_is_enterprise,
                 );
 
                 // Update Prometheus metrics every tick
@@ -172,12 +183,14 @@ impl MediaNode {
                     info.effective_load_percent,
                 );
 
-                // Check hysteresis and heartbeat
+                // Check hysteresis, heartbeat, or dynamic license state transition
                 let delta = (info.effective_load_percent - last_published_load).abs();
+                let enterprise_changed = current_is_enterprise != last_enterprise_state;
                 heartbeat_ticks += 1;
 
-                if delta >= 3.0 || heartbeat_ticks >= 5 {
+                if delta >= 3.0 || heartbeat_ticks >= 5 || enterprise_changed {
                     last_published_load = info.effective_load_percent;
+                    last_enterprise_state = current_is_enterprise;
                     heartbeat_ticks = 0;
                     event_hub_clone.publish_node_capacity(&info);
                 }
@@ -307,10 +320,21 @@ impl MediaNode {
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Dynamic license verification failed");
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let (still_valid, exp) = self
+                    .state
+                    .get_active_license()
+                    .map(|lic| (lic.is_valid_at(now_secs), lic.expires_at))
+                    .unwrap_or((false, 0));
+                self.metrics.update_license_status(still_valid, exp);
+
                 Ok(crate::ports::inbound::ApplyLicenseResult {
                     is_valid: false,
                     license_tier: self.state.get_license_tier(),
-                    expires_at_timestamp: 0,
+                    expires_at_timestamp: exp as i64,
                     features: Vec::new(),
                     issued_to: String::new(),
                     error_message: e.to_string(),

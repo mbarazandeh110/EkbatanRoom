@@ -61,8 +61,20 @@ impl MediaService {
 
 #[async_trait]
 impl MediaUseCase for MediaService {
-    #[tracing::instrument(skip(self, params), fields(router_id = %params.router_id, transport_id = %params.transport_id, peer_id = %params.peer_id, request_id = %params.request_id))]
+    #[tracing::instrument(
+        skip(self, params),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %params.router_id,
+            transport_id = %params.transport_id,
+            peer_id = %params.peer_id,
+            request_id = %params.request_id
+        )
+    )]
     async fn produce(&self, params: ProduceParams) -> Result<ProduceResult, SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(&params.router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         if self.state.is_draining.load(Ordering::SeqCst) {
             return Err(SfuDomainError::SystemDraining(
                 "Node is draining; rejecting new producer".to_string(),
@@ -297,8 +309,21 @@ impl MediaUseCase for MediaService {
             .await
     }
 
-    #[tracing::instrument(skip(self, params), fields(router_id = %params.router_id, transport_id = %params.subscriber_transport_id, producer_id = %params.producer_id, request_id = %params.request_id))]
+    #[tracing::instrument(
+        skip(self, params),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %params.router_id,
+            transport_id = %params.subscriber_transport_id,
+            producer_id = %params.producer_id,
+            peer_id = tracing::field::Empty,
+            request_id = %params.request_id
+        )
+    )]
     async fn consume(&self, params: ConsumeParams) -> Result<ConsumeResult, SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(&params.router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         if self.state.is_draining.load(Ordering::SeqCst) {
             return Err(SfuDomainError::SystemDraining(
                 "Node is draining; rejecting new consumer".to_string(),
@@ -384,6 +409,7 @@ impl MediaUseCase for MediaService {
                             t_item.worker_index,
                         )
                     };
+                    tracing::Span::current().record("peer_id", peer_id.as_str());
 
                     // Intra-Node Multi-Worker Spillover: pipe if producer and subscriber transport are on different workers
                     if producer_physical_router_id != sub_physical_router_id {
@@ -813,7 +839,15 @@ impl MediaUseCase for MediaService {
             .await
     }
 
-    #[tracing::instrument(skip(self), fields(router_id = %router_id, resource_id = %resource_id))]
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %router_id,
+            resource_id = %resource_id,
+            peer_id = tracing::field::Empty
+        )
+    )]
     async fn set_media_paused(
         &self,
         router_id: &str,
@@ -821,12 +855,15 @@ impl MediaUseCase for MediaService {
         is_producer: bool,
         paused: bool,
     ) -> Result<(), SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         validation::validate_not_empty("router_id", router_id)?;
         validation::validate_not_empty("resource_id", resource_id)?;
 
         if is_producer {
             // Extract producer and DROP guard before .await
-            let producer = {
+            let (producer, peer_id) = {
                 let p_item = self
                     .state
                     .get_producer(router_id, resource_id)
@@ -840,8 +877,9 @@ impl MediaUseCase for MediaService {
                     )));
                 }
 
-                p_item.producer.clone()
+                (p_item.producer.clone(), p_item.peer_id.clone())
             };
+            tracing::Span::current().record("peer_id", peer_id.as_str());
 
             if paused {
                 producer
@@ -871,7 +909,7 @@ impl MediaUseCase for MediaService {
             }
         } else {
             // Extract consumer and DROP guard before .await
-            let consumer = {
+            let (consumer, peer_id) = {
                 let c_item = self.state.consumers.get(resource_id).ok_or_else(|| {
                     SfuDomainError::NotFound(format!("Consumer '{resource_id}' not found"))
                 })?;
@@ -888,8 +926,9 @@ impl MediaUseCase for MediaService {
                     )));
                 }
 
-                c_item.consumer.clone()
+                (c_item.consumer.clone(), c_item.peer_id.clone())
             };
+            tracing::Span::current().record("peer_id", peer_id.as_str());
 
             if paused {
                 consumer
@@ -907,18 +946,29 @@ impl MediaUseCase for MediaService {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(router_id = %router_id, consumer_id = %consumer_id))]
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %router_id,
+            consumer_id = %consumer_id,
+            peer_id = tracing::field::Empty
+        )
+    )]
     async fn set_consumer_preferred_layers(
         &self,
         router_id: &str,
         consumer_id: &str,
         layers: ConsumerLayersInfo,
     ) -> Result<(), SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         validation::validate_not_empty("router_id", router_id)?;
         validation::validate_not_empty("consumer_id", consumer_id)?;
 
         // Extract consumer and DROP guard before .await
-        let consumer = {
+        let (consumer, peer_id) = {
             let c_item = self.state.consumers.get(consumer_id).ok_or_else(|| {
                 SfuDomainError::NotFound(format!("Consumer '{consumer_id}' not found"))
             })?;
@@ -935,8 +985,9 @@ impl MediaUseCase for MediaService {
                 )));
             }
 
-            c_item.consumer.clone()
+            (c_item.consumer.clone(), c_item.peer_id.clone())
         };
+        tracing::Span::current().record("peer_id", peer_id.as_str());
 
         consumer
             .set_preferred_layers(ConsumerLayers {
@@ -962,8 +1013,19 @@ impl MediaUseCase for MediaService {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(router_id = %router_id, producer_id = %producer_id))]
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %router_id,
+            producer_id = %producer_id,
+            peer_id = tracing::field::Empty
+        )
+    )]
     fn close_producer(&self, router_id: &str, producer_id: &str) -> Result<(), SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         validation::validate_not_empty("router_id", router_id)?;
         validation::validate_not_empty("producer_id", producer_id)?;
 
@@ -972,6 +1034,7 @@ impl MediaUseCase for MediaService {
             .producers
             .remove(&(router_id.to_string(), producer_id.to_string()))
         {
+            tracing::Span::current().record("peer_id", item.peer_id.as_str());
             item.is_closed.store(true, Ordering::SeqCst);
             let p_weight = if item.kind == MediaKind::Audio { 2 } else { 10 };
             self.worker_pool
@@ -1023,8 +1086,19 @@ impl MediaUseCase for MediaService {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(router_id = %router_id, consumer_id = %consumer_id))]
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %router_id,
+            consumer_id = %consumer_id,
+            peer_id = tracing::field::Empty
+        )
+    )]
     fn close_consumer(&self, router_id: &str, consumer_id: &str) -> Result<(), SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         validation::validate_not_empty("router_id", router_id)?;
         validation::validate_not_empty("consumer_id", consumer_id)?;
 
@@ -1032,10 +1106,11 @@ impl MediaUseCase for MediaService {
             .state
             .consumers
             .get(consumer_id)
-            .map(|c| c.router_id == router_id);
+            .map(|c| (c.router_id == router_id, c.peer_id.clone()));
 
         match router_matches {
-            Some(true) => {
+            Some((true, peer_id)) => {
+                tracing::Span::current().record("peer_id", peer_id.as_str());
                 if let Some(item) = self.state.cascade_remove_consumer(consumer_id) {
                     let c_weight = if item.kind == MediaKind::Audio { 1 } else { 2 };
                     self.worker_pool
@@ -1064,26 +1139,37 @@ impl MediaUseCase for MediaService {
                 }
                 Ok(())
             }
-            Some(false) => Err(SfuDomainError::NotFound(format!(
+            Some((false, _)) => Err(SfuDomainError::NotFound(format!(
                 "Consumer '{consumer_id}' does not belong to router '{router_id}'"
             ))),
             None => Ok(()),
         }
     }
 
-    #[tracing::instrument(skip(self), fields(router_id = %router_id, resource_id = %resource_id))]
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %router_id,
+            resource_id = %resource_id,
+            peer_id = tracing::field::Empty
+        )
+    )]
     async fn get_stats(
         &self,
         router_id: &str,
         resource_id: &str,
         resource_type: &str,
     ) -> Result<ResourceStatsInfo, SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         validation::validate_not_empty("router_id", router_id)?;
         validation::validate_not_empty("resource_id", resource_id)?;
 
         match resource_type.to_lowercase().as_str() {
             "transport" => {
-                let transport = {
+                let (transport, peer_id) = {
                     let t_item = self.state.transports.get(resource_id).ok_or_else(|| {
                         SfuDomainError::NotFound(format!("Transport '{resource_id}' not found"))
                     })?;
@@ -1100,8 +1186,9 @@ impl MediaUseCase for MediaService {
                         )));
                     }
 
-                    t_item.transport.clone()
+                    (t_item.transport.clone(), t_item.peer_id.clone())
                 };
+                tracing::Span::current().record("peer_id", peer_id.as_str());
 
                 let producer_ids: Vec<String> = self
                     .state
@@ -1177,7 +1264,7 @@ impl MediaUseCase for MediaService {
                 })
             }
             "producer" => {
-                let producer = {
+                let (producer, peer_id) = {
                     let p_item =
                         self.state
                             .get_producer(router_id, resource_id)
@@ -1193,8 +1280,9 @@ impl MediaUseCase for MediaService {
                         )));
                     }
 
-                    p_item.producer.clone()
+                    (p_item.producer.clone(), p_item.peer_id.clone())
                 };
+                tracing::Span::current().record("peer_id", peer_id.as_str());
 
                 let stats = producer
                     .get_stats()
@@ -1220,7 +1308,7 @@ impl MediaUseCase for MediaService {
                 })
             }
             "consumer" => {
-                let (consumer, current_layers) = {
+                let (consumer, current_layers, peer_id) = {
                     let c_item = self.state.consumers.get(resource_id).ok_or_else(|| {
                         SfuDomainError::NotFound(format!("Consumer '{resource_id}' not found"))
                     })?;
@@ -1237,8 +1325,13 @@ impl MediaUseCase for MediaService {
                         )));
                     }
 
-                    (c_item.consumer.clone(), c_item.consumer.current_layers())
+                    (
+                        c_item.consumer.clone(),
+                        c_item.consumer.current_layers(),
+                        c_item.peer_id.clone(),
+                    )
                 };
+                tracing::Span::current().record("peer_id", peer_id.as_str());
 
                 let stats = consumer
                     .get_stats()

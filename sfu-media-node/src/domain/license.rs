@@ -177,11 +177,26 @@ pub fn verify_license_token(
         SfuDomainError::InvalidLicense(format!("Failed to parse license claims JSON: {e}"))
     })?;
 
-    if claims.is_expired_at(now_secs) && !claims.is_in_grace_period_at(now_secs) {
-        return Err(SfuDomainError::InvalidLicense(format!(
-            "License expired at unix timestamp {} and grace period of {} days has elapsed",
-            claims.expires_at, claims.grace_period_days
-        )));
+    if claims.is_expired_at(now_secs) {
+        if claims.is_in_grace_period_at(now_secs) {
+            let grace_end = claims
+                .expires_at
+                .saturating_add((claims.grace_period_days as u64) * 86_400);
+            tracing::warn!(
+                license_id = %claims.license_id,
+                customer_id = %claims.customer_id,
+                tier = %claims.tier,
+                expired_at = claims.expires_at,
+                grace_period_days = claims.grace_period_days,
+                grace_ends_at = grace_end,
+                "Enterprise license has expired and is operating within its grace period! Please renew immediately."
+            );
+        } else {
+            return Err(SfuDomainError::InvalidLicense(format!(
+                "License expired at unix timestamp {} and grace period of {} days has elapsed",
+                claims.expires_at, claims.grace_period_days
+            )));
+        }
     }
 
     Ok(claims)
