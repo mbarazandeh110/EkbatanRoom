@@ -323,6 +323,14 @@ func (m *RoomManager) SetTrackMuted(ctx context.Context, roomID, participantID, 
 	return actor.SetTrackMuted(ctx, participantID, trackSID, muted)
 }
 
+func (m *RoomManager) SetConsumerPaused(ctx context.Context, roomID, participantID, trackSID string, paused bool) error {
+	actor, err := m.getRoomActor(roomID)
+	if err != nil {
+		return err
+	}
+	return actor.SetConsumerPaused(ctx, participantID, trackSID, paused)
+}
+
 func (m *RoomManager) SetConsumerLayers(ctx context.Context, roomID, participantID, consumerID string, spatial, temporal int32) error {
 	actor, err := m.getRoomActor(roomID)
 	if err != nil {

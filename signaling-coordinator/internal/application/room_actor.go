@@ -959,6 +959,32 @@ func (a *RoomActor) SetTrackMuted(ctx context.Context, participantID, trackSID s
 	return nil
 }
 
+func (a *RoomActor) SetConsumerPaused(ctx context.Context, participantID, trackSID string, paused bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	session, exists := a.sessions[participantID]
+	if !exists {
+		return domain.ErrParticipantNotFound
+	}
+
+	actualConsumerID := trackSID
+	if session != nil && session.SlotTable() != nil {
+		actualConsumerID, _ = session.SlotTable().SetSlotPaused(trackSID, paused)
+	}
+
+	if actualConsumerID == "" {
+		return domain.ErrTrackNotFound
+	}
+
+	return a.mediaStreamPort.SetMediaPaused(ctx, &domain.SetMediaPausedCommand{
+		RouterID:     a.room.RouterID,
+		ResourceType: domain.ResourceTypeConsumer,
+		ResourceID:   actualConsumerID,
+		Paused:       paused,
+	})
+}
+
 func (a *RoomActor) SetConsumerLayers(ctx context.Context, participantID, consumerID string, spatial, temporal int32) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -970,14 +996,7 @@ func (a *RoomActor) SetConsumerLayers(ctx context.Context, participantID, consum
 
 	actualConsumerID := consumerID
 	if session != nil && session.SlotTable() != nil {
-		for _, slot := range session.SlotTable().ListSlots() {
-			if slot.TrackSID == consumerID || slot.ProducerID == consumerID || slot.ConsumerID == consumerID {
-				if slot.ConsumerID != "" {
-					actualConsumerID = slot.ConsumerID
-				}
-				break
-			}
-		}
+		actualConsumerID = session.SlotTable().ResolveConsumerID(consumerID)
 	}
 
 	return a.mediaStreamPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{

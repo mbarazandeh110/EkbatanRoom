@@ -26,6 +26,9 @@ type RoomCoordinatorPort interface {
 	// SetTrackMuted toggles pause/mute state on a published track.
 	SetTrackMuted(ctx context.Context, roomID, participantID, trackSID string, muted bool) error
 
+	// SetConsumerPaused pauses or resumes a consumed track for a subscriber.
+	SetConsumerPaused(ctx context.Context, roomID, participantID, trackSID string, paused bool) error
+
 	// SetConsumerLayers sets preferred spatial and temporal layers for a subscriber.
 	SetConsumerLayers(ctx context.Context, roomID, participantID, consumerID string, spatial, temporal int32) error
 

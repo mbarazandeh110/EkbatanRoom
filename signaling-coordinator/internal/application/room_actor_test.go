@@ -23,6 +23,7 @@ type mockOutboundEngine struct {
 	produced            []*domain.ProduceCommand
 	consumed            []*domain.ConsumeCommand
 	preferredLayers     []*domain.SetPreferredLayersCommand
+	pausedMedia         []*domain.SetMediaPausedCommand
 }
 
 type closedTransportEntry struct {
@@ -40,6 +41,7 @@ func newMockOutboundEngine() *mockOutboundEngine {
 		produced:            make([]*domain.ProduceCommand, 0),
 		consumed:            make([]*domain.ConsumeCommand, 0),
 		preferredLayers:     make([]*domain.SetPreferredLayersCommand, 0),
+		pausedMedia:         make([]*domain.SetMediaPausedCommand, 0),
 	}
 }
 
@@ -127,6 +129,9 @@ func (m *mockOutboundEngine) Consume(ctx context.Context, cmd *domain.ConsumeCom
 }
 
 func (m *mockOutboundEngine) SetMediaPaused(ctx context.Context, cmd *domain.SetMediaPausedCommand) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pausedMedia = append(m.pausedMedia, cmd)
 	return nil
 }
 
@@ -721,6 +726,100 @@ func TestRoomActor_SetConsumerLayers_ResolvesTrackSIDToConsumerID(t *testing.T) 
 	if cmd.SpatialLayer != 2 || cmd.TemporalLayer != 2 {
 		t.Fatalf("expected layers 2/2, got spatial=%d temporal=%d", cmd.SpatialLayer, cmd.TemporalLayer)
 	}
+}
+
+func TestRoomActor_SetConsumerPaused_ResolvesTrackSIDToConsumerID_REQ002(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	iceServers := []domain.IceServer{{URLs: []string{"stun:stun.example.com"}}}
+	actor := application.NewRoomActor("conf-pause-req002", engine, engine, engine, iceServers)
+
+	respAlice := newMockResponder()
+	respBob := newMockResponder()
+
+	_, _ = actor.Join(ctx, "alice", "Alice", respAlice)
+	_, _ = actor.Join(ctx, "bob", "Bob", respBob)
+
+	fingerprints := []domain.DtlsFingerprintInfo{{Algorithm: "sha-256", Value: "AA:BB:CC"}}
+	explicitVideoSID := "TR_video_custom_88"
+
+	tracks := []domain.TrackPublishCommand{
+		{
+			TrackSID:          explicitVideoSID,
+			Kind:              domain.TrackKindVideo,
+			SSRC:              8888,
+			PayloadType:       96,
+			Codec:             "VP8",
+			ClockRate:         90000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"video/VP8"}]}`,
+		},
+	}
+
+	_, err := actor.PublishTracks(ctx, "alice", "client", fingerprints, tracks)
+	if err != nil {
+		t.Fatalf("PublishTracks failed: %v", err)
+	}
+
+	bobSession, _ := actor.GetSession("bob")
+	slots := bobSession.SlotTable().ListSlots()
+	if len(slots) != 1 {
+		t.Fatalf("expected 1 slot on Bob, got %d", len(slots))
+	}
+	actualConsumerID := slots[0].ConsumerID
+	if actualConsumerID == "" {
+		t.Fatalf("expected slot to have valid ConsumerID")
+	}
+
+	// 1. Bob pauses the incoming track using TrackSID (disabled: true)
+	err = actor.SetConsumerPaused(ctx, "bob", explicitVideoSID, true)
+	if err != nil {
+		t.Fatalf("SetConsumerPaused(true) failed: %v", err)
+	}
+
+	// Verify domain slot paused state
+	slots = bobSession.SlotTable().ListSlots()
+	if !slots[0].Paused {
+		t.Fatalf("expected slot.Paused to be true")
+	}
+
+	// Verify outbound gRPC call received ResourceTypeConsumer with actualConsumerID and Paused: true
+	engine.mu.Lock()
+	if len(engine.pausedMedia) != 1 {
+		t.Fatalf("expected 1 pausedMedia command, got %d", len(engine.pausedMedia))
+	}
+	cmd1 := engine.pausedMedia[0]
+	if cmd1.ResourceType != domain.ResourceTypeConsumer {
+		t.Fatalf("expected ResourceTypeConsumer, got %v", cmd1.ResourceType)
+	}
+	if cmd1.ResourceID != actualConsumerID {
+		t.Fatalf("expected ResourceID %s, got %s", actualConsumerID, cmd1.ResourceID)
+	}
+	if !cmd1.Paused {
+		t.Fatalf("expected cmd1.Paused == true")
+	}
+	engine.mu.Unlock()
+
+	// 2. Bob unpauses the incoming track (disabled: false)
+	err = actor.SetConsumerPaused(ctx, "bob", explicitVideoSID, false)
+	if err != nil {
+		t.Fatalf("SetConsumerPaused(false) failed: %v", err)
+	}
+
+	// Verify domain slot unpaused
+	slots = bobSession.SlotTable().ListSlots()
+	if slots[0].Paused {
+		t.Fatalf("expected slot.Paused to be false")
+	}
+
+	engine.mu.Lock()
+	if len(engine.pausedMedia) != 2 {
+		t.Fatalf("expected 2 pausedMedia commands, got %d", len(engine.pausedMedia))
+	}
+	cmd2 := engine.pausedMedia[1]
+	if cmd2.ResourceType != domain.ResourceTypeConsumer || cmd2.ResourceID != actualConsumerID || cmd2.Paused {
+		t.Fatalf("expected second command to unpause consumer %s, got: %+v", actualConsumerID, cmd2)
+	}
+	engine.mu.Unlock()
 }
 
 func TestRoomManager_CloseGracefullyReleasesAllRooms(t *testing.T) {

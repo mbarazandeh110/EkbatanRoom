@@ -30,6 +30,7 @@ type SDPSlot struct {
 	MimeType       string
 	ClockRate      uint32
 	CName          string
+	Paused         bool
 }
 
 type SDPSlotTable struct {
@@ -96,6 +97,7 @@ func (t *SDPSlotTable) AllocOrRecycleSlot(
 			slot.ClockRate = clockRate
 			slot.MimeType = mimeType
 			slot.CName = cname
+			slot.Paused = false
 			return slot
 		}
 	}
@@ -135,6 +137,7 @@ func (t *SDPSlotTable) InactivateSlot(consumerID string) (*SDPSlot, bool) {
 			slot.ConsumerID = ""
 			slot.TrackSID = ""
 			slot.ProducerID = ""
+			slot.Paused = false
 			return &snapshot, true
 		}
 	}
@@ -153,6 +156,7 @@ func (t *SDPSlotTable) InactivateSlotByTrackSID(trackSID string) (*SDPSlot, bool
 			slot.ConsumerID = ""
 			slot.TrackSID = ""
 			slot.ProducerID = ""
+			slot.Paused = false
 			return &snapshot, true
 		}
 	}
@@ -183,4 +187,39 @@ func (t *SDPSlotTable) ActiveSlots() []*SDPSlot {
 		}
 	}
 	return active
+}
+
+// SetSlotPaused sets the paused state for a slot matching trackSID, producerID, or consumerID.
+// It returns the resolved consumerID and whether a matching slot was found.
+func (t *SDPSlotTable) SetSlotPaused(id string, paused bool) (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for _, slot := range t.slots {
+		if slot.TrackSID == id || slot.ProducerID == id || slot.ConsumerID == id {
+			slot.Paused = paused
+			consumerID := slot.ConsumerID
+			if consumerID == "" {
+				consumerID = id
+			}
+			return consumerID, true
+		}
+	}
+	return id, false
+}
+
+// ResolveConsumerID finds the consumerID for a given trackSID, producerID, or consumerID.
+func (t *SDPSlotTable) ResolveConsumerID(id string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	for _, slot := range t.slots {
+		if slot.TrackSID == id || slot.ProducerID == id || slot.ConsumerID == id {
+			if slot.ConsumerID != "" {
+				return slot.ConsumerID
+			}
+			break
+		}
+	}
+	return id
 }

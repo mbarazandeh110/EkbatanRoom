@@ -32,6 +32,32 @@ type mockCoordinator struct {
 	lastPublishedTracks []domain.TrackPublishCommand
 	lastMutedTrackSID   string
 	lastMutedValue      bool
+	lastPausedTrackSID  string
+	lastPausedValue     bool
+	pausedCalls         int
+	lastLayerTrackSID   string
+	lastSpatialLayer    int32
+	lastTemporalLayer   int32
+	layerCalls          int
+}
+
+func (m *mockCoordinator) SetConsumerPaused(ctx context.Context, roomID, participantID, trackSID string, paused bool) error {
+	m.mu.Lock()
+	m.lastPausedTrackSID = trackSID
+	m.lastPausedValue = paused
+	m.pausedCalls++
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *mockCoordinator) SetConsumerLayers(ctx context.Context, roomID, participantID, consumerID string, spatial, temporal int32) error {
+	m.mu.Lock()
+	m.lastLayerTrackSID = consumerID
+	m.lastSpatialLayer = spatial
+	m.lastTemporalLayer = temporal
+	m.layerCalls++
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *mockCoordinator) Join(ctx context.Context, roomID, participantID, participantName string, responder ports.PeerResponderPort) (*domain.JoinResult, error) {
@@ -722,6 +748,120 @@ a=rtpmap:96 VP8/90000
 	if coord.lastPublishedTracks[0].Kind != domain.TrackKindAudio {
 		t.Fatalf("expected audio track published, got %v", coord.lastPublishedTracks[0].Kind)
 	}
+}
+
+func TestLiveKitWSHandler_TrackSetting_DecoupleTemporalAndSupportDisabled_REQ002(t *testing.T) {
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc?room=conf-req002&identity=bob&name=Bob"
+
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// 1. Drain JoinResponse
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("failed to read join response: %v", err)
+	}
+
+	// 2. Test Disabled: true -> Pauses consumer via SetConsumerPaused(true), skips SetConsumerLayers
+	trackSID := "TR_video_bob_1"
+	reqDisabled := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_TrackSetting{
+			TrackSetting: &livekitproto.UpdateTrackSettings{
+				TrackSids: []string{trackSID},
+				Disabled:  true,
+				Quality:   livekitproto.VideoQuality_LOW,
+			},
+		},
+	}
+	dataDisabled, _ := proto.Marshal(reqDisabled)
+	if err := conn.WriteMessage(websocket.BinaryMessage, dataDisabled); err != nil {
+		t.Fatalf("failed to write disabled track setting: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	coord.mu.Lock()
+	if coord.pausedCalls != 1 || coord.lastPausedTrackSID != trackSID || !coord.lastPausedValue {
+		t.Fatalf("expected SetConsumerPaused(track=%s, paused=true), got calls=%d, track=%s, val=%v",
+			trackSID, coord.pausedCalls, coord.lastPausedTrackSID, coord.lastPausedValue)
+	}
+	if coord.layerCalls != 0 {
+		t.Fatalf("expected 0 layerCalls when disabled=true, got %d", coord.layerCalls)
+	}
+	coord.mu.Unlock()
+
+	// 3. Test Disabled: false with LOW quality -> Unpauses via SetConsumerPaused(false), SetConsumerLayers(spatial=0, temporal=-1)
+	reqLow := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_TrackSetting{
+			TrackSetting: &livekitproto.UpdateTrackSettings{
+				TrackSids: []string{trackSID},
+				Disabled:  false,
+				Quality:   livekitproto.VideoQuality_LOW,
+			},
+		},
+	}
+	dataLow, _ := proto.Marshal(reqLow)
+	if err := conn.WriteMessage(websocket.BinaryMessage, dataLow); err != nil {
+		t.Fatalf("failed to write low quality track setting: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	coord.mu.Lock()
+	if coord.pausedCalls != 2 || coord.lastPausedValue != false {
+		t.Fatalf("expected SetConsumerPaused(track=%s, paused=false), got calls=%d, val=%v",
+			trackSID, coord.pausedCalls, coord.lastPausedValue)
+	}
+	if coord.layerCalls != 1 {
+		t.Fatalf("expected 1 layerCall, got %d", coord.layerCalls)
+	}
+	if coord.lastSpatialLayer != 0 {
+		t.Fatalf("expected spatial layer 0 for LOW quality, got %d", coord.lastSpatialLayer)
+	}
+	// REQ-002 Decoupling: temporal must be -1, NOT equal to spatial (0)
+	if coord.lastTemporalLayer != -1 {
+		t.Fatalf("expected temporal layer -1 (decoupled), got %d", coord.lastTemporalLayer)
+	}
+	coord.mu.Unlock()
+
+	// 4. Test Disabled: false with HIGH quality -> SetConsumerLayers(spatial=2, temporal=-1)
+	reqHigh := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_TrackSetting{
+			TrackSetting: &livekitproto.UpdateTrackSettings{
+				TrackSids: []string{trackSID},
+				Disabled:  false,
+				Quality:   livekitproto.VideoQuality_HIGH,
+			},
+		},
+	}
+	dataHigh, _ := proto.Marshal(reqHigh)
+	if err := conn.WriteMessage(websocket.BinaryMessage, dataHigh); err != nil {
+		t.Fatalf("failed to write high quality track setting: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	coord.mu.Lock()
+	if coord.layerCalls != 2 {
+		t.Fatalf("expected 2 layerCalls, got %d", coord.layerCalls)
+	}
+	if coord.lastSpatialLayer != 2 {
+		t.Fatalf("expected spatial layer 2 for HIGH quality, got %d", coord.lastSpatialLayer)
+	}
+	if coord.lastTemporalLayer != -1 {
+		t.Fatalf("expected temporal layer -1 (decoupled), got %d", coord.lastTemporalLayer)
+	}
+	coord.mu.Unlock()
 }
 
 

@@ -446,18 +446,37 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"peer_id", identity,
 				"identity", identity,
 				"quality", trackSettings.GetQuality(),
+				"disabled", trackSettings.GetDisabled(),
 			)
 			spatial := int32(trackSettings.GetQuality())
-			temporal := spatial
+			// REQ-002: Decouple temporal layer from spatial layer so SFU does not throttle framerate to 7.5 fps
+			temporal := int32(-1)
+			disabled := trackSettings.GetDisabled()
 			for _, sid := range trackSettings.GetTrackSids() {
-				if err := h.coordinator.SetConsumerLayers(ctx, roomID, identity, sid, spatial, temporal); err != nil {
-					slog.ErrorContext(ctx, "livekit track setting error",
+				if sid == "" {
+					continue
+				}
+				// REQ-002: Pause consumer when disabled is true, resume when false
+				if err := h.coordinator.SetConsumerPaused(ctx, roomID, identity, sid, disabled); err != nil {
+					slog.ErrorContext(ctx, "livekit track setting pause error",
 						"room_id", roomID,
 						"identity", identity,
 						"track_sid", sid,
+						"disabled", disabled,
 						"error", err,
 					)
-					telemetry.DefaultMetrics().RecordError("track_setting_failed")
+					telemetry.DefaultMetrics().RecordError("track_setting_pause_failed")
+				}
+				if !disabled {
+					if err := h.coordinator.SetConsumerLayers(ctx, roomID, identity, sid, spatial, temporal); err != nil {
+						slog.ErrorContext(ctx, "livekit track setting error",
+							"room_id", roomID,
+							"identity", identity,
+							"track_sid", sid,
+							"error", err,
+						)
+						telemetry.DefaultMetrics().RecordError("track_setting_failed")
+					}
 				}
 			}
 

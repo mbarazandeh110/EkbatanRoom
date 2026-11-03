@@ -50,7 +50,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-002
 SOURCE SERVICE: sfu-media-node
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -77,3 +77,28 @@ STATUS: OPEN
      1. When `trackSettings.GetDisabled()` is true, pause the consumer via `SetMediaPaused(..., true)`. When false, resume via `SetMediaPaused(..., false)`.
      2. In `SetConsumerLayers`, decouple temporal layer from spatial layer:
         Set `temporal := -1` (or highest layer / omit temporal constraint) so the SFU does not throttle the framerate down to 7.5 fps when spatial resolution is downgraded.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. Preserved Hexagonal Architecture and Domain Isolation:
+        - Added `SetConsumerPaused(ctx context.Context, roomID, participantID, trackSID string, paused bool) error` to inbound port `RoomCoordinatorPort`.
+        - Implemented `SetConsumerPaused` on `RoomManager` and `RoomActor` following the existing pattern of `SetConsumerLayers` and `SetTrackMuted`.
+        - Inside `RoomActor`, resolved `trackSID` to internal `actualConsumerID` via `session.SlotTable().SetSlotPaused(...)` and invoked outbound port `mediaStreamPort.SetMediaPaused` with `ResourceType: domain.ResourceTypeConsumer`, leaving domain and port boundaries intact without leaking LiveKit or SFU proto details.
+     2. Decoupled Temporal Layer from Spatial Layer:
+        - In `internal/adapters/inbound/livekit/ws_handler.go`, set `temporal := int32(-1)` instead of mirroring `spatial`, ensuring SFU does not throttle consumer framerate down to 7.5 fps when spatial resolution is reduced.
+     3. Supported `TrackSetting.disabled`:
+        - In `ws_handler.go`, extracted `disabled := trackSettings.GetDisabled()`.
+        - Dispatched `h.coordinator.SetConsumerPaused(ctx, roomID, identity, sid, disabled)` for each track SID, pausing the consumer on SFU when true and resuming when false.
+        - When `disabled` is false, additionally invoked `SetConsumerLayers(ctx, roomID, identity, sid, spatial, temporal)` to apply the desired spatial resolution while maintaining full framerate.
+   - Modified Files:
+     - `internal/domain/sdp_slot.go`: Added `Paused bool` to `SDPSlot`, updated recycling/inactivation, added `SetSlotPaused` and `ResolveConsumerID` to `SDPSlotTable`.
+     - `internal/ports/inbound.go`: Added `SetConsumerPaused` to `RoomCoordinatorPort`.
+     - `internal/application/room_actor.go`: Implemented `SetConsumerPaused` and refactored `SetConsumerLayers` using `SDPSlotTable` helpers.
+     - `internal/application/room_manager.go`: Implemented `SetConsumerPaused`.
+     - `internal/adapters/inbound/livekit/ws_handler.go`: Updated `SignalRequest_TrackSetting` to decouple temporal layer (`-1`) and handle `disabled`.
+   - Added Tests:
+     - `TestRoomActor_SetConsumerPaused_ResolvesTrackSIDToConsumerID_REQ002` in `internal/application/room_actor_test.go`
+     - `TestLiveKitWSHandler_TrackSetting_DecoupleTemporalAndSupportDisabled_REQ002` in `internal/adapters/inbound/livekit/ws_handler_test.go`
+   - Verification: All tests pass cleanly under `go test -v -race -count=1 ./...` and `go test -v -race -tags enterprise -count=1 ./...` with zero race conditions.
+===================================================================
