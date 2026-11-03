@@ -335,6 +335,15 @@ impl TransportUseCase for TransportService {
                         }
                     }
 
+                    // Re-verify router liveness after bitrate configuration awaits
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(transport);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during transport bitrate configuration",
+                            params.router_id
+                        )));
+                    }
+
                     let transport_id = transport.id().to_string();
                     let ice_ufrag = transport.ice_parameters().username_fragment.clone();
                     let ice_pwd = transport.ice_parameters().password.clone();
@@ -605,17 +614,20 @@ impl TransportUseCase for TransportService {
         validation::validate_not_empty("router_id", router_id)?;
         validation::validate_not_empty("transport_id", transport_id)?;
 
-        if let Some((_, t_item)) = self.state.transports.remove(transport_id) {
-            tracing::Span::current().record("peer_id", t_item.peer_id.as_str());
-            if t_item.router_id != router_id {
-                // Restore if router mismatch
-                self.state
-                    .transports
-                    .insert(transport_id.to_string(), t_item);
+        if let Some(t_ref) = self.state.transports.get(transport_id) {
+            if t_ref.router_id != router_id {
                 return Err(SfuDomainError::NotFound(format!(
                     "Transport '{transport_id}' does not belong to router '{router_id}'"
                 )));
             }
+        }
+
+        if let Some((_, t_item)) = self
+            .state
+            .transports
+            .remove_if(transport_id, |_, item| item.router_id == router_id)
+        {
+            tracing::Span::current().record("peer_id", t_item.peer_id.as_str());
 
             t_item.is_closed.store(true, Ordering::SeqCst);
             self.worker_pool.sub_resource_score(t_item.worker_index, 1);
@@ -625,7 +637,6 @@ impl TransportUseCase for TransportService {
                 set.remove(transport_id);
             }
 
-            // Clean up peer affinity if this was peer's last transport in this router
             let has_other_transports = self
                 .state
                 .router_transports
@@ -661,16 +672,22 @@ impl TransportUseCase for TransportService {
                 router_id,
                 transport_id,
             );
-        } else if let Some((_, p_item)) = self.state.pipe_transports.remove(transport_id) {
-            if p_item.router_id != router_id {
-                self.state
-                    .pipe_transports
-                    .insert(transport_id.to_string(), p_item);
+            return Ok(());
+        }
+
+        if let Some(p_ref) = self.state.pipe_transports.get(transport_id) {
+            if p_ref.router_id != router_id {
                 return Err(SfuDomainError::NotFound(format!(
                     "PipeTransport '{transport_id}' does not belong to router '{router_id}'"
                 )));
             }
+        }
 
+        if let Some((_, p_item)) = self
+            .state
+            .pipe_transports
+            .remove_if(transport_id, |_, item| item.router_id == router_id)
+        {
             p_item.is_closed.store(true, Ordering::SeqCst);
             self.worker_pool.sub_resource_score(p_item.worker_index, 1);
             self.metrics.dec_active_transports(false);
@@ -724,17 +741,12 @@ pub(crate) fn cascade_close_producers_and_consumers(
                 worker_pool.sub_resource_score(p.worker_index, p_weight);
                 metrics.dec_active_producers(&p.kind.to_string());
 
-                // Close any piped instances of this producer
-                if let Some((_, piped_entries)) = state.piped_producers.remove(&pid) {
-                    for entry in piped_entries {
-                        worker_pool.sub_resource_score(p.worker_index, 1);
-                        worker_pool.sub_resource_score(entry.target_worker_index, 1);
-                        // Dropping entry closes both pipe_consumer and pipe_producer via mediasoup RAII
-                    }
+                // Close any piped instances of this producer belonging to this router
+                let piped_entries = state.take_piped_producers_for_router(router_id, &pid);
+                for entry in piped_entries {
+                    worker_pool.sub_resource_score(p.worker_index, 1);
+                    worker_pool.sub_resource_score(entry.target_worker_index, 1);
                 }
-                state
-                    .pipe_singleflight
-                    .retain(|k, _| !k.starts_with(&format!("{}:", pid)));
 
                 event_publisher.publish_resource_closed(
                     router_id,
@@ -743,24 +755,23 @@ pub(crate) fn cascade_close_producers_and_consumers(
                     "cascade_closed",
                 );
 
-                // Cascade close all consumers connected to this producer
-                if let Some((_, c_ids)) = state.producer_consumers.remove(&pid) {
-                    for cid in c_ids {
-                        if let Some(c) = state.cascade_remove_consumer(&cid) {
-                            let c_weight = if c.kind == crate::domain::entities::MediaKind::Audio {
-                                1
-                            } else {
-                                2
-                            };
-                            worker_pool.sub_resource_score(c.worker_index, c_weight);
-                            metrics.dec_active_consumers(&c.kind.to_string());
-                            event_publisher.publish_resource_closed(
-                                router_id,
-                                "consumer",
-                                &cid,
-                                "cascade_closed",
-                            );
-                        }
+                // Cascade close only consumers connected to this producer on this router
+                let c_ids = state.take_consumers_for_producer(router_id, &pid);
+                for cid in c_ids {
+                    if let Some(c) = state.cascade_remove_consumer(&cid) {
+                        let c_weight = if c.kind == crate::domain::entities::MediaKind::Audio {
+                            1
+                        } else {
+                            2
+                        };
+                        worker_pool.sub_resource_score(c.worker_index, c_weight);
+                        metrics.dec_active_consumers(&c.kind.to_string());
+                        event_publisher.publish_resource_closed(
+                            router_id,
+                            "consumer",
+                            &cid,
+                            "cascade_closed",
+                        );
                     }
                 }
             }

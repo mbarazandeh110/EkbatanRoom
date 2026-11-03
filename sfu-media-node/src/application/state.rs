@@ -71,6 +71,7 @@ pub struct ConsumerItem {
 
 #[derive(Clone)]
 pub struct PipedProducerEntry {
+    pub router_id: String,
     pub pipe_consumer: Consumer,
     pub pipe_producer: Producer,
     pub target_router_id: String,
@@ -214,6 +215,69 @@ impl EngineState {
         self.routers.get(router_id).map(|r| r.room_id.clone())
     }
 
+    /// Removes and returns only the consumer IDs belonging to `(router_id, producer_id)`,
+    /// preserving consumers on other cascaded routers that share `producer_id`.
+    pub fn take_consumers_for_producer(&self, router_id: &str, producer_id: &str) -> Vec<String> {
+        let matching_cids: Vec<String> = if let Some(set) = self.producer_consumers.get(producer_id)
+        {
+            set.iter()
+                .filter(|cid| {
+                    self.consumers
+                        .get(cid.as_str())
+                        .map(|c| c.router_id == router_id)
+                        .unwrap_or(true)
+                })
+                .map(|cid| cid.clone())
+                .collect()
+        } else {
+            return Vec::new();
+        };
+
+        if let Some(set) = self.producer_consumers.get(producer_id) {
+            for cid in &matching_cids {
+                set.remove(cid);
+            }
+        }
+
+        let has_other_router_producer = self
+            .producers
+            .iter()
+            .any(|entry| entry.key().1 == producer_id && entry.key().0 != router_id);
+
+        if !has_other_router_producer {
+            self.producer_consumers
+                .remove_if(producer_id, |_, set| set.is_empty());
+        }
+
+        matching_cids
+    }
+
+    /// Removes and returns only the intra-node `PipedProducerEntry` items belonging to `(router_id, producer_id)`.
+    pub fn take_piped_producers_for_router(
+        &self,
+        router_id: &str,
+        producer_id: &str,
+    ) -> Vec<PipedProducerEntry> {
+        let mut removed = Vec::new();
+        if let Some(mut entries) = self.piped_producers.get_mut(producer_id) {
+            let mut i = 0;
+            while i < entries.len() {
+                if entries[i].router_id == router_id {
+                    removed.push(entries.swap_remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        self.piped_producers
+            .remove_if(producer_id, |_, entries| entries.is_empty());
+        self.pipe_singleflight.retain(|k, _| {
+            !k.starts_with(&format!("{}:{}:", router_id, producer_id))
+                && !k.starts_with(&format!("{}:", producer_id))
+        });
+        removed
+    }
+
     pub fn cascade_remove_consumer(&self, consumer_id: &str) -> Option<ConsumerItem> {
         if let Some((_, item)) = self.consumers.remove(consumer_id) {
             item.is_closed.store(true, Ordering::SeqCst);
@@ -248,7 +312,7 @@ impl EngineState {
             c_ids.iter().any(|cid| {
                 self.consumers
                     .get(cid.as_str())
-                    .map(|c| c.physical_router_id == target_router_id)
+                    .map(|c| c.router_id == router_id && c.physical_router_id == target_router_id)
                     .unwrap_or(false)
             })
         } else {
@@ -262,24 +326,20 @@ impl EngineState {
         let removed = if let Some(mut entries) = self.piped_producers.get_mut(producer_id) {
             entries
                 .iter()
-                .position(|e| e.target_router_id == target_router_id)
+                .position(|e| e.router_id == router_id && e.target_router_id == target_router_id)
                 .map(|pos| entries.swap_remove(pos))
         } else {
             None
         };
 
         if let Some(entry) = removed {
-            let is_empty = self
-                .piped_producers
-                .get(producer_id)
-                .map(|e| e.is_empty())
-                .unwrap_or(false);
-            if is_empty {
-                self.piped_producers.remove(producer_id);
-            }
+            self.piped_producers
+                .remove_if(producer_id, |_, e| e.is_empty());
 
-            let sf_key = format!("{}:{}", producer_id, target_router_id);
-            self.pipe_singleflight.remove(&sf_key);
+            let sf_key_scoped = format!("{}:{}:{}", router_id, producer_id, target_router_id);
+            let sf_key_legacy = format!("{}:{}", producer_id, target_router_id);
+            self.pipe_singleflight.remove(&sf_key_scoped);
+            self.pipe_singleflight.remove(&sf_key_legacy);
 
             Some((entry, p_worker_index))
         } else {
@@ -315,6 +375,8 @@ impl EngineState {
                 if let Some(set) = self.router_transports.get_mut(&router_id) {
                     set.remove(&tid);
                 }
+                self.transport_producers.remove(&tid);
+                self.transport_consumers.remove(&tid);
                 event_publisher.publish_resource_closed(
                     &router_id,
                     "transport",
@@ -339,6 +401,8 @@ impl EngineState {
                 if let Some(set) = self.router_pipe_transports.get_mut(&router_id) {
                     set.remove(&ptid);
                 }
+                self.transport_producers.remove(&ptid);
+                self.transport_consumers.remove(&ptid);
                 event_publisher.publish_resource_closed(
                     &router_id,
                     "transport",
@@ -367,17 +431,13 @@ impl EngineState {
             if let Some((_, p)) = self.producers.remove(&key) {
                 p.is_closed.store(true, Ordering::SeqCst);
                 metrics.dec_active_producers(&kind.to_string());
-                self.transport_producers.retain(|_, set| {
+                if let Some(set) = self.transport_producers.get(&p.transport_id) {
                     set.remove(&pid);
-                    !set.is_empty()
-                });
-                if let Some((_, piped_entries)) = self.piped_producers.remove(&pid) {
-                    for entry in piped_entries {
-                        worker_pool.sub_resource_score(entry.target_worker_index, 1);
-                    }
                 }
-                self.pipe_singleflight
-                    .retain(|k, _| !k.starts_with(&format!("{}:", pid)));
+                let piped_entries = self.take_piped_producers_for_router(&router_id, &pid);
+                for entry in piped_entries {
+                    worker_pool.sub_resource_score(entry.target_worker_index, 1);
+                }
 
                 event_publisher.publish_resource_closed(
                     &router_id,
@@ -386,20 +446,19 @@ impl EngineState {
                     "worker_died",
                 );
 
-                // Cascade close consumers connected to this producer (even on other alive workers)
-                if let Some((_, c_ids)) = self.producer_consumers.remove(&pid) {
-                    for cid in c_ids {
-                        if let Some(c) = self.cascade_remove_consumer(&cid) {
-                            let c_weight = if c.kind == MediaKind::Audio { 1 } else { 2 };
-                            worker_pool.sub_resource_score(c.worker_index, c_weight);
-                            metrics.dec_active_consumers(&c.kind.to_string());
-                            event_publisher.publish_resource_closed(
-                                &router_id,
-                                "consumer",
-                                &cid,
-                                "worker_died",
-                            );
-                        }
+                // Cascade close consumers connected to this producer on this router
+                let c_ids = self.take_consumers_for_producer(&router_id, &pid);
+                for cid in c_ids {
+                    if let Some(c) = self.cascade_remove_consumer(&cid) {
+                        let c_weight = if c.kind == MediaKind::Audio { 1 } else { 2 };
+                        worker_pool.sub_resource_score(c.worker_index, c_weight);
+                        metrics.dec_active_consumers(&c.kind.to_string());
+                        event_publisher.publish_resource_closed(
+                            &router_id,
+                            "consumer",
+                            &cid,
+                            "worker_died",
+                        );
                     }
                 }
             }
@@ -444,21 +503,19 @@ impl EngineState {
         let mut empty_piped_keys = Vec::new();
         for mut entry in self.piped_producers.iter_mut() {
             let pid = entry.key().clone();
-            let pub_worker_opt = self
-                .producers
-                .iter()
-                .find(|p| p.key().1 == pid)
-                .map(|p| p.value().worker_index);
             let vec = entry.value_mut();
             let mut i = 0;
             while i < vec.len() {
                 if vec[i].target_worker_index == worker_index {
                     let removed = vec.swap_remove(i);
-                    if let Some(pub_w) = pub_worker_opt {
-                        worker_pool.sub_resource_score(pub_w, 1);
+                    if let Some(pub_item) = self.get_producer(&removed.router_id, &pid) {
+                        worker_pool.sub_resource_score(pub_item.worker_index, 1);
                     }
-                    let sf_key = format!("{}:{}", pid, removed.target_router_id);
-                    self.pipe_singleflight.remove(&sf_key);
+                    let sf_key_scoped =
+                        format!("{}:{}:{}", removed.router_id, pid, removed.target_router_id);
+                    let sf_key_legacy = format!("{}:{}", pid, removed.target_router_id);
+                    self.pipe_singleflight.remove(&sf_key_scoped);
+                    self.pipe_singleflight.remove(&sf_key_legacy);
                 } else {
                     i += 1;
                 }

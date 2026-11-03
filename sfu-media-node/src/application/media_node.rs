@@ -354,6 +354,18 @@ impl crate::ports::inbound::LicenseUseCase for MediaNode {
     }
 }
 
+impl Drop for MediaNode {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.capacity_task_abort {
+            handle.abort();
+        }
+        self.router_service.abort_cleanup_tasks();
+        self.transport_service.abort_cleanup_tasks();
+        self.media_service.abort_cleanup_tasks();
+        self.pipe_service.abort_cleanup_tasks();
+    }
+}
+
 pub fn compute_node_capacity(
     worker_pool: &dyn WorkerPoolPort,
     config: &Config,

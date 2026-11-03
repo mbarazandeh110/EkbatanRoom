@@ -9,7 +9,6 @@ use crate::ports::inbound::{
 };
 use crate::ports::outbound::{EventPublisherPort, MetricsPort, WorkerPoolPort};
 use async_trait::async_trait;
-use dashmap::DashSet;
 use mediasoup::consumer::ConsumerRtpStreamStat;
 use mediasoup::prelude::*;
 use mediasoup::router::PipeToRouterOptions;
@@ -55,6 +54,17 @@ impl MediaService {
     pub fn abort_cleanup_tasks(&self) {
         for handle in &self.cleanup_handles {
             handle.abort();
+        }
+    }
+
+    fn rollback_unused_pipe(&self, router_id: &str, producer_id: &str, target_router_id: &str) {
+        if let Some((piped_entry, pub_worker_idx)) = self
+            .state
+            .cleanup_piped_producer_if_last_consumer(router_id, producer_id, target_router_id)
+        {
+            self.worker_pool.sub_resource_score(pub_worker_idx, 1);
+            self.worker_pool
+                .sub_resource_score(piped_entry.target_worker_index, 1);
         }
     }
 }
@@ -268,6 +278,29 @@ impl MediaUseCase for MediaService {
                         }
                     }
 
+                    // Verify router and transport are still active after all .await points
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(producer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during produce",
+                            params.router_id
+                        )));
+                    }
+
+                    let transport_active = self
+                        .state
+                        .transports
+                        .get(&params.transport_id)
+                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if !transport_active {
+                        drop(producer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Transport '{}' was closed during produce",
+                            params.transport_id
+                        )));
+                    }
+
                     let item = ProducerItem {
                         producer,
                         router_id: params.router_id.clone(),
@@ -287,7 +320,8 @@ impl MediaUseCase for MediaService {
                     }
                     self.state
                         .producer_consumers
-                        .insert(producer_id.clone(), DashSet::new());
+                        .entry(producer_id.clone())
+                        .or_default();
                     let p_weight = if params.kind == MediaKind::Audio {
                         2
                     } else {
@@ -413,8 +447,10 @@ impl MediaUseCase for MediaService {
 
                     // Intra-Node Multi-Worker Spillover: pipe if producer and subscriber transport are on different workers
                     if producer_physical_router_id != sub_physical_router_id {
-                        let singleflight_key =
-                            format!("{}:{}", params.producer_id, sub_physical_router_id);
+                        let singleflight_key = format!(
+                            "{}:{}:{}",
+                            params.router_id, params.producer_id, sub_physical_router_id
+                        );
                         let lock = self
                             .state
                             .pipe_singleflight
@@ -433,9 +469,10 @@ impl MediaUseCase for MediaService {
                             .piped_producers
                             .get(&params.producer_id)
                             .map(|entries| {
-                                entries
-                                    .iter()
-                                    .any(|e| e.target_router_id == sub_physical_router_id)
+                                entries.iter().any(|e| {
+                                    e.router_id == params.router_id
+                                        && e.target_router_id == sub_physical_router_id
+                                })
                             })
                             .unwrap_or(false);
 
@@ -528,6 +565,7 @@ impl MediaUseCase for MediaService {
                             self.worker_pool.add_resource_score(sub_worker_index, 1);
 
                             let entry = PipedProducerEntry {
+                                router_id: params.router_id.clone(),
                                 pipe_consumer: pipe_pair.pipe_consumer,
                                 pipe_producer,
                                 target_router_id: sub_physical_router_id.clone(),
@@ -542,43 +580,66 @@ impl MediaUseCase for MediaService {
                         }
                     }
 
-                    // Extract target router where subscriber transport lives
                     let target_router = {
-                        let r_item = self.state.routers.get(&params.router_id).ok_or_else(|| {
-                            SfuDomainError::NotFound(format!(
-                                "Router '{}' not found",
-                                params.router_id
-                            ))
-                        })?;
-
-                        if r_item.is_closed.load(Ordering::SeqCst) {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Router '{}' is closed",
-                                params.router_id
-                            )));
-                        }
+                        let r_item = match self.state.routers.get(&params.router_id) {
+                            Some(r) if !r.is_closed.load(Ordering::SeqCst) => r,
+                            _ => {
+                                self.rollback_unused_pipe(
+                                    &params.router_id,
+                                    &params.producer_id,
+                                    &sub_physical_router_id,
+                                );
+                                return Err(SfuDomainError::NotFound(format!(
+                                    "Router '{}' not found or closed",
+                                    params.router_id
+                                )));
+                            }
+                        };
 
                         if sub_worker_index == r_item.worker_index {
                             r_item.router.clone()
                         } else {
-                            r_item
+                            let sub_r = r_item
                                 .sub_routers
                                 .get(&sub_worker_index)
-                                .map(|s| s.router.clone())
-                                .ok_or_else(|| {
-                                    SfuDomainError::NotFound(format!(
+                                .map(|s| s.router.clone());
+                            match sub_r {
+                                Some(r) => r,
+                                None => {
+                                    drop(r_item);
+                                    self.rollback_unused_pipe(
+                                        &params.router_id,
+                                        &params.producer_id,
+                                        &sub_physical_router_id,
+                                    );
+                                    return Err(SfuDomainError::NotFound(format!(
                                         "Sub-router on worker {sub_worker_index} not found"
-                                    ))
-                                })?
+                                    )));
+                                }
+                            }
                         }
                     };
 
-                    let producer_id: ProducerId = params.producer_id.parse().map_err(|e| {
-                        SfuDomainError::InvalidArgument(format!("Invalid producer_id: {e}"))
-                    })?;
+                    let producer_id: ProducerId = match params.producer_id.parse() {
+                        Ok(id) => id,
+                        Err(e) => {
+                            self.rollback_unused_pipe(
+                                &params.router_id,
+                                &params.producer_id,
+                                &sub_physical_router_id,
+                            );
+                            return Err(SfuDomainError::InvalidArgument(format!(
+                                "Invalid producer_id: {e}"
+                            )));
+                        }
+                    };
 
-                    // Mandatory can_consume check on target router
                     if !target_router.can_consume(&producer_id, &params.rtp_capabilities) {
+                        self.rollback_unused_pipe(
+                            &params.router_id,
+                            &params.producer_id,
+                            &sub_physical_router_id,
+                        );
                         return Err(SfuDomainError::IncompatibleCodec(format!(
                             "Router cannot consume producer '{}' with given RTP capabilities",
                             params.producer_id
@@ -588,45 +649,19 @@ impl MediaUseCase for MediaService {
                     let mut options = ConsumerOptions::new(producer_id, params.rtp_capabilities);
                     options.paused = params.paused;
 
-                    // Await on consume without holding any DashMap guard
-                    let consumer = transport.consume(options).await.map_err(|e| {
-                        SfuDomainError::Mediasoup(format!("Failed to consume: {e}"))
-                    })?;
-
-                    if !self.state.is_router_active(&params.router_id) {
-                        drop(consumer);
-                        return Err(SfuDomainError::NotFound(format!(
-                            "Router '{}' was closed during consume",
-                            params.router_id
-                        )));
-                    }
-
-                    let transport_active = self
-                        .state
-                        .transports
-                        .get(&params.subscriber_transport_id)
-                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
-                        .unwrap_or(false);
-                    if !transport_active {
-                        drop(consumer);
-                        return Err(SfuDomainError::NotFound(format!(
-                            "Transport '{}' was closed during consume",
-                            params.subscriber_transport_id
-                        )));
-                    }
-
-                    let producer_active = self
-                        .state
-                        .get_producer(&params.router_id, &params.producer_id)
-                        .map(|p| !p.is_closed.load(Ordering::SeqCst))
-                        .unwrap_or(false);
-                    if !producer_active {
-                        drop(consumer);
-                        return Err(SfuDomainError::NotFound(format!(
-                            "Producer '{}' was closed during consume",
-                            params.producer_id
-                        )));
-                    }
+                    let consumer = match transport.consume(options).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            self.rollback_unused_pipe(
+                                &params.router_id,
+                                &params.producer_id,
+                                &sub_physical_router_id,
+                            );
+                            return Err(SfuDomainError::Mediasoup(format!(
+                                "Failed to consume: {e}"
+                            )));
+                        }
+                    };
 
                     let consumer_id = consumer.id().to_string();
                     let is_closed = Arc::new(AtomicBool::new(false));
@@ -772,6 +807,72 @@ impl MediaUseCase for MediaService {
                     let consumer_kind: MediaKind = from_mediasoup_kind(consumer.kind());
                     let consumer_for_kf = consumer.clone();
 
+                    if consumer_for_kf.kind() == mediasoup::prelude::MediaKind::Video {
+                        if let Err(e) = consumer_for_kf.request_key_frame().await {
+                            tracing::warn!(
+                                consumer_id = %consumer_id,
+                                error = %e,
+                                "Failed to request initial keyframe for video consumer"
+                            );
+                        } else {
+                            tracing::debug!(
+                                consumer_id = %consumer_id,
+                                "Requested initial keyframe for video consumer"
+                            );
+                        }
+                    }
+
+                    // Final liveness check after all .await calls before inserting into EngineState
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(consumer);
+                        self.rollback_unused_pipe(
+                            &params.router_id,
+                            &params.producer_id,
+                            &sub_physical_router_id,
+                        );
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during consume",
+                            params.router_id
+                        )));
+                    }
+
+                    let transport_active = self
+                        .state
+                        .transports
+                        .get(&params.subscriber_transport_id)
+                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if !transport_active {
+                        drop(consumer);
+                        self.rollback_unused_pipe(
+                            &params.router_id,
+                            &params.producer_id,
+                            &sub_physical_router_id,
+                        );
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Transport '{}' was closed during consume",
+                            params.subscriber_transport_id
+                        )));
+                    }
+
+                    let producer_active = self
+                        .state
+                        .get_producer(&params.router_id, &params.producer_id)
+                        .map(|p| !p.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if !producer_active {
+                        drop(consumer);
+                        self.rollback_unused_pipe(
+                            &params.router_id,
+                            &params.producer_id,
+                            &sub_physical_router_id,
+                        );
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Producer '{}' was closed during consume",
+                            params.producer_id
+                        )));
+                    }
+
                     let item = ConsumerItem {
                         consumer,
                         router_id: params.router_id.clone(),
@@ -792,29 +893,15 @@ impl MediaUseCase for MediaService {
                     {
                         set.insert(consumer_id.clone());
                     }
-                    if let Some(set) = self.state.producer_consumers.get(&params.producer_id) {
-                        set.insert(consumer_id.clone());
-                    }
+                    self.state
+                        .producer_consumers
+                        .entry(params.producer_id.clone())
+                        .or_default()
+                        .insert(consumer_id.clone());
                     let c_weight = if consumer_kind == MediaKind::Audio { 1 } else { 2 };
                     self.worker_pool.add_resource_score(sub_worker_index, c_weight);
                     self.metrics
                         .inc_active_consumers(&consumer_kind.to_string());
-
-                    // Immediate RTCP PLI/FIR keyframe dispatch for video consumer
-                    if consumer_for_kf.kind() == mediasoup::prelude::MediaKind::Video {
-                        if let Err(e) = consumer_for_kf.request_key_frame().await {
-                            tracing::warn!(
-                                consumer_id = %consumer_id,
-                                error = %e,
-                                "Failed to request initial keyframe for video consumer"
-                            );
-                        } else {
-                            tracing::debug!(
-                                consumer_id = %consumer_id,
-                                "Requested initial keyframe for video consumer"
-                            );
-                        }
-                    }
 
                     Ok(ConsumeResult {
                         consumer_id,
@@ -897,7 +984,13 @@ impl MediaUseCase for MediaService {
                 .state
                 .piped_producers
                 .get(resource_id)
-                .map(|entries| entries.iter().map(|e| e.pipe_producer.clone()).collect())
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter(|e| e.router_id == router_id)
+                        .map(|e| e.pipe_producer.clone())
+                        .collect()
+                })
                 .unwrap_or_default();
 
             for p in piped_to_pause {
@@ -1045,17 +1138,20 @@ impl MediaUseCase for MediaService {
                 set.remove(producer_id);
             }
 
-            if let Some((_, piped_entries)) = self.state.piped_producers.remove(producer_id) {
-                for entry in piped_entries {
-                    self.worker_pool.sub_resource_score(item.worker_index, 1);
-                    self.worker_pool
-                        .sub_resource_score(entry.target_worker_index, 1);
-                    // Dropping entry closes both pipe_consumer and pipe_producer via mediasoup RAII
-                }
+            let piped_entries = self
+                .state
+                .take_piped_producers_for_router(router_id, producer_id);
+            for entry in piped_entries {
+                self.worker_pool.sub_resource_score(item.worker_index, 1);
+                self.worker_pool
+                    .sub_resource_score(entry.target_worker_index, 1);
+                // Dropping entry closes both pipe_consumer and pipe_producer via mediasoup RAII
             }
-            self.state
-                .pipe_singleflight
-                .retain(|k, _| !k.starts_with(&format!("{}:", producer_id)));
+
+            self.state.pipe_singleflight.retain(|k, _| {
+                !k.starts_with(&format!("{}:{}:", router_id, producer_id))
+                    && !k.starts_with(&format!("{}:", producer_id))
+            });
 
             self.event_publisher.publish_resource_closed(
                 router_id,
@@ -1064,21 +1160,22 @@ impl MediaUseCase for MediaService {
                 "producer_closed",
             );
 
-            // Cascade close all consumers connected to this producer (Fix orphaned consumers)
-            if let Some((_, c_ids)) = self.state.producer_consumers.remove(producer_id) {
-                for cid in c_ids {
-                    if let Some(c) = self.state.cascade_remove_consumer(&cid) {
-                        let c_weight = if c.kind == MediaKind::Audio { 1 } else { 2 };
-                        self.worker_pool
-                            .sub_resource_score(c.worker_index, c_weight);
-                        self.metrics.dec_active_consumers(&c.kind.to_string());
-                        self.event_publisher.publish_resource_closed(
-                            router_id,
-                            "consumer",
-                            &cid,
-                            "cascade_closed",
-                        );
-                    }
+            // Cascade close all consumers connected to this producer on this router
+            let c_ids = self
+                .state
+                .take_consumers_for_producer(router_id, producer_id);
+            for cid in c_ids {
+                if let Some(c) = self.state.cascade_remove_consumer(&cid) {
+                    let c_weight = if c.kind == MediaKind::Audio { 1 } else { 2 };
+                    self.worker_pool
+                        .sub_resource_score(c.worker_index, c_weight);
+                    self.metrics.dec_active_consumers(&c.kind.to_string());
+                    self.event_publisher.publish_resource_closed(
+                        router_id,
+                        "consumer",
+                        &cid,
+                        "cascade_closed",
+                    );
                 }
             }
         }
@@ -1169,24 +1266,51 @@ impl MediaUseCase for MediaService {
 
         match resource_type.to_lowercase().as_str() {
             "transport" => {
-                let (transport, peer_id) = {
-                    let t_item = self.state.transports.get(resource_id).ok_or_else(|| {
-                        SfuDomainError::NotFound(format!("Transport '{resource_id}' not found"))
-                    })?;
+                enum TargetTransport {
+                    WebRtc(mediasoup::webrtc_transport::WebRtcTransport),
+                    Pipe(mediasoup::pipe_transport::PipeTransport),
+                }
 
-                    if t_item.is_closed.load(Ordering::SeqCst) {
+                let (target_transport, peer_id) = {
+                    if let Some(t_item) = self.state.transports.get(resource_id) {
+                        if t_item.is_closed.load(Ordering::SeqCst) {
+                            return Err(SfuDomainError::NotFound(format!(
+                                "Transport '{resource_id}' is closed"
+                            )));
+                        }
+
+                        if t_item.router_id != router_id {
+                            return Err(SfuDomainError::NotFound(format!(
+                                "Transport '{resource_id}' does not belong to router '{router_id}'"
+                            )));
+                        }
+
+                        (
+                            TargetTransport::WebRtc(t_item.transport.clone()),
+                            t_item.peer_id.clone(),
+                        )
+                    } else if let Some(p_item) = self.state.pipe_transports.get(resource_id) {
+                        if p_item.is_closed.load(Ordering::SeqCst) {
+                            return Err(SfuDomainError::NotFound(format!(
+                                "Transport '{resource_id}' is closed"
+                            )));
+                        }
+
+                        if p_item.router_id != router_id {
+                            return Err(SfuDomainError::NotFound(format!(
+                                "Transport '{resource_id}' does not belong to router '{router_id}'"
+                            )));
+                        }
+
+                        (
+                            TargetTransport::Pipe(p_item.transport.clone()),
+                            "pipe-transport".to_string(),
+                        )
+                    } else {
                         return Err(SfuDomainError::NotFound(format!(
-                            "Transport '{resource_id}' is closed"
+                            "Transport '{resource_id}' not found"
                         )));
                     }
-
-                    if t_item.router_id != router_id {
-                        return Err(SfuDomainError::NotFound(format!(
-                            "Transport '{resource_id}' does not belong to router '{router_id}'"
-                        )));
-                    }
-
-                    (t_item.transport.clone(), t_item.peer_id.clone())
                 };
                 tracing::Span::current().record("peer_id", peer_id.as_str());
 
@@ -1220,20 +1344,57 @@ impl MediaUseCase for MediaService {
                     .map(|c| async move { c.get_stats().await.ok().unwrap_or_default() })
                     .collect();
 
-                let (transport_stats_res, p_stats_list, c_stats_list) = tokio::join!(
-                    transport.get_stats(),
-                    futures_util::future::join_all(producer_futs),
-                    futures_util::future::join_all(consumer_futs),
-                );
+                let (stats_json, bytes_sent, bytes_received, p_stats_list, c_stats_list) =
+                    match target_transport {
+                        TargetTransport::WebRtc(transport) => {
+                            let (transport_stats_res, p_stats_list, c_stats_list) = tokio::join!(
+                                transport.get_stats(),
+                                futures_util::future::join_all(producer_futs),
+                                futures_util::future::join_all(consumer_futs),
+                            );
 
-                let stats =
-                    transport_stats_res.map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
+                            let stats = transport_stats_res
+                                .map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
 
-                let stats_json = serde_json::to_string(&stats)
-                    .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
+                            let stats_json = serde_json::to_string(&stats)
+                                .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
 
-                let bytes_sent = stats.iter().map(|s| s.bytes_sent).sum();
-                let bytes_received = stats.iter().map(|s| s.bytes_received).sum();
+                            let bytes_sent = stats.iter().map(|s| s.bytes_sent).sum();
+                            let bytes_received = stats.iter().map(|s| s.bytes_received).sum();
+
+                            (
+                                stats_json,
+                                bytes_sent,
+                                bytes_received,
+                                p_stats_list,
+                                c_stats_list,
+                            )
+                        }
+                        TargetTransport::Pipe(transport) => {
+                            let (transport_stats_res, p_stats_list, c_stats_list) = tokio::join!(
+                                transport.get_stats(),
+                                futures_util::future::join_all(producer_futs),
+                                futures_util::future::join_all(consumer_futs),
+                            );
+
+                            let stats = transport_stats_res
+                                .map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
+
+                            let stats_json = serde_json::to_string(&stats)
+                                .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
+
+                            let bytes_sent = stats.iter().map(|s| s.bytes_sent).sum();
+                            let bytes_received = stats.iter().map(|s| s.bytes_received).sum();
+
+                            (
+                                stats_json,
+                                bytes_sent,
+                                bytes_received,
+                                p_stats_list,
+                                c_stats_list,
+                            )
+                        }
+                    };
 
                 // Aggregate packet counts from attached producers and consumers
                 let mut packets_sent = 0u64;

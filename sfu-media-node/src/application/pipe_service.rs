@@ -115,10 +115,38 @@ impl EnterprisePipeService {
         }
         Ok(())
     }
+
+    fn rollback_unused_pipe(&self, router_id: &str, producer_id: &str, target_router_id: &str) {
+        if let Some(mut entries) = self.state.piped_producers.get_mut(producer_id) {
+            if let Some(idx) = entries
+                .iter()
+                .position(|e| e.router_id == router_id && e.target_router_id == target_router_id)
+            {
+                let removed = entries.remove(idx);
+                if let Some(r) = self.state.routers.get(router_id) {
+                    let pub_worker_idx = self
+                        .state
+                        .get_producer(router_id, producer_id)
+                        .map(|p| p.worker_index)
+                        .unwrap_or(r.worker_index);
+                    self.worker_pool.sub_resource_score(pub_worker_idx, 1);
+                    self.worker_pool
+                        .sub_resource_score(removed.target_worker_index, 1);
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
 impl InterNodePipeUseCase for EnterprisePipeService {
+    #[tracing::instrument(
+        skip(self, params),
+        fields(
+            router_id = %params.router_id,
+            request_id = %params.request_id
+        )
+    )]
     async fn create_pipe_transport(
         &self,
         params: CreatePipeTransportParams,
@@ -236,6 +264,13 @@ impl InterNodePipeUseCase for EnterprisePipeService {
             .await
     }
 
+    #[tracing::instrument(
+        skip(self, params),
+        fields(
+            router_id = %params.router_id,
+            pipe_transport_id = %params.pipe_transport_id
+        )
+    )]
     async fn connect_pipe_transport(
         &self,
         params: ConnectPipeTransportParams,
@@ -309,6 +344,15 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         Ok(())
     }
 
+    #[tracing::instrument(
+        skip(self, params),
+        fields(
+            router_id = %params.router_id,
+            request_id = %params.request_id,
+            pipe_transport_id = %params.pipe_transport_id,
+            producer_id = %params.producer_id
+        )
+    )]
     async fn pipe_produce(
         &self,
         params: PipeProduceParams,
@@ -513,6 +557,28 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         }
                     }
 
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(producer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during pipe produce",
+                            params.router_id
+                        )));
+                    }
+
+                    let pt_active = self
+                        .state
+                        .pipe_transports
+                        .get(&params.pipe_transport_id)
+                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false);
+                    if !pt_active {
+                        drop(producer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "PipeTransport '{}' was closed during pipe produce",
+                            params.pipe_transport_id
+                        )));
+                    }
+
                     let item = ProducerItem {
                         producer,
                         router_id: params.router_id.clone(),
@@ -560,6 +626,15 @@ impl InterNodePipeUseCase for EnterprisePipeService {
             .await
     }
 
+    #[tracing::instrument(
+        skip(self, params),
+        fields(
+            router_id = %params.router_id,
+            request_id = %params.request_id,
+            pipe_transport_id = %params.pipe_transport_id,
+            producer_id = %params.producer_id
+        )
+    )]
     async fn pipe_consume(
         &self,
         params: PipeConsumeParams,
@@ -664,8 +739,10 @@ impl InterNodePipeUseCase for EnterprisePipeService {
 
                     // If producer was created on a Sub-Router, pipe it to main router where pipe_transport lives
                     if producer_physical_router_id != params.router_id {
-                        let singleflight_key =
-                            format!("{}:{}", params.producer_id, params.router_id);
+                        let singleflight_key = format!(
+                            "{}:{}:{}",
+                            params.router_id, params.producer_id, params.router_id
+                        );
                         let lock = self
                             .state
                             .pipe_singleflight
@@ -684,9 +761,10 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                             .piped_producers
                             .get(&params.producer_id)
                             .map(|entries| {
-                                entries
-                                    .iter()
-                                    .any(|e| e.target_router_id == params.router_id)
+                                entries.iter().any(|e| {
+                                    e.router_id == params.router_id
+                                        && e.target_router_id == params.router_id
+                                })
                             })
                             .unwrap_or(false);
 
@@ -758,6 +836,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                                 .add_resource_score(main_worker_index, 1);
 
                             let entry = PipedProducerEntry {
+                                router_id: params.router_id.clone(),
                                 pipe_consumer: pipe_pair.pipe_consumer,
                                 pipe_producer,
                                 target_router_id: params.router_id.clone(),
@@ -783,17 +862,47 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         ConsumerOptions::new(producer_id_obj, RtpCapabilities::default());
                     consumer_options.paused = is_source_paused;
 
-                    let consumer = pipe_transport
-                        .consume(consumer_options)
-                        .await
-                        .map_err(|e| {
-                            SfuDomainError::Mediasoup(format!(
+                    let consumer = match pipe_transport.consume(consumer_options).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            self.rollback_unused_pipe(
+                                &params.router_id,
+                                &params.producer_id,
+                                &params.router_id,
+                            );
+                            return Err(SfuDomainError::Mediasoup(format!(
                                 "Failed to consume on PipeTransport: {e}"
-                            ))
-                        })?;
+                            )));
+                        }
+                    };
 
+                    let consumer_for_kf = consumer.clone();
+                    let consumer_id = consumer.id().to_string();
+
+                    // Immediate RTCP PLI/FIR keyframe dispatch for video pipe consumer
+                    if consumer_for_kf.kind() == mediasoup::prelude::MediaKind::Video {
+                        if let Err(e) = consumer_for_kf.request_key_frame().await {
+                            tracing::warn!(
+                                consumer_id = %consumer_id,
+                                error = %e,
+                                "Failed to request initial keyframe for pipe video consumer"
+                            );
+                        } else {
+                            tracing::debug!(
+                                consumer_id = %consumer_id,
+                                "Requested initial keyframe for pipe video consumer"
+                            );
+                        }
+                    }
+
+                    // Final liveness check after all .await calls before inserting into EngineState
                     if !self.state.is_router_active(&params.router_id) {
                         drop(consumer);
+                        self.rollback_unused_pipe(
+                            &params.router_id,
+                            &params.producer_id,
+                            &params.router_id,
+                        );
                         return Err(SfuDomainError::NotFound(format!(
                             "Router '{}' was closed during pipe consume",
                             params.router_id
@@ -808,6 +917,11 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         .unwrap_or(false);
                     if !pt_active {
                         drop(consumer);
+                        self.rollback_unused_pipe(
+                            &params.router_id,
+                            &params.producer_id,
+                            &params.router_id,
+                        );
                         return Err(SfuDomainError::NotFound(format!(
                             "PipeTransport '{}' was closed during pipe consume",
                             params.pipe_transport_id
@@ -821,13 +935,17 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         .unwrap_or(false);
                     if !producer_active {
                         drop(consumer);
+                        self.rollback_unused_pipe(
+                            &params.router_id,
+                            &params.producer_id,
+                            &params.router_id,
+                        );
                         return Err(SfuDomainError::NotFound(format!(
                             "Producer '{}' was closed during pipe consume",
                             params.producer_id
                         )));
                     }
 
-                    let consumer_id = consumer.id().to_string();
                     let (kind_str, domain_kind) = match consumer.kind() {
                         mediasoup::prelude::MediaKind::Audio => ("audio", DomainMediaKind::Audio),
                         mediasoup::prelude::MediaKind::Video => ("video", DomainMediaKind::Video),
@@ -891,18 +1009,19 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                                 return;
                             }
 
+                            let p_scores =
+                                score.producer_scores.iter().map(|&s| s as u32).collect();
                             event_publisher.publish_score(
                                 &r_id,
                                 &c_id,
                                 &peer_id,
                                 false,
                                 s_val,
-                                vec![s_val],
+                                p_scores,
                             );
                         })
                         .detach();
 
-                    let consumer_for_kf = consumer.clone();
                     let item = ConsumerItem {
                         consumer,
                         router_id: params.router_id.clone(),
@@ -935,22 +1054,6 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     self.worker_pool.add_resource_score(main_worker_index, c_weight);
 
                     self.metrics.inc_active_consumers(kind_str);
-
-                    // Immediate RTCP PLI/FIR keyframe dispatch for video pipe consumer
-                    if consumer_for_kf.kind() == mediasoup::prelude::MediaKind::Video {
-                        if let Err(e) = consumer_for_kf.request_key_frame().await {
-                            tracing::warn!(
-                                consumer_id = %consumer_id,
-                                error = %e,
-                                "Failed to request initial keyframe for pipe video consumer"
-                            );
-                        } else {
-                            tracing::debug!(
-                                consumer_id = %consumer_id,
-                                "Requested initial keyframe for pipe video consumer"
-                            );
-                        }
-                    }
 
                     Ok(ConsumeResult {
                         consumer_id,

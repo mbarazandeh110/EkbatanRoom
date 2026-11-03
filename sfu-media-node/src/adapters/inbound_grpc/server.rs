@@ -478,6 +478,8 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         );
         crate::observability::tracing_extractor::attach_trace_context(&span, request.metadata());
 
+        let rx = self.node.event_hub.subscribe();
+
         let req_inner = request.into_inner();
         let license_token = req_inner.license_token.trim().to_string();
         if !license_token.is_empty() {
@@ -490,8 +492,6 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                 }
             });
         }
-
-        let rx = self.node.event_hub.subscribe();
         let node_ref = self.node.clone();
         let stream = BroadcastStream::new(rx).filter_map(move |item| match item {
             Ok(event) => {
