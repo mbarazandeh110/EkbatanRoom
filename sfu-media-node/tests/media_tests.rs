@@ -472,6 +472,44 @@ async fn test_video_produce_consume_lifecycle_and_keyframe_request() {
     assert_eq!(cons_resp.codec_mime_type, "video/VP8");
     assert!(cons_resp.payload_type >= 96 && cons_resp.payload_type <= 127);
     assert!(cons_resp.ssrc > 0);
+
+    // 6. Test standard ORTC paused consumer creation followed by resume
+    let cons_paused_resp = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-cons-video-paused".to_string(),
+            router_id: router_id.clone(),
+            subscriber_transport_id: sub_tr.transport_id.clone(),
+            producer_id: prod_resp.producer_id.clone(),
+            rtp_capabilities_json: video_caps.to_string(),
+            paused: true,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!cons_paused_resp.consumer_id.is_empty());
+
+    // Resuming the video consumer triggers an immediate RTCP PLI/FIR keyframe request
+    service
+        .set_media_paused(Request::new(proto::SetMediaPausedRequest {
+            router_id: router_id.clone(),
+            resource_id: cons_paused_resp.consumer_id.clone(),
+            resource_type: proto::ResourceType::Consumer as i32,
+            paused: false,
+        }))
+        .await
+        .unwrap();
+
+    // Resuming the video producer triggers keyframe requests across all attached active consumers
+    service
+        .set_media_paused(Request::new(proto::SetMediaPausedRequest {
+            router_id: router_id.clone(),
+            resource_id: prod_resp.producer_id.clone(),
+            resource_type: proto::ResourceType::Producer as i32,
+            paused: false,
+        }))
+        .await
+        .unwrap();
 }
 
 #[test]
