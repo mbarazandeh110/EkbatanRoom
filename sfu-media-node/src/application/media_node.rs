@@ -38,8 +38,7 @@ impl MediaNode {
             WorkerPool::new(
                 &worker_manager,
                 config.worker_count,
-                config.rtc_min_port,
-                config.rtc_max_port,
+                config.rtc_port_range(),
                 &config.worker_settings,
             )
             .await?,

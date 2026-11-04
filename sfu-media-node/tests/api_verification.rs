@@ -7,8 +7,10 @@ mod tests {
     #[tokio::test]
     async fn test_full_api_surface() {
         let worker_manager = WorkerManager::new();
+        let mut worker_settings = WorkerSettings::default();
+        worker_settings.rtc_port_range = 40000..=49999;
         let worker = worker_manager
-            .create_worker(WorkerSettings::default())
+            .create_worker(worker_settings)
             .await
             .expect("Failed to create worker");
 
@@ -48,7 +50,7 @@ mod tests {
             announced_address: Some("127.0.0.1".to_string()),
             expose_internal_ip: false,
             port: None,
-            port_range: None,
+            port_range: Some(40000..=49999),
             flags: None,
             send_buffer_size: None,
             recv_buffer_size: None,

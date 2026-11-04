@@ -277,17 +277,7 @@ impl TransportUseCase for TransportService {
                             (sub_router, id, target_worker)
                         };
 
-                    let listen_info = ListenInfo {
-                        protocol: Protocol::Udp,
-                        ip: self.config.listen_ip,
-                        announced_address: self.config.announced_ip.clone(),
-                        expose_internal_ip: false,
-                        port: None,
-                        port_range: Some(self.config.rtc_min_port..=self.config.rtc_max_port),
-                        flags: None,
-                        send_buffer_size: self.config.webrtc_transport.send_buffer_size,
-                        recv_buffer_size: self.config.webrtc_transport.recv_buffer_size,
-                    };
+                    let listen_info = self.config.create_listen_info(Protocol::Udp);
 
                     let mut options =
                         WebRtcTransportOptions::new(WebRtcTransportListenInfos::new(listen_info));

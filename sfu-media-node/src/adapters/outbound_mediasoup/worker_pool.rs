@@ -18,8 +18,7 @@ impl WorkerPool {
     pub async fn new(
         worker_manager: &WorkerManager,
         count: usize,
-        min_port: u16,
-        max_port: u16,
+        port_range: std::ops::RangeInclusive<u16>,
         worker_config: &crate::config::MediasoupWorkerConfig,
     ) -> Result<Self, SfuDomainError> {
         let count = count.max(1);
@@ -31,7 +30,7 @@ impl WorkerPool {
 
         for i in 0..count {
             let mut settings = WorkerSettings::default();
-            settings.rtc_port_range = min_port..=max_port;
+            settings.rtc_port_range = port_range.clone();
             settings.log_level = worker_config.to_mediasoup_log_level();
             settings.log_tags = worker_config.to_mediasoup_log_tags();
             if let Some(files) = worker_config.to_mediasoup_dtls_files() {

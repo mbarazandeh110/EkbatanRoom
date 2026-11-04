@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use thiserror::Error;
@@ -290,6 +291,28 @@ pub struct Config {
     pub license_public_key_hex: Option<String>,
 }
 
+impl Config {
+    /// Modern mediasoup RTC port range (replaces deprecated rtcMinPort/rtcMaxPort).
+    pub fn rtc_port_range(&self) -> RangeInclusive<u16> {
+        self.rtc_min_port..=self.rtc_max_port
+    }
+
+    /// Construct a modern `ListenInfo` without using deprecated listenIp / port options.
+    pub fn create_listen_info(&self, protocol: mediasoup::prelude::Protocol) -> mediasoup::prelude::ListenInfo {
+        mediasoup::prelude::ListenInfo {
+            protocol,
+            ip: self.listen_ip,
+            announced_address: self.announced_ip.clone(),
+            expose_internal_ip: false,
+            port: None,
+            port_range: Some(self.rtc_port_range()),
+            flags: None,
+            send_buffer_size: self.webrtc_transport.send_buffer_size,
+            recv_buffer_size: self.webrtc_transport.recv_buffer_size,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self::from_env()
@@ -313,6 +336,8 @@ pub struct RawNetworkConfig {
     pub announced_ip: Option<String>,
     pub rtc_min_port: Option<u16>,
     pub rtc_max_port: Option<u16>,
+    #[serde(alias = "port_range")]
+    pub rtc_port_range: Option<String>,
     pub grpc_port: Option<u16>,
 }
 
@@ -339,6 +364,27 @@ pub struct RawObservabilityConfig {
     pub metrics_enabled: Option<bool>,
     pub metrics_addr: Option<String>,
     pub log_raw_sdp: Option<bool>,
+}
+
+/// Parses a port range string such as "40000-49999", "40000..=49999", or "40000..49999".
+pub fn parse_port_range(s: &str) -> Option<(u16, u16)> {
+    let s = s.trim();
+    if let Some((min_s, max_s)) = s.split_once("..=") {
+        if let (Ok(min), Ok(max)) = (min_s.trim().parse::<u16>(), max_s.trim().parse::<u16>()) {
+            return Some((min, max));
+        }
+    }
+    if let Some((min_s, max_s)) = s.split_once("..") {
+        if let (Ok(min), Ok(max)) = (min_s.trim().parse::<u16>(), max_s.trim().parse::<u16>()) {
+            return Some((min, max));
+        }
+    }
+    if let Some((min_s, max_s)) = s.split_once('-') {
+        if let (Ok(min), Ok(max)) = (min_s.trim().parse::<u16>(), max_s.trim().parse::<u16>()) {
+            return Some((min, max));
+        }
+    }
+    None
 }
 
 /// Probes the OS routing table using an unconnected UDP socket to find the
@@ -485,6 +531,12 @@ impl Config {
                     self.announced_ip = Some(trimmed.to_string());
                 }
             }
+            if let Some(ref range_str) = net.rtc_port_range {
+                if let Some((min, max)) = parse_port_range(range_str) {
+                    self.rtc_min_port = min;
+                    self.rtc_max_port = max;
+                }
+            }
             if let Some(min_port) = net.rtc_min_port {
                 self.rtc_min_port = min_port;
             }
@@ -605,6 +657,13 @@ impl Config {
                 self.announced_ip = None;
             } else if !trimmed.is_empty() {
                 self.announced_ip = Some(trimmed.to_string());
+            }
+        }
+
+        if let Ok(s) = std::env::var("RTC_PORT_RANGE") {
+            if let Some((min, max)) = parse_port_range(&s) {
+                self.rtc_min_port = min;
+                self.rtc_max_port = max;
             }
         }
 
@@ -1108,4 +1167,43 @@ network:
 
         std::env::remove_var("MEDIASOUP_ANNOUNCED_IP");
     }
+
+    #[test]
+    fn test_modern_rtc_port_range_and_listen_info() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // 1. Test parse_port_range formats
+        assert_eq!(parse_port_range("40000-49999"), Some((40000, 49999)));
+        assert_eq!(parse_port_range("40000..=49999"), Some((40000, 49999)));
+        assert_eq!(parse_port_range("40000..49999"), Some((40000, 49999)));
+        assert_eq!(parse_port_range("invalid"), None);
+
+        // 2. Test YAML loading with rtc_port_range
+        let yaml = r#"
+network:
+  listen_ip: "127.0.0.1"
+  rtc_port_range: "42000-43000"
+"#;
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join("test_port_range.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let cfg = Config::try_from_file(&path).unwrap();
+        assert_eq!(cfg.rtc_port_range(), 42000..=43000);
+        assert_eq!(cfg.rtc_min_port, 42000);
+        assert_eq!(cfg.rtc_max_port, 43000);
+        let _ = std::fs::remove_file(path);
+
+        // 3. Test ENV override with RTC_PORT_RANGE
+        std::env::set_var("RTC_PORT_RANGE", "45000..=46000");
+        let cfg_env = Config::try_from_env().unwrap();
+        assert_eq!(cfg_env.rtc_port_range(), 45000..=46000);
+        std::env::remove_var("RTC_PORT_RANGE");
+
+        // 4. Test create_listen_info non-deprecated structure
+        let listen_info = cfg.create_listen_info(mediasoup::prelude::Protocol::Udp);
+        assert_eq!(listen_info.protocol, mediasoup::prelude::Protocol::Udp);
+        assert_eq!(listen_info.ip, cfg.listen_ip);
+        assert_eq!(listen_info.port_range, Some(cfg.rtc_port_range()));
+        assert_eq!(listen_info.port, None);
+    }
 }
+
