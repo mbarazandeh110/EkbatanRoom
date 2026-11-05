@@ -1000,6 +1000,26 @@ impl MediaUseCase for MediaService {
                     let _ = p.resume().await;
                 }
             }
+
+            // When a video producer is resumed (unmuted), request a keyframe for all active consumers
+            if !paused && producer.kind() == mediasoup::prelude::MediaKind::Video {
+                let consumer_ids: Vec<String> = self
+                    .state
+                    .producer_consumers
+                    .get(resource_id)
+                    .map(|set| set.iter().map(|entry| entry.key().clone()).collect())
+                    .unwrap_or_default();
+                for cid in consumer_ids {
+                    if let Some(c_item) = self.state.consumers.get(&cid) {
+                        if !c_item.is_closed.load(Ordering::SeqCst) && !c_item.consumer.paused() {
+                            let c_clone = c_item.consumer.clone();
+                            tokio::spawn(async move {
+                                let _ = c_clone.request_key_frame().await;
+                            });
+                        }
+                    }
+                }
+            }
         } else {
             // Extract consumer and DROP guard before .await
             let (consumer, peer_id) = {
@@ -1033,6 +1053,27 @@ impl MediaUseCase for MediaService {
                     .resume()
                     .await
                     .map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
+
+                // Immediate RTCP PLI/FIR keyframe dispatch when resuming a video consumer.
+                // In standard ORTC workflows (such as mediasoup-client or livekit-client),
+                // consumers are created paused (paused: true) until local WebRTC transceivers
+                // and media elements are ready, and then resumed. Without an explicit keyframe
+                // request on resume, the subscriber receives only delta frames (P-frames) that
+                // cannot be decoded, causing video playback to stall or freeze for up to 30 seconds.
+                if consumer.kind() == mediasoup::prelude::MediaKind::Video {
+                    if let Err(e) = consumer.request_key_frame().await {
+                        tracing::warn!(
+                            consumer_id = %resource_id,
+                            error = %e,
+                            "Failed to request keyframe on video consumer resume"
+                        );
+                    } else {
+                        tracing::debug!(
+                            consumer_id = %resource_id,
+                            "Requested keyframe on video consumer resume"
+                        );
+                    }
+                }
             }
         }
 

@@ -514,7 +514,7 @@ async fn test_sub_router_audio_observer_and_pipe_transport_cleanup() {
                     announced_address: None,
                     expose_internal_ip: false,
                     port: None,
-                    port_range: None,
+                    port_range: Some(40000..=49999),
                     flags: None,
                     send_buffer_size: None,
                     recv_buffer_size: None,
