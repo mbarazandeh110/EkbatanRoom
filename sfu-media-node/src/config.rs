@@ -298,7 +298,10 @@ impl Config {
     }
 
     /// Construct a modern `ListenInfo` without using deprecated listenIp / port options.
-    pub fn create_listen_info(&self, protocol: mediasoup::prelude::Protocol) -> mediasoup::prelude::ListenInfo {
+    pub fn create_listen_info(
+        &self,
+        protocol: mediasoup::prelude::Protocol,
+    ) -> mediasoup::prelude::ListenInfo {
         mediasoup::prelude::ListenInfo {
             protocol,
             ip: self.listen_ip,
@@ -1206,4 +1209,3 @@ network:
         assert_eq!(listen_info.port, None);
     }
 }
-

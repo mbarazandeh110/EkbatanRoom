@@ -1,3 +1,4 @@
+use sfu_media_node::ports::WorkerPoolPort;
 use sfu_media_node::proto::sfu::v1 as proto;
 use sfu_media_node::proto::sfu::v1::sfu_media_engine_service_server::SfuMediaEngineService;
 use sfu_media_node::{Config, GrpcMediaEngineService, MediaNode};
@@ -519,6 +520,209 @@ async fn test_cascaded_multi_router_producer_collision_isolation() {
     assert!(
         c1_stats.is_ok(),
         "Consumer c1 must still be operational under Router 1"
+    );
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn test_watch_node_events_terminates_on_draining() {
+    let node = Arc::new(MediaNode::new(test_config(1)).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let mut stream = service
+        .watch_node_events(Request::new(proto::WatchNodeEventsRequest {
+            coordinator_id: "coord-drain-test".to_string(),
+            license_token: String::new(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Trigger draining
+    node.start_draining();
+
+    // The stream must yield the draining NodeCapacity event
+    let draining_event = timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("Timeout waiting for draining event")
+        .expect("Stream ended without yielding event")
+        .expect("gRPC error");
+
+    match draining_event.payload {
+        Some(proto::node_event::Payload::NodeCapacity(cap)) => {
+            assert!(cap.is_draining, "Expected is_draining to be true");
+        }
+        other => panic!("Expected NodeCapacity payload, got {:?}", other),
+    }
+
+    // Immediately after yielding is_draining event, stream MUST terminate with None!
+    let next_item = timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("Timeout waiting for EOF");
+    assert!(
+        next_item.is_none(),
+        "Stream must terminate after draining event"
+    );
+
+    // Any new watch_node_events request while draining must be rejected
+    let new_stream_err = match service
+        .watch_node_events(Request::new(proto::WatchNodeEventsRequest {
+            coordinator_id: "coord-drain-late".to_string(),
+            license_token: String::new(),
+        }))
+        .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("Expected error for watch_node_events while draining"),
+    };
+    assert_eq!(new_stream_err.code(), tonic::Code::Unavailable);
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn test_cleanup_piped_producer_when_main_producer_removed_concurrently() {
+    let mut config = test_config(2);
+    config.worker_count = 2;
+    let node = Arc::new(MediaNode::new(config).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create Router
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-pipe-leak".to_string(),
+            room_id: "room-pipe-leak".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let router_id = r_resp.router_id;
+
+    // 2. Peer 1 publisher on worker 0
+    let p1_pub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-p1-pub-pipe-leak".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-1".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let opus_params = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "audio/opus",
+                "payloadType": 111,
+                "clockRate": 48000,
+                "channels": 2,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 88881111 }],
+        "rtcp": { "cname": "audio-leak", "reducedSize": true }
+    }"#;
+
+    let p1_prod = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-p1-prod-pipe-leak".to_string(),
+            router_id: router_id.clone(),
+            transport_id: p1_pub.transport_id.clone(),
+            peer_id: "peer-1".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 3. Add load to Worker 0 so Peer 2 spills over to Worker 1
+    node.worker_pool.add_resource_score(0, 10);
+
+    let p2_sub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-p2-sub-pipe-leak".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-2".to_string(),
+            is_publisher: false,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sub_item = node.state.transports.get(&p2_sub.transport_id).unwrap();
+    let sub_worker_index = sub_item.worker_index;
+    let _sub_physical_router_id = sub_item.physical_router_id.clone();
+    drop(sub_item);
+
+    assert_eq!(sub_worker_index, 1);
+
+    let opus_caps = r#"{
+        "codecs": [
+            {
+                "mimeType": "audio/opus",
+                "kind": "audio",
+                "preferredPayloadType": 111,
+                "clockRate": 48000,
+                "channels": 2,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": []
+    }"#;
+
+    let c_resp = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-c-pipe-leak".to_string(),
+            router_id: router_id.clone(),
+            subscriber_transport_id: p2_sub.transport_id.clone(),
+            producer_id: p1_prod.producer_id.clone(),
+            rtp_capabilities_json: opus_caps.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Verify pipe exists
+    assert!(node
+        .state
+        .piped_producers
+        .contains_key(&p1_prod.producer_id));
+
+    // 4. Simulate concurrent removal of the main producer from `state.producers`
+    node.state
+        .producers
+        .remove(&(router_id.clone(), p1_prod.producer_id.clone()));
+
+    // 5. Close consumer -> triggers cleanup_piped_producer_if_last_consumer
+    // Even though main producer was already removed from state.producers,
+    // cleanup_piped_producer_if_last_consumer must still succeed and clean up piped_producers!
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: router_id.clone(),
+            resource_type: proto::ResourceType::Consumer as i32,
+            resource_id: c_resp.consumer_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+    assert!(
+        !node
+            .state
+            .piped_producers
+            .contains_key(&p1_prod.producer_id),
+        "Piped producer entry must be cleaned up even if main producer was removed concurrently"
     );
 
     let _ = node.shutdown(Duration::from_secs(1)).await;

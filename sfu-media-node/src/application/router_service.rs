@@ -107,11 +107,11 @@ impl RouterUseCase for RouterService {
                         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                         .clone();
 
-                    let _guard = lock.lock().await;
                     let _key_guard = crate::application::state::SingleflightKeyGuard::new(
                         self.state.room_singleflight.clone(),
                         room_id.to_string(),
                     );
+                    let _guard = lock.lock().await;
 
                     // Check if room already has an active router (double-checked under room lock)
                     let existing_active_router = {
@@ -228,8 +228,17 @@ impl RouterUseCase for RouterService {
             .await
     }
 
-    #[tracing::instrument(skip(self), fields(router_id = %router_id))]
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %router_id
+        )
+    )]
     fn close_router(&self, router_id: &str) -> Result<(), SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         validation::validate_not_empty("router_id", router_id)?;
 
         // Remove router from active maps; emit ResourceClosedEvent ONLY if router actually existed

@@ -45,6 +45,45 @@ impl<S: Stream + Unpin> Stream for TracedStream<S> {
     }
 }
 
+struct DrainingWatchStream<S> {
+    inner: S,
+    finished: bool,
+}
+
+impl<S: Stream<Item = Result<proto::NodeEvent, Status>> + Unpin> Stream for DrainingWatchStream<S> {
+    type Item = Result<proto::NodeEvent, Status>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if self.finished {
+            return std::task::Poll::Ready(None);
+        }
+
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            std::task::Poll::Ready(Some(Ok(event))) => {
+                let is_draining = if let Some(proto::node_event::Payload::NodeCapacity(ref cap)) =
+                    event.payload
+                {
+                    cap.is_draining
+                } else {
+                    false
+                };
+                if is_draining {
+                    self.finished = true;
+                }
+                std::task::Poll::Ready(Some(Ok(event)))
+            }
+            other => other,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
 async fn instrument_rpc<Req, Resp, Fut>(
     method: &'static str,
     metrics: Arc<dyn MetricsPort>,
@@ -478,19 +517,31 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
         );
         crate::observability::tracing_extractor::attach_trace_context(&span, request.metadata());
 
+        if self
+            .node
+            .state
+            .is_draining
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(Status::unavailable("Node is draining and shutting down"));
+        }
+
         let rx = self.node.event_hub.subscribe();
 
         let req_inner = request.into_inner();
-        let license_token = req_inner.license_token.trim().to_string();
+        let license_token = req_inner.license_token.trim();
         if !license_token.is_empty() {
-            let node_for_lic = self.node.clone();
-            let coord_id = req_inner.coordinator_id.clone();
-            tokio::spawn(async move {
-                tracing::info!(coordinator_id = %coord_id, "Applying license received via WatchNodeEvents [REDACTED]");
-                if let Err(e) = node_for_lic.apply_license(&license_token).await {
-                    tracing::warn!(error = %e, coordinator_id = %coord_id, "Failed to apply license from WatchNodeEvents");
-                }
-            });
+            tracing::info!(
+                coordinator_id = %req_inner.coordinator_id,
+                "Applying license received via WatchNodeEvents [REDACTED]"
+            );
+            if let Err(e) = self.node.apply_license(license_token).await {
+                tracing::warn!(
+                    error = %e,
+                    coordinator_id = %req_inner.coordinator_id,
+                    "Failed to apply license from WatchNodeEvents"
+                );
+            }
         }
         let node_ref = self.node.clone();
         let stream = BroadcastStream::new(rx).filter_map(move |item| match item {
@@ -522,8 +573,13 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
             start.elapsed().as_secs_f64(),
         );
 
-        let traced_stream = TracedStream {
+        let draining_stream = DrainingWatchStream {
             inner: stream,
+            finished: false,
+        };
+
+        let traced_stream = TracedStream {
+            inner: draining_stream,
             span,
         };
 

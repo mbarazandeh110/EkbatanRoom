@@ -378,27 +378,7 @@ pub fn parse_rtp_capabilities(json_str: &str) -> Result<RtpCapabilities, SfuDoma
 pub fn parse_dtls_fingerprints(
     fingerprints: &[(String, String)],
 ) -> Result<Vec<DtlsFingerprint>, SfuDomainError> {
-    if fingerprints.is_empty() {
-        return Err(SfuDomainError::InvalidArgument(
-            "At least one DTLS fingerprint is required".to_string(),
-        ));
-    }
-
-    let mut result = Vec::with_capacity(fingerprints.len());
-    for (algorithm, value) in fingerprints {
-        let json_val = serde_json::json!({
-            "algorithm": algorithm.to_lowercase(),
-            "value": value
-        });
-        let fp: DtlsFingerprint = serde_json::from_value(json_val).map_err(|e| {
-            SfuDomainError::InvalidArgument(format!(
-                "Invalid DTLS fingerprint with algorithm '{algorithm}': {e}"
-            ))
-        })?;
-        result.push(fp);
-    }
-
-    Ok(result)
+    crate::domain::validation::parse_dtls_fingerprints(fingerprints)
 }
 
 pub fn to_create_router_response(

@@ -117,23 +117,13 @@ impl EnterprisePipeService {
     }
 
     fn rollback_unused_pipe(&self, router_id: &str, producer_id: &str, target_router_id: &str) {
-        if let Some(mut entries) = self.state.piped_producers.get_mut(producer_id) {
-            if let Some(idx) = entries
-                .iter()
-                .position(|e| e.router_id == router_id && e.target_router_id == target_router_id)
-            {
-                let removed = entries.remove(idx);
-                if let Some(r) = self.state.routers.get(router_id) {
-                    let pub_worker_idx = self
-                        .state
-                        .get_producer(router_id, producer_id)
-                        .map(|p| p.worker_index)
-                        .unwrap_or(r.worker_index);
-                    self.worker_pool.sub_resource_score(pub_worker_idx, 1);
-                    self.worker_pool
-                        .sub_resource_score(removed.target_worker_index, 1);
-                }
-            }
+        if let Some((piped_entry, pub_worker_idx)) = self
+            .state
+            .cleanup_piped_producer_if_last_consumer(router_id, producer_id, target_router_id)
+        {
+            self.worker_pool.sub_resource_score(pub_worker_idx, 1);
+            self.worker_pool
+                .sub_resource_score(piped_entry.target_worker_index, 1);
         }
     }
 }
@@ -143,6 +133,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
     #[tracing::instrument(
         skip(self, params),
         fields(
+            room_id = tracing::field::Empty,
             router_id = %params.router_id,
             request_id = %params.request_id
         )
@@ -151,6 +142,9 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         &self,
         params: CreatePipeTransportParams,
     ) -> Result<CreatePipeTransportResult, SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(&params.router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         if self.state.is_draining.load(Ordering::SeqCst) {
             return Err(SfuDomainError::SystemDraining(
                 "Node is draining; rejecting new pipe transport".to_string(),
@@ -257,6 +251,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
     #[tracing::instrument(
         skip(self, params),
         fields(
+            room_id = tracing::field::Empty,
             router_id = %params.router_id,
             pipe_transport_id = %params.pipe_transport_id
         )
@@ -265,6 +260,9 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         &self,
         params: ConnectPipeTransportParams,
     ) -> Result<(), SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(&params.router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         self.check_enterprise_license()?;
 
         validation::validate_not_empty("router_id", &params.router_id)?;
@@ -337,6 +335,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
     #[tracing::instrument(
         skip(self, params),
         fields(
+            room_id = tracing::field::Empty,
             router_id = %params.router_id,
             request_id = %params.request_id,
             pipe_transport_id = %params.pipe_transport_id,
@@ -347,6 +346,9 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         &self,
         params: PipeProduceParams,
     ) -> Result<ProduceResult, SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(&params.router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         if self.state.is_draining.load(Ordering::SeqCst) {
             return Err(SfuDomainError::SystemDraining(
                 "Node is draining; rejecting pipe produce".to_string(),
@@ -619,6 +621,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
     #[tracing::instrument(
         skip(self, params),
         fields(
+            room_id = tracing::field::Empty,
             router_id = %params.router_id,
             request_id = %params.request_id,
             pipe_transport_id = %params.pipe_transport_id,
@@ -629,6 +632,9 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         &self,
         params: PipeConsumeParams,
     ) -> Result<ConsumeResult, SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(&params.router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
         if self.state.is_draining.load(Ordering::SeqCst) {
             return Err(SfuDomainError::SystemDraining(
                 "Node is draining; rejecting pipe consume".to_string(),
@@ -740,11 +746,11 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                             .clone();
 
-                        let _guard = lock.lock().await;
                         let _key_guard = crate::application::state::SingleflightKeyGuard::new(
                             self.state.pipe_singleflight.clone(),
                             singleflight_key.clone(),
                         );
+                        let _guard = lock.lock().await;
 
                         let already_piped = self
                             .state
@@ -829,6 +835,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                                 router_id: params.router_id.clone(),
                                 pipe_consumer: pipe_pair.pipe_consumer,
                                 pipe_producer,
+                                source_worker_index: producer_worker_index,
                                 target_router_id: params.router_id.clone(),
                                 target_worker_index: main_worker_index,
                             };

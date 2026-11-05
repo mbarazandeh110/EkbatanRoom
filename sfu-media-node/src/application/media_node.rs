@@ -151,6 +151,7 @@ impl MediaNode {
             let mut heartbeat_ticks = 0u32;
             let mut last_published_load = 0.0f32;
             let mut last_enterprise_state = pipe_service_clone.is_enterprise_enabled();
+            let mut last_published_tier = "community".to_string();
 
             loop {
                 ticker.tick().await;
@@ -164,6 +165,25 @@ impl MediaNode {
                         .unwrap_or(0);
                     let is_valid = lic.is_valid_at(now_secs);
                     metrics_clone.update_license_status(is_valid, lic.expires_at);
+
+                    if lic.expires_at > 0 && now_secs > lic.expires_at {
+                        let grace_secs = (lic.grace_period_days as u64) * 86400;
+                        if now_secs <= lic.expires_at + grace_secs {
+                            tracing::warn!(
+                                customer_id = %lic.customer_id,
+                                expires_at = lic.expires_at,
+                                grace_period_days = lic.grace_period_days,
+                                remaining_grace_secs = (lic.expires_at + grace_secs).saturating_sub(now_secs),
+                                "Active license is expired but currently operating within Grace Period"
+                            );
+                        } else {
+                            tracing::warn!(
+                                customer_id = %lic.customer_id,
+                                expires_at = lic.expires_at,
+                                "Active license has expired and grace period has elapsed"
+                            );
+                        }
+                    }
                 }
 
                 let info = compute_node_capacity(
@@ -185,11 +205,13 @@ impl MediaNode {
                 // Check hysteresis, heartbeat, or dynamic license state transition
                 let delta = (info.effective_load_percent - last_published_load).abs();
                 let enterprise_changed = current_is_enterprise != last_enterprise_state;
+                let tier_changed = info.license_tier != last_published_tier;
                 heartbeat_ticks += 1;
 
-                if delta >= 3.0 || heartbeat_ticks >= 5 || enterprise_changed {
+                if delta >= 3.0 || heartbeat_ticks >= 5 || enterprise_changed || tier_changed {
                     last_published_load = info.effective_load_percent;
                     last_enterprise_state = current_is_enterprise;
+                    last_published_tier = info.license_tier.clone();
                     heartbeat_ticks = 0;
                     event_hub_clone.publish_node_capacity(&info);
                 }

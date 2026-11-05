@@ -182,11 +182,11 @@ impl TransportUseCase for TransportService {
                                     .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                                     .clone();
 
-                                let _guard = lock.lock().await;
                                 let _key_guard = crate::application::state::SingleflightKeyGuard::new(
                                     self.state.sub_router_singleflight.clone(),
                                     sf_key.clone(),
                                 );
+                                let _guard = lock.lock().await;
 
                                 let router = if let Some(sub) = sub_routers.get(&target_worker) {
                                     sub.router.clone()
@@ -264,6 +264,15 @@ impl TransportUseCase for TransportService {
                                         audio_level_observer,
                                         is_closed,
                                     };
+
+                                    if !self.state.is_router_active(&params.router_id)
+                                        || !self.worker_pool.is_worker_alive(target_worker)
+                                    {
+                                        return Err(SfuDomainError::NotFound(format!(
+                                            "Router '{}' closed or worker {} died during sub-router creation",
+                                            params.router_id, target_worker
+                                        )));
+                                    }
 
                                     sub_routers.insert(target_worker, sub_item);
                                     self.worker_pool.increment_load(target_worker);
@@ -518,8 +527,7 @@ impl TransportUseCase for TransportService {
             .into_iter()
             .map(|f| (f.algorithm, f.value))
             .collect();
-        let fingerprints =
-            crate::adapters::inbound_grpc::mapper::parse_dtls_fingerprints(&fp_tuples)?;
+        let fingerprints = crate::domain::validation::parse_dtls_fingerprints(&fp_tuples)?;
 
         let dtls_parameters = DtlsParameters { role, fingerprints };
 

@@ -458,11 +458,11 @@ impl MediaUseCase for MediaService {
                             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                             .clone();
 
-                        let _guard = lock.lock().await;
                         let _key_guard = crate::application::state::SingleflightKeyGuard::new(
                             self.state.pipe_singleflight.clone(),
                             singleflight_key.clone(),
                         );
+                        let _guard = lock.lock().await;
 
                         let already_piped = self
                             .state
@@ -568,6 +568,7 @@ impl MediaUseCase for MediaService {
                                 router_id: params.router_id.clone(),
                                 pipe_consumer: pipe_pair.pipe_consumer,
                                 pipe_producer,
+                                source_worker_index: producer_worker_index,
                                 target_router_id: sub_physical_router_id.clone(),
                                 target_worker_index: sub_worker_index,
                             };

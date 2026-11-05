@@ -32,6 +32,33 @@ pub fn parse_dtls_role(role: &str) -> Result<DtlsRole, SfuDomainError> {
     }
 }
 
+pub fn parse_dtls_fingerprints(
+    fingerprints: &[(String, String)],
+) -> Result<Vec<mediasoup::types::data_structures::DtlsFingerprint>, SfuDomainError> {
+    if fingerprints.is_empty() {
+        return Err(SfuDomainError::InvalidArgument(
+            "At least one DTLS fingerprint is required".to_string(),
+        ));
+    }
+
+    let mut result = Vec::with_capacity(fingerprints.len());
+    for (algorithm, value) in fingerprints {
+        let json_val = serde_json::json!({
+            "algorithm": algorithm.to_lowercase(),
+            "value": value
+        });
+        let fp: mediasoup::types::data_structures::DtlsFingerprint =
+            serde_json::from_value(json_val).map_err(|e| {
+                SfuDomainError::InvalidArgument(format!(
+                    "Invalid DTLS fingerprint with algorithm '{algorithm}': {e}"
+                ))
+            })?;
+        result.push(fp);
+    }
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,5 +85,17 @@ mod tests {
         assert_eq!(parse_dtls_role("server").unwrap(), DtlsRole::Server);
         assert_eq!(parse_dtls_role("").unwrap(), DtlsRole::Auto);
         assert!(parse_dtls_role("invalid").is_err());
+    }
+
+    #[test]
+    fn test_parse_dtls_fingerprints() {
+        let fps = vec![(
+            "sha-256".to_string(),
+            "E4:87:72:DE:DE:D6:75:A5:C0:5E:2B:A3:8F:69:B8:31:84:87:C7:E2:03:7E:63:F6:FD:E5:5D:84:1F:B5:1D:93".to_string(),
+        )];
+        let parsed = parse_dtls_fingerprints(&fps).unwrap();
+        assert_eq!(parsed.len(), 1);
+
+        assert!(parse_dtls_fingerprints(&[]).is_err());
     }
 }

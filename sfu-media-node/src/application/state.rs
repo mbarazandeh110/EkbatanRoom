@@ -74,6 +74,7 @@ pub struct PipedProducerEntry {
     pub router_id: String,
     pub pipe_consumer: Consumer,
     pub pipe_producer: Producer,
+    pub source_worker_index: usize,
     pub target_router_id: String,
     pub target_worker_index: usize,
 }
@@ -299,40 +300,45 @@ impl EngineState {
         producer_id: &str,
         target_router_id: &str,
     ) -> Option<(PipedProducerEntry, usize)> {
-        let (p_physical_router_id, p_worker_index) = {
-            let p = self.get_producer(router_id, producer_id)?;
-            (p.physical_router_id.clone(), p.worker_index)
-        };
-
-        if p_physical_router_id == target_router_id {
-            return None;
+        if let Some(p) = self.get_producer(router_id, producer_id) {
+            if p.physical_router_id == target_router_id {
+                return None;
+            }
         }
 
-        let has_remaining = if let Some(c_ids) = self.producer_consumers.get(producer_id) {
-            c_ids.iter().any(|cid| {
-                self.consumers
-                    .get(cid.as_str())
-                    .map(|c| c.router_id == router_id && c.physical_router_id == target_router_id)
-                    .unwrap_or(false)
+        let has_remaining = self
+            .producer_consumers
+            .get(producer_id)
+            .map(|c_ids| {
+                c_ids.iter().any(|cid| {
+                    self.consumers
+                        .get(cid.as_str())
+                        .map(|c| {
+                            c.router_id == router_id && c.physical_router_id == target_router_id
+                        })
+                        .unwrap_or(false)
+                })
             })
-        } else {
-            false
-        };
+            .unwrap_or(false);
 
         if has_remaining {
             return None;
         }
 
-        let removed = if let Some(mut entries) = self.piped_producers.get_mut(producer_id) {
-            entries
-                .iter()
-                .position(|e| e.router_id == router_id && e.target_router_id == target_router_id)
-                .map(|pos| entries.swap_remove(pos))
-        } else {
-            None
-        };
+        let removed = self
+            .piped_producers
+            .get_mut(producer_id)
+            .and_then(|mut entries| {
+                entries
+                    .iter()
+                    .position(|e| {
+                        e.router_id == router_id && e.target_router_id == target_router_id
+                    })
+                    .map(|pos| entries.swap_remove(pos))
+            });
 
         if let Some(entry) = removed {
+            let source_worker_index = entry.source_worker_index;
             self.piped_producers
                 .remove_if(producer_id, |_, e| e.is_empty());
 
@@ -341,7 +347,7 @@ impl EngineState {
             self.pipe_singleflight.remove(&sf_key_scoped);
             self.pipe_singleflight.remove(&sf_key_legacy);
 
-            Some((entry, p_worker_index))
+            Some((entry, source_worker_index))
         } else {
             None
         }
@@ -671,5 +677,46 @@ mod tests {
 
         drop(guard2);
         drop(lock2);
+    }
+
+    #[tokio::test]
+    async fn test_singleflight_key_guard_cancellation_before_lock_cleans_map() {
+        let map = Arc::new(DashMap::<String, Arc<tokio::sync::Mutex<()>>>::new());
+        let key = "room_cancel".to_string();
+
+        let lock1 = map
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let key_guard1 = SingleflightKeyGuard::new(map.clone(), key.clone());
+        let guard1 = lock1.lock().await;
+
+        // Task 2 sets up key_guard before awaiting lock
+        let map_clone = map.clone();
+        let key_clone = key.clone();
+        let handle = tokio::spawn(async move {
+            let lock2 = map_clone
+                .entry(key_clone.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone();
+            let _key_guard2 = SingleflightKeyGuard::new(map_clone.clone(), key_clone.clone());
+            let _guard2 = lock2.lock().await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Task 1 finishes and releases
+        drop(guard1);
+        drop(key_guard1);
+        drop(lock1);
+
+        // Cancel Task 2
+        handle.abort();
+        let _ = handle.await;
+
+        assert!(
+            !map.contains_key(&key),
+            "Key must be cleaned up when waiting task is cancelled"
+        );
     }
 }

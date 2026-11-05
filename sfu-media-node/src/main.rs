@@ -68,10 +68,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("gRPC server listening on {}", grpc_addr);
 
-    Server::builder()
+    let (drain_tx, drain_rx) = tokio::sync::watch::channel(false);
+    let node_for_signal = media_node.clone();
+
+    let shutdown_signal = async move {
+        wait_for_shutdown(node_for_signal).await;
+        let _ = drain_tx.send(true);
+    };
+
+    let serve_future = Server::builder()
         .add_service(SfuMediaEngineServiceServer::new(service))
-        .serve_with_shutdown(grpc_addr, wait_for_shutdown(media_node.clone()))
-        .await?;
+        .serve_with_shutdown(grpc_addr, shutdown_signal);
+
+    tokio::select! {
+        res = serve_future => {
+            if let Err(e) = res {
+                tracing::error!("gRPC server terminated with error: {e}");
+            }
+        }
+        _ = async {
+            let mut rx = drain_rx;
+            let _ = rx.wait_for(|&draining| draining).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        } => {
+            tracing::warn!("Graceful drain timeout (5s) reached while waiting for open gRPC connections to close; proceeding to node shutdown");
+        }
+    }
 
     tracing::info!("gRPC server stopped. Cleaning up media node resources...");
     if let Err(e) = media_node.shutdown(Duration::from_secs(5)).await {
