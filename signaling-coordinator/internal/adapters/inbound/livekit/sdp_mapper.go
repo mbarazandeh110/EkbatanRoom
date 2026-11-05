@@ -936,46 +936,24 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 			)
 		}
 
-		cname := slot.CName
-		if cname == "" {
-			cname = participantSID
-		}
-
 		pubSID := slot.PublisherSID
 		if pubSID == "" {
-			pubSID = cname
+			pubSID = slot.CName
 		}
 		if pubSID == "" {
 			pubSID = participantSID
 		}
 
+		// Modern WebRTC Unified Plan (RFC 8829 / LiveKit protocol) uses BUNDLE and a=mid
+		// for track demultiplexing. Explicit a=ssrc and a=ssrc-group lines MUST NOT be
+		// emitted in subscriber offers (REQ-001) as they cause Pion WebRTC (livekit-cli)
+		// to reject incoming RTP packets with mismatched SSRCs and drop tracks.
 		md.Attributes = append(md.Attributes,
 			sdp.Attribute{
 				Key:   "msid",
 				Value: fmt.Sprintf("%s %s", pubSID, slot.TrackSID),
 			},
-			sdp.Attribute{
-				Key:   "ssrc",
-				Value: fmt.Sprintf("%d cname:%s", slot.SSRC, cname),
-			},
-			sdp.Attribute{
-				Key:   "ssrc",
-				Value: fmt.Sprintf("%d msid:%s %s", slot.SSRC, pubSID, slot.TrackSID),
-			},
 		)
-
-		if slot.RTXSSRC > 0 {
-			md.Attributes = append(md.Attributes,
-				sdp.Attribute{
-					Key:   "ssrc",
-					Value: fmt.Sprintf("%d cname:%s", slot.RTXSSRC, cname),
-				},
-				sdp.Attribute{
-					Key:   "ssrc-group",
-					Value: fmt.Sprintf("FID %d %d", slot.SSRC, slot.RTXSSRC),
-				},
-			)
-		}
 
 		// Add candidates
 		for _, cand := range transport.IceCandidates {

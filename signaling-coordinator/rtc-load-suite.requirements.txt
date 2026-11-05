@@ -2,7 +2,7 @@
 RFC / REQUIREMENT ID: REQ-001
 SOURCE SERVICE: rtc-load-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -26,6 +26,13 @@ STATUS: OPEN
    - signaling-coordinator should omit explicit `a=ssrc:...` lines from synthesized subscriber SDP offers, allowing standard WebRTC clients (`livekit-cli`, browsers) to automatically bind the incoming track via MID/StreamID without dropping media packets.
 
 4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
-   - Decision: [PENDING]
-   - Architectural Justification: ...
-   - Modified Files & Benchmark Verifications: ...
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     Under WebRTC Unified Plan (RFC 8829) with BUNDLE (RFC 8843), media tracks on subscriber peer connections are demultiplexed via the `a=mid` header extension and bound to streams via `a=msid` rather than static SSRC signaling. Declaring explicit `a=ssrc` and `a=ssrc-group` lines in server-generated subscriber offers constrains client-side RTP engines (such as Pion WebRTC in official `livekit-cli`) to expect only those exact static SSRCs. When incoming media packets arrive with actual source SSRCs forwarded by the SFU pipeline (e.g. SSRC 1234), Pion detects the SSRC mismatch (`errMediaSectionHasExplictSSRCAttribute`), drops the packets, and does not fire `OnTrack`. Removing explicit `a=ssrc` and `a=ssrc-group` attributes from `GenerateSubscriberOffer` strictly aligns subscriber offer synthesis with Unified Plan standard behavior, enabling seamless dynamic RTP stream demultiplexing via MID.
+   - Modified Files & Benchmark Verifications:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Removed explicit `a=ssrc` and `a=ssrc-group` attribute generation from active media sections in `GenerateSubscriberOffer`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`:
+       - Enhanced `TestSDPMapper_GenerateSubscriberOffer_ActiveAndInactiveSlots` to assert the absence of `a=ssrc` and `a=ssrc-group`.
+       - Added dedicated test `TestSDPMapper_GenerateSubscriberOffer_NoExplicitSSRC_REQ001` verifying that multi-track subscriber offers strictly omit `a=ssrc` while preserving `a=mid`, `a=msid`, and `a=group:BUNDLE`.
+     - `.agents/skills/livekit-sdp-synthesizer/SKILL.md`: Documented the architectural requirement prohibiting explicit `a=ssrc` lines in subscriber offers.
+     - Verification: Full test suite executed with race detector (`go test -count=1 -race ./...`) - PASS (100% clean).

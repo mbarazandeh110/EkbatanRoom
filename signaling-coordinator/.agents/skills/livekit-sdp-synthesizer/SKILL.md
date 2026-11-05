@@ -19,4 +19,4 @@ description: راهنمای مبتنی بر شواهد برای پیاده‌س�
 ## ۳. مدیریت خطوط `m=` در مسیر دریافت (Subscriber Offer)
 1. در Unified Plan، ترتیب بخش‌های `m=` و مقادیر `a=mid` در مذاکرات مجدد (Renegotiation) باید پایدار بماند.
 2. هنگام بسته شدن یک ترک، به جای حذف خط `m=` که باعث به هم ریختن ایندکس‌ها می‌شود، آن اسلات را با پورت `0` و ویژگی `a=inactive` علامت‌گذاری کن تا در ترک‌های بعدی بازیافت شود.
-3. ویژگی‌های `a=msid:{participant_sid} {track_sid}` و `a=ssrc:{ssrc} cname:{participant_sid}` را مطابق انتظار SDK کلاینت درج کن و رفتار آن را با تست واقعی بسنج.
+3. ویژگی `a=msid:{participant_sid} {track_sid}` را مطابق استاندارد درج کن. توجه حیاتی: در وب‌آرتی‌سی مدرن بر پایه Unified Plan و BUNDLE، از درج خطوط صریح `a=ssrc` و `a=ssrc-group` در آفر مشترک (Subscriber Offer) اکیداً خودداری کن؛ وجود SSRC صریح در m-section آفر باعث می‌شود کتابخانه‌هایی مانند Pion WebRTC (در livekit-cli) بسته‌های مدیا با SSRC متفاوت را Drop کنند و رویداد OnTrack هرگز اجرا نشود (REQ-001).

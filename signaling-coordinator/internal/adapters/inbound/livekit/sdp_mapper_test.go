@@ -243,6 +243,15 @@ func TestSDPMapper_GenerateSubscriberOffer_ActiveAndInactiveSlots(t *testing.T) 
 		t.Fatalf("expected msid for active track")
 	}
 
+	// REQ-001 (rtc-load-suite): Subscriber offer must NOT contain explicit a=ssrc or a=ssrc-group
+	// to conform with Unified Plan and prevent Pion WebRTC / livekit-cli from dropping incoming packets.
+	if strings.Contains(offer, "a=ssrc") {
+		t.Fatalf("subscriber offer must NOT contain explicit 'a=ssrc' attributes, got:\n%s", offer)
+	}
+	if strings.Contains(offer, "a=ssrc-group") {
+		t.Fatalf("subscriber offer must NOT contain explicit 'a=ssrc-group' attributes, got:\n%s", offer)
+	}
+
 	// Inactive slot 1 must have port 0 and a=inactive
 	if !strings.Contains(offer, "a=mid:1") || !strings.Contains(offer, "a=inactive") || !strings.Contains(offer, "m=video 0 ") {
 		t.Fatalf("expected inactive video slot with port 0, got:\n%s", offer)
@@ -340,6 +349,80 @@ func TestSDPMapper_GenerateSubscriberOffer_RFC4566MimeTypeStrippingAndVideoFeedb
 		!strings.Contains(offer, "a=rtcp-fb:101 transport-cc") ||
 		!strings.Contains(offer, "a=rtcp-fb:101 nack pli") {
 		t.Fatalf("expected video rtcp-fb lines in offer, got:\n%s", offer)
+	}
+}
+
+func TestSDPMapper_GenerateSubscriberOffer_NoExplicitSSRC_REQ001(t *testing.T) {
+	transport := &domain.TransportInfo{
+		TransportID: "sub-transport-req001",
+		IceUfrag:    "test-ufrag",
+		IcePwd:      "test-pwd",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "11:22:33:44:55"},
+		},
+		IceCandidates: []domain.IceCandidateInfo{
+			{SDPCandidateLine: "candidate:1 1 udp 2130706431 127.0.0.1 50000 typ host"},
+		},
+	}
+
+	slots := []*domain.SDPSlot{
+		{
+			Index:        0,
+			MID:          "0",
+			Kind:         domain.TrackKindAudio,
+			Active:       true,
+			TrackSID:     "TR_audio_abc",
+			ProducerID:   "prod_audio",
+			ConsumerID:   "cons_audio",
+			SSRC:         11111,
+			PayloadType:  111,
+			ClockRate:    48000,
+			MimeType:     "audio/opus",
+			PublisherSID: "PA_pub_1",
+		},
+		{
+			Index:          1,
+			MID:            "1",
+			Kind:           domain.TrackKindVideo,
+			Active:         true,
+			TrackSID:       "TR_video_xyz",
+			ProducerID:     "prod_video",
+			ConsumerID:     "cons_video",
+			SSRC:           22222,
+			RTXSSRC:        33333,
+			PayloadType:    96,
+			RTXPayloadType: 97,
+			ClockRate:      90000,
+			MimeType:       "video/VP8",
+			PublisherSID:   "PA_pub_1",
+		},
+	}
+
+	offer, err := livekit.GenerateSubscriberOffer(transport, slots, "PA_sub_1")
+	if err != nil {
+		t.Fatalf("GenerateSubscriberOffer failed: %v", err)
+	}
+
+	// Must NOT contain a=ssrc or a=ssrc-group per REQ-001
+	if strings.Contains(offer, "a=ssrc") {
+		t.Fatalf("offer MUST NOT contain explicit a=ssrc, got:\n%s", offer)
+	}
+	if strings.Contains(offer, "a=ssrc-group") {
+		t.Fatalf("offer MUST NOT contain explicit a=ssrc-group, got:\n%s", offer)
+	}
+
+	// Must contain standard Unified Plan MID and msid
+	if !strings.Contains(offer, "a=mid:0") || !strings.Contains(offer, "a=mid:1") {
+		t.Fatalf("offer must contain a=mid for Unified Plan demultiplexing, got:\n%s", offer)
+	}
+	if !strings.Contains(offer, "a=msid:PA_pub_1 TR_audio_abc") {
+		t.Fatalf("offer must contain audio msid, got:\n%s", offer)
+	}
+	if !strings.Contains(offer, "a=msid:PA_pub_1 TR_video_xyz") {
+		t.Fatalf("offer must contain video msid, got:\n%s", offer)
+	}
+	if !strings.Contains(offer, "a=group:BUNDLE 0 1") {
+		t.Fatalf("offer must BUNDLE all active slots, got:\n%s", offer)
 	}
 }
 
