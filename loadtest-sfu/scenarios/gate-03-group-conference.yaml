@@ -1,0 +1,14 @@
+name: "gate-03-group-conference"
+description: "جلسه تعاملی مش ۱۰ شرکت‌کننده تماماً ناشر و شنونده هم‌زمان"
+room_prefix: "loadtest-gate03"
+publishers: 10
+subscribers: 10
+duration: "1m"
+video_resolution: "medium"
+video_codec: "vp8"
+simulcast: true
+num_per_second: 3
+layout: "3x3"
+thresholds:
+  min_connection_success_rate: 98.0
+  max_dropped_tracks: 1
