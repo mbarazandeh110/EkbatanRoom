@@ -1,0 +1,13 @@
+name: "gate-02-broadcast-fanout"
+description: "پخش زنده ۱ به ۵۰ با فیدبک‌های فعال RTCP و کیفیت سه‌گانه Simulcast"
+room_prefix: "loadtest-gate02"
+publishers: 1
+subscribers: 50
+duration: "1m"
+video_resolution: "high"
+video_codec: "vp8"
+simulcast: true
+num_per_second: 5
+thresholds:
+  min_connection_success_rate: 99.0
+  max_dropped_tracks: 0
