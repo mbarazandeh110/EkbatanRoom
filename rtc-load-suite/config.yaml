@@ -4,7 +4,7 @@ api_key: "devkey"
 api_secret: "secret"
 
 # اندپوینت‌های مشاهده‌پذیری سرورها
-signaling_metrics_url: "http://localhost:9091/metrics"
+signaling_metrics_url: "http://localhost:7880/metrics"
 sfu_metrics_url: "http://localhost:9090/metrics"
 sfu_grpc_addr: "localhost:50051"
 

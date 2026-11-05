@@ -1,0 +1,31 @@
+===================================================================
+RFC / REQUIREMENT ID: REQ-001
+SOURCE SERVICE: rtc-load-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Protocol / Contract Conformance]
+   Eliminate explicit `a=ssrc` attributes from synthesized subscriber SDP offers to conform with standard Unified Plan and prevent client-side RTP packet dropping (`Incoming unhandled RTP ssrc(1234), OnTrack will not be fired. media section has an explicit SSRC`).
+
+2. REASON & TECHNICAL EVIDENCE:
+   - Black-Box E2E Load Test Observation:
+     During Gate 1 (Baseline Sanity: 1 publisher, 10 subscribers) using official `livekit-cli` (`lk load-test`), all 10 subscribers successfully connected via WebSocket and completed ICE/DTLS handshakes (Connection Success Rate = 100.0%).
+     However, ZERO media tracks were received by subscribers (`Tracks: 0/10`, `Bitrate: NaNmbps`).
+   - Client-side error in official livekit-cli (Pion WebRTC v4):
+     `ERROR lk.pion.pc v4@v4.2.23/peerconnection.go:2319 Incoming unhandled RTP ssrc(1234), OnTrack will not be fired. media section has an explicit SSRC`
+   - Technical Evidence & Root Cause Analysis (Bottleneck Attribution Decision Tree):
+     In the SDP offer synthesized by signaling-coordinator for subscriber sessions, explicit `a=ssrc:<ssrc>` attribute lines are included in the media sections (e.g., `a=ssrc:130252808 cname:loadtest-video`).
+     When an explicit `a=ssrc` attribute is present in the SDP media section, Pion's incoming RTP processor enforces that incoming packets must strictly match that declared SSRC. When the media pipeline forwards the publisher's RTP packets (which carry SSRC 1234 from `livekit-cli`), Pion triggers `errMediaSectionHasExplictSSRCAttribute`, drops the packets, and refuses to fire `OnTrack`.
+   - SLA Impact:
+     Gate 1 failed with 10 dropped/missing tracks (Threshold: max 0). Violates Rule 1.2 ("No False Positives"). Gates 2-4 blocked.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - Modern WebRTC Unified Plan signaling (per RFC 8829 / standard LiveKit protocol) uses BUNDLE and `a=mid` for track demultiplexing rather than static SSRC signaling on subscriber offers.
+   - signaling-coordinator should omit explicit `a=ssrc:...` lines from synthesized subscriber SDP offers, allowing standard WebRTC clients (`livekit-cli`, browsers) to automatically bind the incoming track via MID/StreamID without dropping media packets.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
+   - Decision: [PENDING]
+   - Architectural Justification: ...
+   - Modified Files & Benchmark Verifications: ...
