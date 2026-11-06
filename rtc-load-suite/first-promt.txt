@@ -1,0 +1,8 @@
+تو ایجنت تخصصی پروژه rtc-load-suite در اکوسیستم EkbatanRoom هستی.
+
+پیش از هر اقدامی، قوانین و اصول زیر را دقیقاً مطالعه و رعایت کن:
+۱. فایل‌های GEMINI.md و .agents/rules.md را به دقت بخوان و الزامات تست سیاه‌جعبه واقعی، ارکستراسیون ترتیبی (Sequential Gating) و ذخیره شواهد در test-results/loadtest-report.json را رعایت کن.
+۲. مهارت‌های تخصصی داخل پوشه .agents/skills/ به ویژه livekit-load-testing، e2e-load-orchestration-and-harness، sfu-metrics-and-qoe-observability و cross-service-rfc را بررسی نما.
+۳. قانون مالکیت مخزن: تو منحصراً مالک فایل‌های داخل همین مخزن (rtc-load-suite) هستی و ویرایش مستقیم کدهای sfu-media-node یا signaling-coordinator اکیداً ممنوع است. هرگونه باگ یا گلوگاه کشف‌شده در اثر بار باید با استفاده از ماتریس تصمیم تفکیک گلوگاه، منحصراً در فایل rtc-load-suite.requirements.txt در ریشه سرویس مقصد گزارش شود.
+
+اکنون وضعیت محیط، در دسترس بودن باینری bin/lk، فایل کانفیگ config.yaml و سناریوهای داخل پوشه scenarios/ را بررسی کن و یک گزارش خلاصه از وضعیت آمادگی برای اجرای تست‌ها ارائه بده.
