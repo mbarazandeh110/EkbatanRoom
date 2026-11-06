@@ -70,9 +70,8 @@ docker-build: ## Build multi-stage production Docker image
 docker-run: ## Run Docker container locally with host networking
 	docker run --rm -it --network host \
 		-e MEDIASOUP_LISTEN_IP=0.0.0.0 \
-		-e MEDIASOUP_ANNOUNCED_IP=127.0.0.1 \
-		-e RTC_MIN_PORT=40000 \
-		-e RTC_MAX_PORT=49999 \
+		-e MEDIASOUP_ANNOUNCED_ADDRESS=127.0.0.1 \
+		-e RTC_PORT_RANGE=40000-49999 \
 		-e GRPC_PORT=50051 \
 		-e OBS_LOG_LEVEL=info \
 		$(IMAGE_NAME):$(IMAGE_TAG)

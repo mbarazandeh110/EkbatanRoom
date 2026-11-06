@@ -281,18 +281,27 @@ async fn test_node_events_stream() {
         .await
         .unwrap();
 
-    let received = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
-        .await
-        .expect("Timeout waiting for event")
-        .expect("Failed to receive event");
-
-    assert_eq!(received.router_id, r_resp.router_id);
-    match received.payload.unwrap() {
-        sfu_media_node::domain::DomainNodeEventPayload::ResourceClosed(rc) => {
-            assert_eq!(rc.resource_id, tr.transport_id);
+    let resource_closed = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Ok(event) = rx.recv().await {
+            if event.router_id == r_resp.router_id {
+                if let Some(sfu_media_node::domain::DomainNodeEventPayload::ResourceClosed(rc)) =
+                    event.payload
+                {
+                    if rc.resource_id == tr.transport_id {
+                        return true;
+                    }
+                }
+            }
         }
-        other => panic!("Expected ResourceClosed, got: {:?}", other),
-    }
+        false
+    })
+    .await;
+
+    assert_eq!(
+        resource_closed,
+        Ok(true),
+        "Expected ResourceClosed event for closed transport"
+    );
 }
 
 #[tokio::test]

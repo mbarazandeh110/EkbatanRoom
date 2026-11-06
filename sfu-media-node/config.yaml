@@ -4,8 +4,8 @@
 
 network:
   listen_ip: "0.0.0.0"
-  announced_address: null # Auto-detects primary non-loopback IP (or specify manually; replaces deprecated announcedIp)
-  port_range: "40000-49999" # Modern UDP port range (replaces deprecated rtcMinPort/rtcMaxPort)
+  announced_address: null # Auto-detects primary non-loopback IP (or specify manually)
+  port_range: "40000-49999" # UDP port range for RTC
   grpc_port: 50051
 
 worker:

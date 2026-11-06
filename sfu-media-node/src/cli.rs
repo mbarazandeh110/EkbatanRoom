@@ -97,11 +97,11 @@ CONFIGURATION HIERARCHY & 12-FACTOR OVERRIDES:
     Any environment variable set in the environment overrides the corresponding
     value loaded from the configuration file.
 
-COMMON ENVIRONMENT VARIABLES (Mediasoup Non-Deprecated):
+COMMON ENVIRONMENT VARIABLES:
     Network (ListenInfo):
       MEDIASOUP_LISTEN_IP            Bind IP for RTC sockets (default: 0.0.0.0)
-      MEDIASOUP_ANNOUNCED_ADDRESS    Announced IP/FQDN for ICE candidates (replaces announcedIp; default: auto)
-      RTC_PORT_RANGE                 UDP port range for RTC (replaces rtcMinPort/rtcMaxPort; default: 40000-49999)
+      MEDIASOUP_ANNOUNCED_ADDRESS    Announced IP/FQDN for ICE candidates (default: auto)
+      RTC_PORT_RANGE                 UDP port range for RTC (default: 40000-49999)
       GRPC_PORT                      gRPC control service port (default: 50051)
 
     Worker Pool:

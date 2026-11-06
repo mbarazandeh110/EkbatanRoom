@@ -69,10 +69,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         config_path = ?config_path,
         listen_ip = %config.listen_ip,
-        announced_ip = ?config.announced_ip,
-        rtc_port_range = ?config.rtc_port_range(),
-        rtc_min_port = config.rtc_min_port,
-        rtc_max_port = config.rtc_max_port,
+        announced_address = ?config.announced_address,
+        port_range = ?config.port_range(),
         grpc_port = config.grpc_port,
         worker_count = config.worker_count,
         obs_log_level = %config.observability.log_level,

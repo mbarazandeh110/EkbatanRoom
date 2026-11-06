@@ -62,8 +62,8 @@ COPY --from=builder /usr/src/app/target/release/sfu-media-node /usr/local/bin/sf
 
 # SFU networking and runtime environment defaults
 ENV MEDIASOUP_LISTEN_IP=0.0.0.0 \
-    RTC_MIN_PORT=40000 \
-    RTC_MAX_PORT=49999 \
+    MEDIASOUP_ANNOUNCED_ADDRESS=auto \
+    RTC_PORT_RANGE=40000-49999 \
     GRPC_PORT=50051 \
     OBS_LOG_LEVEL=info \
     OBS_LOG_FORMAT=json \

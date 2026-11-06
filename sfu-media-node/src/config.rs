@@ -12,9 +12,7 @@ pub enum ConfigError {
     #[error("Invalid listen IP '{0}': must be a valid IPv4 or IPv6 address")]
     InvalidListenIp(String),
 
-    #[error(
-        "Invalid RTC port range: RTC_MIN_PORT ({min}) cannot be greater than RTC_MAX_PORT ({max})"
-    )]
+    #[error("Invalid RTC port range: start port ({min}) cannot be greater than end port ({max})")]
     InvalidPortRange { min: u16, max: u16 },
 
     #[error("Invalid worker count: must be greater than 0")]
@@ -265,9 +263,8 @@ fn default_start_bitrate() -> u32 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub listen_ip: IpAddr,
-    pub announced_ip: Option<String>,
-    pub rtc_min_port: u16,
-    pub rtc_max_port: u16,
+    pub announced_address: Option<String>,
+    pub port_range: RangeInclusive<u16>,
     pub grpc_port: u16,
     pub worker_count: usize,
     pub worker_capacity_weight: u32,
@@ -292,17 +289,17 @@ pub struct Config {
 }
 
 impl Config {
-    /// Modern mediasoup RTC port range (replaces deprecated rtcMinPort/rtcMaxPort).
-    pub fn rtc_port_range(&self) -> RangeInclusive<u16> {
-        self.rtc_min_port..=self.rtc_max_port
+    /// RTC UDP port range.
+    pub fn port_range(&self) -> RangeInclusive<u16> {
+        self.port_range.clone()
     }
 
-    /// Modern announced address for ListenInfo (replaces deprecated announcedIp / TransportListenIp).
+    /// Announced address for WebRTC ICE candidates.
     pub fn announced_address(&self) -> Option<&str> {
-        self.announced_ip.as_deref()
+        self.announced_address.as_deref()
     }
 
-    /// Construct a modern `ListenInfo` without using deprecated listenIp, listenIps, or rtcpPort options.
+    /// Construct a `ListenInfo` configuration for mediasoup transports.
     pub fn create_listen_info(
         &self,
         protocol: mediasoup::prelude::Protocol,
@@ -310,10 +307,10 @@ impl Config {
         mediasoup::prelude::ListenInfo {
             protocol,
             ip: self.listen_ip,
-            announced_address: self.announced_ip.clone(),
+            announced_address: self.announced_address.clone(),
             expose_internal_ip: false,
             port: None,
-            port_range: Some(self.rtc_port_range()),
+            port_range: Some(self.port_range.clone()),
             flags: None,
             send_buffer_size: self.webrtc_transport.send_buffer_size,
             recv_buffer_size: self.webrtc_transport.recv_buffer_size,
@@ -350,12 +347,8 @@ pub struct RawLicenseConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RawNetworkConfig {
     pub listen_ip: Option<String>,
-    #[serde(alias = "announced_ip")]
     pub announced_address: Option<String>,
-    #[serde(alias = "rtc_port_range")]
     pub port_range: Option<String>,
-    pub rtc_min_port: Option<u16>,
-    pub rtc_max_port: Option<u16>,
     pub grpc_port: Option<u16>,
 }
 
@@ -435,11 +428,10 @@ impl Config {
     pub fn default_values() -> Self {
         Self {
             listen_ip: IpAddr::from([0, 0, 0, 0]),
-            announced_ip: detect_primary_non_loopback_ip()
+            announced_address: detect_primary_non_loopback_ip()
                 .map(|ip| ip.to_string())
                 .or_else(|| Some("127.0.0.1".to_string())),
-            rtc_min_port: 40000,
-            rtc_max_port: 49999,
+            port_range: 40000..=49999,
             grpc_port: 50051,
             worker_count: std::thread::available_parallelism()
                 .map(|n| n.get())
@@ -509,10 +501,10 @@ impl Config {
         config.apply_env_overrides()?;
 
         // 4. Validate invariants
-        if config.rtc_min_port > config.rtc_max_port {
+        if config.port_range.start() > config.port_range.end() {
             return Err(ConfigError::InvalidPortRange {
-                min: config.rtc_min_port,
-                max: config.rtc_max_port,
+                min: *config.port_range.start(),
+                max: *config.port_range.end(),
             });
         }
 
@@ -542,26 +534,19 @@ impl Config {
             if let Some(ann) = net.announced_address {
                 let trimmed = ann.trim();
                 if trimmed.eq_ignore_ascii_case("auto") {
-                    self.announced_ip = detect_primary_non_loopback_ip()
+                    self.announced_address = detect_primary_non_loopback_ip()
                         .map(|ip| ip.to_string())
                         .or_else(|| Some("127.0.0.1".to_string()));
                 } else if trimmed.eq_ignore_ascii_case("none") {
-                    self.announced_ip = None;
+                    self.announced_address = None;
                 } else if !trimmed.is_empty() {
-                    self.announced_ip = Some(trimmed.to_string());
+                    self.announced_address = Some(trimmed.to_string());
                 }
             }
             if let Some(ref range_str) = net.port_range {
                 if let Some((min, max)) = parse_port_range(range_str) {
-                    self.rtc_min_port = min;
-                    self.rtc_max_port = max;
+                    self.port_range = min..=max;
                 }
-            }
-            if let Some(min_port) = net.rtc_min_port {
-                self.rtc_min_port = min_port;
-            }
-            if let Some(max_port) = net.rtc_max_port {
-                self.rtc_max_port = max_port;
             }
             if let Some(port) = net.grpc_port {
                 self.grpc_port = port;
@@ -680,46 +665,23 @@ impl Config {
             }
         }
 
-        if let Ok(val) = std::env::var("MEDIASOUP_ANNOUNCED_ADDRESS")
-            .or_else(|_| std::env::var("MEDIASOUP_ANNOUNCED_IP"))
-        {
+        if let Ok(val) = std::env::var("MEDIASOUP_ANNOUNCED_ADDRESS") {
             let trimmed = val.trim();
             if trimmed.eq_ignore_ascii_case("auto") {
-                self.announced_ip = detect_primary_non_loopback_ip()
+                self.announced_address = detect_primary_non_loopback_ip()
                     .map(|ip| ip.to_string())
                     .or_else(|| Some("127.0.0.1".to_string()));
             } else if trimmed.eq_ignore_ascii_case("none") {
-                self.announced_ip = None;
+                self.announced_address = None;
             } else if !trimmed.is_empty() {
-                self.announced_ip = Some(trimmed.to_string());
+                self.announced_address = Some(trimmed.to_string());
             }
         }
 
-        if let Ok(s) = std::env::var("RTC_PORT_RANGE").or_else(|_| std::env::var("PORT_RANGE")) {
+        if let Ok(s) = std::env::var("RTC_PORT_RANGE") {
             if let Some((min, max)) = parse_port_range(&s) {
-                self.rtc_min_port = min;
-                self.rtc_max_port = max;
+                self.port_range = min..=max;
             }
-        }
-
-        if let Ok(s) = std::env::var("RTC_MIN_PORT") {
-            self.rtc_min_port =
-                s.trim()
-                    .parse::<u16>()
-                    .map_err(|e| ConfigError::ParseIntError {
-                        key: "RTC_MIN_PORT",
-                        err: e.to_string(),
-                    })?;
-        }
-
-        if let Ok(s) = std::env::var("RTC_MAX_PORT") {
-            self.rtc_max_port =
-                s.trim()
-                    .parse::<u16>()
-                    .map_err(|e| ConfigError::ParseIntError {
-                        key: "RTC_MAX_PORT",
-                        err: e.to_string(),
-                    })?;
         }
 
         if let Ok(s) = std::env::var("GRPC_PORT") {
@@ -933,13 +895,12 @@ pub(crate) mod tests {
     fn test_default_config() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("MEDIASOUP_LISTEN_IP");
-        std::env::remove_var("RTC_MIN_PORT");
-        std::env::remove_var("RTC_MAX_PORT");
+        std::env::remove_var("RTC_PORT_RANGE");
         std::env::remove_var("MEDIASOUP_WORKER_COUNT");
         std::env::remove_var("SFU_CONFIG_FILE");
         let config = Config::default_values();
-        assert_eq!(config.rtc_min_port, 40000);
-        assert_eq!(config.rtc_max_port, 49999);
+        assert_eq!(config.port_range, 40000..=49999);
+        assert_eq!(config.port_range(), 40000..=49999);
         assert!(config.worker_count >= 1);
         assert_eq!(
             config.webrtc_transport.initial_available_outgoing_bitrate,
@@ -963,21 +924,21 @@ pub(crate) mod tests {
     #[test]
     fn test_invalid_port_range() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let prev_min = std::env::var("RTC_MIN_PORT").ok();
-        let prev_max = std::env::var("RTC_MAX_PORT").ok();
-        std::env::set_var("RTC_MIN_PORT", "50000");
-        std::env::set_var("RTC_MAX_PORT", "40000");
+        let prev = std::env::var("RTC_PORT_RANGE").ok();
+        std::env::set_var("RTC_PORT_RANGE", "50000-40000");
 
         let res = Config::try_from_env();
-        assert!(matches!(res, Err(ConfigError::InvalidPortRange { .. })));
+        assert!(matches!(
+            res,
+            Err(ConfigError::InvalidPortRange {
+                min: 50000,
+                max: 40000
+            })
+        ));
 
-        match prev_min {
-            Some(v) => std::env::set_var("RTC_MIN_PORT", v),
-            None => std::env::remove_var("RTC_MIN_PORT"),
-        }
-        match prev_max {
-            Some(v) => std::env::set_var("RTC_MAX_PORT", v),
-            None => std::env::remove_var("RTC_MAX_PORT"),
+        match prev {
+            Some(v) => std::env::set_var("RTC_PORT_RANGE", v),
+            None => std::env::remove_var("RTC_PORT_RANGE"),
         }
     }
 
@@ -1079,9 +1040,8 @@ pub(crate) mod tests {
         let yaml_content = r#"
 network:
   listen_ip: "127.0.0.1"
-  announced_ip: "192.168.1.100"
-  rtc_min_port: 41000
-  rtc_max_port: 42000
+  announced_address: "192.168.1.100"
+  port_range: "41000-42000"
   grpc_port: 50055
 
 worker:
@@ -1117,9 +1077,9 @@ router_codecs:
         // 1. Load directly from file
         let config = Config::try_from_file(&file_path).unwrap();
         assert_eq!(config.listen_ip, IpAddr::from_str("127.0.0.1").unwrap());
-        assert_eq!(config.announced_ip.as_deref(), Some("192.168.1.100"));
-        assert_eq!(config.rtc_min_port, 41000);
-        assert_eq!(config.rtc_max_port, 42000);
+        assert_eq!(config.announced_address.as_deref(), Some("192.168.1.100"));
+        assert_eq!(config.port_range, 41000..=42000);
+        assert_eq!(config.port_range(), 41000..=42000);
         assert_eq!(config.grpc_port, 50055);
         assert_eq!(config.worker_count, 4);
         assert_eq!(config.worker_capacity_weight, 2000);
@@ -1160,51 +1120,51 @@ router_codecs:
             assert!(!ip.is_unspecified());
         }
         let default_cfg = Config::default_values();
-        assert!(default_cfg.announced_ip.is_some());
+        assert!(default_cfg.announced_address.is_some());
     }
 
     #[test]
-    fn test_announced_ip_yaml_auto_and_none() {
+    fn test_announced_address_yaml_auto_and_none() {
         let _guard = ENV_LOCK.lock().unwrap();
         let yaml_auto = r#"
 network:
-  announced_ip: "auto"
+  announced_address: "auto"
 "#;
         let temp_dir = std::env::temp_dir();
         let path_auto = temp_dir.join("test_sfu_auto.yaml");
         std::fs::write(&path_auto, yaml_auto).unwrap();
         let cfg_auto = Config::try_from_file(&path_auto).unwrap();
-        assert!(cfg_auto.announced_ip.is_some());
+        assert!(cfg_auto.announced_address.is_some());
         let _ = std::fs::remove_file(path_auto);
 
         let yaml_none = r#"
 network:
-  announced_ip: "none"
+  announced_address: "none"
 "#;
         let path_none = temp_dir.join("test_sfu_none.yaml");
         std::fs::write(&path_none, yaml_none).unwrap();
         let cfg_none = Config::try_from_file(&path_none).unwrap();
-        assert!(cfg_none.announced_ip.is_none());
+        assert!(cfg_none.announced_address.is_none());
         let _ = std::fs::remove_file(path_none);
 
-        // Test MEDIASOUP_ANNOUNCED_IP env var overrides
-        std::env::set_var("MEDIASOUP_ANNOUNCED_IP", "198.51.100.1");
+        // Test MEDIASOUP_ANNOUNCED_ADDRESS env var overrides
+        std::env::set_var("MEDIASOUP_ANNOUNCED_ADDRESS", "198.51.100.1");
         let cfg_env = Config::try_from_env().unwrap();
-        assert_eq!(cfg_env.announced_ip.as_deref(), Some("198.51.100.1"));
+        assert_eq!(cfg_env.announced_address.as_deref(), Some("198.51.100.1"));
 
-        std::env::set_var("MEDIASOUP_ANNOUNCED_IP", "none");
+        std::env::set_var("MEDIASOUP_ANNOUNCED_ADDRESS", "none");
         let cfg_env_none = Config::try_from_env().unwrap();
-        assert!(cfg_env_none.announced_ip.is_none());
+        assert!(cfg_env_none.announced_address.is_none());
 
-        std::env::set_var("MEDIASOUP_ANNOUNCED_IP", "auto");
+        std::env::set_var("MEDIASOUP_ANNOUNCED_ADDRESS", "auto");
         let cfg_env_auto = Config::try_from_env().unwrap();
-        assert!(cfg_env_auto.announced_ip.is_some());
+        assert!(cfg_env_auto.announced_address.is_some());
 
-        std::env::remove_var("MEDIASOUP_ANNOUNCED_IP");
+        std::env::remove_var("MEDIASOUP_ANNOUNCED_ADDRESS");
     }
 
     #[test]
-    fn test_modern_rtc_port_range_and_listen_info() {
+    fn test_modern_port_range_and_listen_info() {
         let _guard = ENV_LOCK.lock().unwrap();
         // 1. Test parse_port_range formats
         assert_eq!(parse_port_range("40000-49999"), Some((40000, 49999)));
@@ -1212,32 +1172,32 @@ network:
         assert_eq!(parse_port_range("40000..49999"), Some((40000, 49999)));
         assert_eq!(parse_port_range("invalid"), None);
 
-        // 2. Test YAML loading with rtc_port_range
+        // 2. Test YAML loading with port_range
         let yaml = r#"
 network:
   listen_ip: "127.0.0.1"
-  rtc_port_range: "42000-43000"
+  port_range: "42000-43000"
 "#;
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("test_port_range.yaml");
         std::fs::write(&path, yaml).unwrap();
         let cfg = Config::try_from_file(&path).unwrap();
-        assert_eq!(cfg.rtc_port_range(), 42000..=43000);
-        assert_eq!(cfg.rtc_min_port, 42000);
-        assert_eq!(cfg.rtc_max_port, 43000);
+        assert_eq!(cfg.port_range(), 42000..=43000);
+        assert_eq!(cfg.port_range, 42000..=43000);
         let _ = std::fs::remove_file(path);
 
         // 3. Test ENV override with RTC_PORT_RANGE
         std::env::set_var("RTC_PORT_RANGE", "45000..=46000");
         let cfg_env = Config::try_from_env().unwrap();
-        assert_eq!(cfg_env.rtc_port_range(), 45000..=46000);
+        assert_eq!(cfg_env.port_range(), 45000..=46000);
+        assert_eq!(cfg_env.port_range, 45000..=46000);
         std::env::remove_var("RTC_PORT_RANGE");
 
-        // 4. Test create_listen_info non-deprecated structure
+        // 4. Test create_listen_info structure
         let listen_info = cfg.create_listen_info(mediasoup::prelude::Protocol::Udp);
         assert_eq!(listen_info.protocol, mediasoup::prelude::Protocol::Udp);
         assert_eq!(listen_info.ip, cfg.listen_ip);
-        assert_eq!(listen_info.port_range, Some(cfg.rtc_port_range()));
+        assert_eq!(listen_info.port_range, Some(cfg.port_range()));
         assert_eq!(listen_info.port, None);
     }
 }

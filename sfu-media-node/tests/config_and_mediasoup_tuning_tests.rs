@@ -62,9 +62,8 @@ async fn test_yaml_config_integration_with_media_node() {
     let yaml = r#"
 network:
   listen_ip: "127.0.0.1"
-  announced_ip: "127.0.0.1"
-  rtc_min_port: 45000
-  rtc_max_port: 45100
+  announced_address: "127.0.0.1"
+  port_range: "45000-45100"
   grpc_port: 50060
 
 worker:
@@ -91,8 +90,8 @@ router_codecs:
     std::fs::write(&file_path, yaml).unwrap();
 
     let config = Config::try_from_file(&file_path).unwrap();
-    assert_eq!(config.rtc_min_port, 45000);
-    assert_eq!(config.rtc_max_port, 45100);
+    assert_eq!(config.port_range, 45000..=45100);
+    assert_eq!(config.port_range(), 45000..=45100);
     assert_eq!(
         config.webrtc_transport.initial_available_outgoing_bitrate,
         1800000
@@ -157,9 +156,8 @@ async fn test_load_config_example_yaml_file() {
     );
 
     let config = Config::try_from_file(yaml_path).expect("Failed to parse config.example.yaml");
-    assert_eq!(config.rtc_port_range(), 40000..=49999);
-    assert_eq!(config.rtc_min_port, 40000);
-    assert_eq!(config.rtc_max_port, 49999);
+    assert_eq!(config.port_range(), 40000..=49999);
+    assert_eq!(config.port_range, 40000..=49999);
     assert_eq!(config.grpc_port, 50051);
     assert_eq!(
         config.webrtc_transport.initial_available_outgoing_bitrate,
@@ -184,7 +182,7 @@ async fn test_load_config_example_yaml_file() {
 async fn test_conf_file_with_license_and_missing_file_error() {
     use std::path::Path;
 
-    // 1. Verify modern non-deprecated fields (announced_address, port_range, license)
+    // 1. Verify fields (announced_address, port_range, license)
     let conf = r#"
 network:
   listen_ip: "127.0.0.1"
@@ -202,9 +200,10 @@ license:
 
     let cfg = Config::try_from_file(&conf_path).unwrap();
     assert_eq!(cfg.grpc_port, 50058);
-    assert_eq!(cfg.announced_ip.as_deref(), Some("192.168.1.50"));
+    assert_eq!(cfg.announced_address.as_deref(), Some("192.168.1.50"));
     assert_eq!(cfg.announced_address(), Some("192.168.1.50"));
-    assert_eq!(cfg.rtc_port_range(), 42000..=43000);
+    assert_eq!(cfg.port_range(), 42000..=43000);
+    assert_eq!(cfg.port_range, 42000..=43000);
     assert_eq!(
         cfg.license_token.as_deref(),
         Some("EKB1.eyJwYXlsb2FkIjoidGVzdCJ9.c2lnbmF0dXJl")

@@ -2,13 +2,7 @@
 # SFU Media Node Configuration File (YAML)
 # ==============================================================================
 # این فایل الگوی جامع و رسمی تمامی تنظیمات sfu-media-node بر مبنای آخرین
-# استانداردها و APIهای غیرمنسوخ (Non-Deprecated) کتابخانه mediasoup است.
-#
-# قابلیت‌های منسوخ‌شده مدیاسوپ که در این معماری جایگزین شده‌اند:
-#   - rtcMinPort و rtcMaxPort منسوخ شده‌اند -> جایگزین: port_range
-#   - listenIp و listenIps و TransportListenIp منسوخ شده‌اند -> جایگزین: listen_info (ListenInfo)
-#   - rtcpPort در ترنسپورت‌ها منسوخ شده است -> جایگزین: listen_info و rtcp_listen_info
-#   - announcedIp منسوخ شده است -> جایگزین: announced_address در ListenInfo
+# استانداردها و APIهای کتابخانه mediasoup است.
 #
 # اولویت اعمال تنظیمات (Twelve-Factor App):
 #   ۱. آرگومان خط فرمان (--config <file> یا -c <file>)
@@ -27,18 +21,18 @@ network:
   # پیش‌فرض: "0.0.0.0"
   listen_ip: "0.0.0.0"
 
-  # آدرس IP عمومی یا FQDN اعلام‌شده در ICE کاندیدها برای کلاینت‌ها (جایگزین announcedIp قدیمی).
+  # آدرس IP عمومی یا FQDN اعلام‌شده در ICE کاندیدها برای کلاینت‌ها.
   # مقادیر معتبر:
   #   - یک آدرس IP مشخص (مثال: "198.51.100.1")
   #   - "auto" یا null: شناسایی خودکار اولین IP غیر لوپ‌بک هاست
   #   - "none": عدم اعلان هیچ کاندیدای خارجی
-  # متغیرهای محیطی معادل: MEDIASOUP_ANNOUNCED_ADDRESS (یا MEDIASOUP_ANNOUNCED_IP)
+  # متغیر محیطی معادل: MEDIASOUP_ANNOUNCED_ADDRESS
   # پیش‌فرض: null (شناسایی خودکار)
   announced_address: null
 
-  # بازه مدرن پورت‌های UDP برای ترافیک RTC (جایگزین rtcMinPort و rtcMaxPort منسوخ‌شده).
+  # بازه پورت‌های UDP برای ترافیک RTC.
   # قالب‌های پشتیبانی‌شده: "40000-49999" یا "40000..=49999"
-  # متغیرهای محیطی معادل: RTC_PORT_RANGE (یا PORT_RANGE)
+  # متغیر محیطی معادل: RTC_PORT_RANGE
   # پیش‌فرض: "40000-49999"
   port_range: "40000-49999"
 

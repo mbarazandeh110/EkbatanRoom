@@ -3,7 +3,7 @@
 ## ۱. مرزبندی مسئولیت‌ها و اعتبارسنجی مرزی (Boundary Validation)
 1. **استقلال کامل از LiveKit/SDP:** این سرویس فقط مفاهیم خالص `mediasoup` و ORTC را می‌شناسد. هیچ وابستگی به SDP، JWT یا پروتکل LiveKit نباید وارد این مخزن شود.
 2. **اعتبارسنجی سخت‌گیرانه DTOها در مرز RPC:** رشته‌های JSON ورودی (مانند `rtp_parameters_json` و `rtp_capabilities_json`) نباید به صورت رشته خام وارد لایه دامنه شوند؛ آن‌ها را در مرز ورود gRPC (`src/transport/grpc/`) با `serde_json` به ساختارهای تایپ‌شده `mediasoup` تبدیل و اعتبارسنجی کن و در صورت خطا، کد `tonic::Code::InvalidArgument` با پیام دقیق برگردان.
-3. **نسخه‌های Pin شده و تنظیمات محیطی شبکه:** نسخه کریت‌های `mediasoup`، `tonic` و `prost` را در `Cargo.toml` به صورت دقیق (`=x.y.z`) پین کن. آدرس‌های `MEDIASOUP_LISTEN_IP`، `MEDIASOUP_ANNOUNCED_IP` (برای عبور از NAT/Docker) و بازه پورت‌های UDP/TCP را از متغیرهای محیطی بخوان.
+3. **نسخه‌های Pin شده و تنظیمات محیطی شبکه:** نسخه کریت‌های `mediasoup`، `tonic` و `prost` را در `Cargo.toml` به صورت دقیق (`=x.y.z`) پین کن. آدرس‌های `MEDIASOUP_LISTEN_IP`، `MEDIASOUP_ANNOUNCED_ADDRESS` (برای عبور از NAT/Docker) و بازه پورت‌های UDP/TCP را از متغیرهای محیطی بخوان.
 
 ## ۲. سیاست دقیق Idempotency و چرخه حیات منابع (Resource Lifecycle)
 1. **ماشین وضعیت `request_id`:** برای عملیات ایجاد منبع (`CreateRouter`, `CreateTransport`, `Produce`, `Consume`) یک جدول کش با TTL مشخص (مثلاً ۶۰ ثانیه) نگه دار که شامل هش Payload درخواست باشد:

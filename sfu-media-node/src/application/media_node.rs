@@ -38,7 +38,7 @@ impl MediaNode {
             WorkerPool::new(
                 &worker_manager,
                 config.worker_count,
-                config.rtc_port_range(),
+                config.port_range(),
                 &config.worker_settings,
             )
             .await?,
@@ -148,7 +148,7 @@ impl MediaNode {
 
         let capacity_task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
-            let mut heartbeat_ticks = 0u32;
+            let mut heartbeat_ticks = 5u32; // Emit initial capacity event immediately on first tick
             let mut last_published_load = 0.0f32;
             let mut last_enterprise_state = pipe_service_clone.is_enterprise_enabled();
             let mut last_published_tier = "community".to_string();

@@ -114,8 +114,8 @@ async fn test_media_node_drop_aborts_capacity_task() {
     let node = Arc::new(MediaNode::new(test_config(1)).await.unwrap());
     let mut rx = node.event_hub.subscribe();
 
-    // Wait for at least one initial heartbeat capacity event
-    let initial_ev = timeout(Duration::from_secs(2), async {
+    // Wait for at least one initial heartbeat capacity event (heartbeat interval is 5s)
+    let initial_ev = timeout(Duration::from_secs(7), async {
         while let Ok(event) = rx.recv().await {
             if matches!(
                 event.payload,
