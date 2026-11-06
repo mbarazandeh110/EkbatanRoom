@@ -297,7 +297,12 @@ impl Config {
         self.rtc_min_port..=self.rtc_max_port
     }
 
-    /// Construct a modern `ListenInfo` without using deprecated listenIp / port options.
+    /// Modern announced address for ListenInfo (replaces deprecated announcedIp / TransportListenIp).
+    pub fn announced_address(&self) -> Option<&str> {
+        self.announced_ip.as_deref()
+    }
+
+    /// Construct a modern `ListenInfo` without using deprecated listenIp, listenIps, or rtcpPort options.
     pub fn create_listen_info(
         &self,
         protocol: mediasoup::prelude::Protocol,
@@ -345,11 +350,12 @@ pub struct RawLicenseConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RawNetworkConfig {
     pub listen_ip: Option<String>,
-    pub announced_ip: Option<String>,
+    #[serde(alias = "announced_ip")]
+    pub announced_address: Option<String>,
+    #[serde(alias = "rtc_port_range")]
+    pub port_range: Option<String>,
     pub rtc_min_port: Option<u16>,
     pub rtc_max_port: Option<u16>,
-    #[serde(alias = "port_range")]
-    pub rtc_port_range: Option<String>,
     pub grpc_port: Option<u16>,
 }
 
@@ -533,7 +539,7 @@ impl Config {
                         .map_err(|_| ConfigError::InvalidListenIp(trimmed.to_string()))?;
                 }
             }
-            if let Some(ann) = net.announced_ip {
+            if let Some(ann) = net.announced_address {
                 let trimmed = ann.trim();
                 if trimmed.eq_ignore_ascii_case("auto") {
                     self.announced_ip = detect_primary_non_loopback_ip()
@@ -545,7 +551,7 @@ impl Config {
                     self.announced_ip = Some(trimmed.to_string());
                 }
             }
-            if let Some(ref range_str) = net.rtc_port_range {
+            if let Some(ref range_str) = net.port_range {
                 if let Some((min, max)) = parse_port_range(range_str) {
                     self.rtc_min_port = min;
                     self.rtc_max_port = max;
@@ -674,8 +680,8 @@ impl Config {
             }
         }
 
-        if let Ok(val) = std::env::var("MEDIASOUP_ANNOUNCED_IP")
-            .or_else(|_| std::env::var("MEDIASOUP_ANNOUNCED_ADDRESS"))
+        if let Ok(val) = std::env::var("MEDIASOUP_ANNOUNCED_ADDRESS")
+            .or_else(|_| std::env::var("MEDIASOUP_ANNOUNCED_IP"))
         {
             let trimmed = val.trim();
             if trimmed.eq_ignore_ascii_case("auto") {
@@ -689,7 +695,7 @@ impl Config {
             }
         }
 
-        if let Ok(s) = std::env::var("RTC_PORT_RANGE") {
+        if let Ok(s) = std::env::var("RTC_PORT_RANGE").or_else(|_| std::env::var("PORT_RANGE")) {
             if let Some((min, max)) = parse_port_range(&s) {
                 self.rtc_min_port = min;
                 self.rtc_max_port = max;

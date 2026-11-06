@@ -47,41 +47,45 @@
 
 ---
 
-## ۳. روش‌های راه‌اندازی و آرگومان‌های خط فرمان (CLI)
+## ۳. روش‌های راه‌اندازی، آرگومان‌های خط فرمان (CLI) و پیکربندی
 
 اجرای سرویس با آرگومان‌های خط فرمان:
 ```bash
-# مشاهده راهنمای کامل دستورات و متغیرها
+# مشاهده راهنمای کامل دستورات، ساختار ListenInfo و متغیرها
 cargo run -- --help
 
 # مشاهده نسخه باینری
 cargo run -- --version
 
-# اجرا با تعیین فایل کانفیگ دلخواه
-cargo run -- -c config.example.conf
-cargo run -- --config=/etc/sfu/production.conf
+# اجرا با تعیین فایل کانفیگ دلخواه (الگوی رسمی config.example.yaml)
+cargo run -- -c config.example.yaml
+cargo run -- --config=/etc/sfu/production.yaml
 
 # اجرا با اولویت بازنویسی پورت از متغیرهای محیطی
-GRPC_PORT=50060 cargo run -- -c config.conf
+GRPC_PORT=50060 cargo run -- -c config.yaml
 ```
 
 سلسله‌مراتب شناسایی فایل تنظیمات:
 1. آرگومان خط فرمان (`-c` یا `--config`)
 2. متغیر محیطی `SFU_CONFIG_FILE`
-3. فایل‌های محلی در مسیر جاری (`config.yaml`، `config.yml` یا `config.conf`)
+3. فایل‌های محلی در مسیر جاری (`config.yaml` یا `config.yml`)
 4. مقادیر پیش‌فرض تعبیه‌شده در کد
 
-> **نکته:** نمونه کامل تمام کانفیگ‌های ممکن در فایل [`config.example.conf`](file:///home/mahdi/Projects/Mahdi/Ekbatan/EkbatanRoom/sfu-media-node/config.example.conf) و [`config.example.yaml`](file:///home/mahdi/Projects/Mahdi/Ekbatan/EkbatanRoom/sfu-media-node/config.example.yaml) قرار داده شده است.
+> **نکته:** نمونه کامل تمام کانفیگ‌های ممکن بر مبنای APIهای مدرن و غیرمنسوخ Mediasoup در فایل [`config.example.yaml`](file:///home/mahdi/Projects/Mahdi/Ekbatan/EkbatanRoom/sfu-media-node/config.example.yaml) قرار داده شده است.
+> 
+> *موارد منسوخ مدیاسوپ که در این معماری با ساختار استاندارد جایگزین شده‌اند:*
+> - بازه پورت مدرن `port_range` جایگزین `rtcMinPort` و `rtcMaxPort` منسوخ‌شده
+> - ساختار تایپ‌شده `ListenInfo` جایگزین `listenIp`، `listenIps`، `TransportListenIp` و `rtcpPort`
+> - فیلد `announced_address` در `ListenInfo` جایگزین `announcedIp`
 
 ### جدول متغیرهای محیطی و پیکربندی
 
 | نام متغیر | پیش‌فرض | توضیحات |
 | :--- | :--- | :--- |
-| `SFU_CONFIG_FILE` | - | مسیر فایل پیکربندی اختیاری YAML/conf (مانند `config.conf`) |
-| `MEDIASOUP_LISTEN_IP` | `0.0.0.0` | آدرس IP محلی که مدیاسوپ روی آن شنود می‌کند |
-| `MEDIASOUP_ANNOUNCED_IP` | `auto` (تشخیص خودکار IP شبکه) | آدرس IP عمومی برای اعلان در ICE کاندیدها (سازگار با RFC 8828 مرورگرها؛ در صورت عدم تعیین، IP غیر-لوپ‌بک اصلی هاست به صورت خودکار شناسایی می‌شود) |
-| `RTC_MIN_PORT` | `40000` | ابتدای بازه پورت‌های UDP برای ترافیک RTC |
-| `RTC_MAX_PORT` | `49999` | انتهای بازه پورت‌های UDP برای ترافیک RTC |
+| `SFU_CONFIG_FILE` | - | مسیر فایل پیکربندی اختیاری YAML (مانند `config.yaml`) |
+| `MEDIASOUP_LISTEN_IP` | `0.0.0.0` | آدرس IP محلی که سوکت‌های رسانه روی آن گوش می‌دهند (`ListenInfo.ip`) |
+| `MEDIASOUP_ANNOUNCED_ADDRESS` | `auto` | آدرس IP عمومی برای اعلان در ICE کاندیدها (جایگزین `announcedIp` قدیمی؛ سازگار با `MEDIASOUP_ANNOUNCED_IP`) |
+| `RTC_PORT_RANGE` | `40000-49999` | بازه مدرن پورت‌های UDP برای ترافیک RTC (جایگزین `rtcMinPort`/`rtcMaxPort` منسوخ؛ سازگار با `RTC_MIN_PORT`/`RTC_MAX_PORT`) |
 | `GRPC_PORT` | `50051` | پورت گوش فرا دادن سرور gRPC کنترلی |
 | `MEDIASOUP_WORKER_COUNT` | تعداد هسته‌های CPU | تعداد پروسه‌های ایزوله `mediasoup-worker` |
 | `MEDIASOUP_WORKER_LOG_LEVEL` | `warn` | سطح لاگ ورکر C++ مدیاسوپ (`debug`, `warn`, `error`, `none`) |

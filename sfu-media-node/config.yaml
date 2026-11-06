@@ -4,9 +4,8 @@
 
 network:
   listen_ip: "0.0.0.0"
-  announced_ip: null # Auto-detects primary non-loopback IP (e.g. 192.168.x.x or 10.x.x.x) or specify manually
-  rtc_min_port: 40000
-  rtc_max_port: 49999
+  announced_address: null # Auto-detects primary non-loopback IP (or specify manually; replaces deprecated announcedIp)
+  port_range: "40000-49999" # Modern UDP port range (replaces deprecated rtcMinPort/rtcMaxPort)
   grpc_port: 50051
 
 worker:
@@ -65,3 +64,7 @@ observability:
   otlp_endpoint: "http://localhost:4317"
   trace_sample_rate: 1.0
   log_raw_sdp: true
+
+license:
+  token: null
+  public_key_hex: null

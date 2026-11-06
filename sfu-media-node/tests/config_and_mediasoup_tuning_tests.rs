@@ -149,14 +149,15 @@ observability:
 }
 
 #[tokio::test]
-async fn test_load_config_example_conf_file() {
-    let conf_path = std::path::Path::new("config.example.conf");
+async fn test_load_config_example_yaml_file() {
+    let yaml_path = std::path::Path::new("config.example.yaml");
     assert!(
-        conf_path.exists(),
-        "config.example.conf must exist in repo root"
+        yaml_path.exists(),
+        "config.example.yaml must exist in repo root"
     );
 
-    let config = Config::try_from_file(conf_path).expect("Failed to parse config.example.conf");
+    let config = Config::try_from_file(yaml_path).expect("Failed to parse config.example.yaml");
+    assert_eq!(config.rtc_port_range(), 40000..=49999);
     assert_eq!(config.rtc_min_port, 40000);
     assert_eq!(config.rtc_max_port, 49999);
     assert_eq!(config.grpc_port, 50051);
@@ -183,10 +184,12 @@ async fn test_load_config_example_conf_file() {
 async fn test_conf_file_with_license_and_missing_file_error() {
     use std::path::Path;
 
-    // 1. Verify license section parsing from YAML/conf
+    // 1. Verify modern non-deprecated fields (announced_address, port_range, license)
     let conf = r#"
 network:
   listen_ip: "127.0.0.1"
+  announced_address: "192.168.1.50"
+  port_range: "42000-43000"
   grpc_port: 50058
 
 license:
@@ -199,6 +202,9 @@ license:
 
     let cfg = Config::try_from_file(&conf_path).unwrap();
     assert_eq!(cfg.grpc_port, 50058);
+    assert_eq!(cfg.announced_ip.as_deref(), Some("192.168.1.50"));
+    assert_eq!(cfg.announced_address(), Some("192.168.1.50"));
+    assert_eq!(cfg.rtc_port_range(), 42000..=43000);
     assert_eq!(
         cfg.license_token.as_deref(),
         Some("EKB1.eyJwYXlsb2FkIjoidGVzdCJ9.c2lnbmF0dXJl")

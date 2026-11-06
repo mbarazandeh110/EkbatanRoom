@@ -83,7 +83,7 @@ USAGE:
     sfu-media-node [OPTIONS]
 
 OPTIONS:
-    -c, --config <FILE>       Path to YAML configuration file (e.g. config.conf, config.yaml)
+    -c, --config <FILE>       Path to YAML configuration file (e.g. config.example.yaml, config.yaml)
     -h, --help                Print this help information and exit
     -v, -V, --version         Print version information and exit
 
@@ -97,13 +97,11 @@ CONFIGURATION HIERARCHY & 12-FACTOR OVERRIDES:
     Any environment variable set in the environment overrides the corresponding
     value loaded from the configuration file.
 
-COMMON ENVIRONMENT VARIABLES:
-    Network:
+COMMON ENVIRONMENT VARIABLES (Mediasoup Non-Deprecated):
+    Network (ListenInfo):
       MEDIASOUP_LISTEN_IP            Bind IP for RTC sockets (default: 0.0.0.0)
-      MEDIASOUP_ANNOUNCED_IP         Public/NAT IP for ICE candidates (default: auto)
-      RTC_MIN_PORT                   RTC UDP port range start (default: 40000)
-      RTC_MAX_PORT                   RTC UDP port range end (default: 49999)
-      RTC_PORT_RANGE                 Range shorthand (e.g. "40000-49999")
+      MEDIASOUP_ANNOUNCED_ADDRESS    Announced IP/FQDN for ICE candidates (replaces announcedIp; default: auto)
+      RTC_PORT_RANGE                 UDP port range for RTC (replaces rtcMinPort/rtcMaxPort; default: 40000-49999)
       GRPC_PORT                      gRPC control service port (default: 50051)
 
     Worker Pool:
@@ -141,11 +139,11 @@ EXAMPLES:
     sfu-media-node
 
     # Run with an explicit configuration file:
-    sfu-media-node -c config.example.conf
-    sfu-media-node --config=/etc/sfu/production.conf
+    sfu-media-node -c config.example.yaml
+    sfu-media-node --config=/etc/sfu/production.yaml
 
     # Run with config file and override gRPC port via environment variable:
-    GRPC_PORT=50060 sfu-media-node -c config.conf
+    GRPC_PORT=50060 sfu-media-node -c config.yaml
 "#
     }
 
