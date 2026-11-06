@@ -147,3 +147,73 @@ observability:
 
     let _ = std::fs::remove_file(file_path);
 }
+
+#[tokio::test]
+async fn test_load_config_example_conf_file() {
+    let conf_path = std::path::Path::new("config.example.conf");
+    assert!(
+        conf_path.exists(),
+        "config.example.conf must exist in repo root"
+    );
+
+    let config = Config::try_from_file(conf_path).expect("Failed to parse config.example.conf");
+    assert_eq!(config.rtc_min_port, 40000);
+    assert_eq!(config.rtc_max_port, 49999);
+    assert_eq!(config.grpc_port, 50051);
+    assert_eq!(
+        config.webrtc_transport.initial_available_outgoing_bitrate,
+        3_000_000
+    );
+    assert_eq!(
+        config.webrtc_transport.max_incoming_bitrate,
+        Some(4_000_000)
+    );
+    assert_eq!(config.audio_level_observer.interval_ms, 500);
+    assert_eq!(config.audio_level_observer.threshold_dbov, -80);
+    assert!(config.router_codecs.enable_opus);
+    assert!(config.router_codecs.enable_vp8);
+    assert!(config.router_codecs.enable_h264);
+    assert!(!config.router_codecs.enable_vp9);
+    assert!(config.observability.metrics_enabled);
+    assert_eq!(config.observability.log_level, "info");
+    assert_eq!(config.observability.log_format, "json");
+}
+
+#[tokio::test]
+async fn test_conf_file_with_license_and_missing_file_error() {
+    use std::path::Path;
+
+    // 1. Verify license section parsing from YAML/conf
+    let conf = r#"
+network:
+  listen_ip: "127.0.0.1"
+  grpc_port: 50058
+
+license:
+  token: "EKB1.eyJwYXlsb2FkIjoidGVzdCJ9.c2lnbmF0dXJl"
+  public_key_hex: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+"#;
+    let temp_dir = std::env::temp_dir();
+    let conf_path = temp_dir.join("test_sfu_license.conf");
+    std::fs::write(&conf_path, conf).unwrap();
+
+    let cfg = Config::try_from_file(&conf_path).unwrap();
+    assert_eq!(cfg.grpc_port, 50058);
+    assert_eq!(
+        cfg.license_token.as_deref(),
+        Some("EKB1.eyJwYXlsb2FkIjoidGVzdCJ9.c2lnbmF0dXJl")
+    );
+    assert_eq!(
+        cfg.license_public_key_hex.as_deref(),
+        Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    );
+    let _ = std::fs::remove_file(conf_path);
+
+    // 2. Explicit custom file path that does not exist must return ConfigError::FileReadError
+    let missing_path = Path::new("non_existent_sfu_config_12345.conf");
+    let err = Config::try_load_from_file_and_env(Some(missing_path));
+    assert!(matches!(
+        err,
+        Err(sfu_media_node::config::ConfigError::FileReadError { .. })
+    ));
+}

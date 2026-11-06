@@ -65,3 +65,7 @@ observability:
   otlp_endpoint: "http://localhost:4317"
   trace_sample_rate: 0.1
   log_raw_sdp: false
+
+license:
+  token: null
+  public_key_hex: null

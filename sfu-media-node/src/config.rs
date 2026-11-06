@@ -331,6 +331,15 @@ pub struct RawConfigFile {
     pub audio_level_observer: Option<MediasoupAudioLevelObserverConfig>,
     pub router_codecs: Option<MediasoupRouterCodecsConfig>,
     pub observability: Option<RawObservabilityConfig>,
+    pub license: Option<RawLicenseConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RawLicenseConfig {
+    #[serde(alias = "token", alias = "key")]
+    pub license_token: Option<String>,
+    #[serde(alias = "public_key", alias = "public_key_hex")]
+    pub license_public_key_hex: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -453,25 +462,22 @@ impl Config {
     pub fn try_load_from_file_and_env(custom_path: Option<&Path>) -> Result<Self, ConfigError> {
         let mut config = Self::default_values();
 
-        // 1. Locate config file: explicit path -> SFU_CONFIG_FILE -> config.yaml -> config.yml
+        // 1. Locate config file: explicit path -> SFU_CONFIG_FILE -> config.yaml -> config.yml -> config.conf
         let file_path = custom_path
             .map(|p| p.to_path_buf())
             .or_else(|| std::env::var("SFU_CONFIG_FILE").ok().map(PathBuf::from))
             .or_else(|| {
-                let p_yaml = PathBuf::from("config.yaml");
-                if p_yaml.exists() {
-                    Some(p_yaml)
-                } else {
-                    let p_yml = PathBuf::from("config.yml");
-                    if p_yml.exists() {
-                        Some(p_yml)
-                    } else {
-                        None
+                let candidates = ["config.yaml", "config.yml", "config.conf"];
+                for candidate in candidates {
+                    let p = PathBuf::from(candidate);
+                    if p.exists() {
+                        return Some(p);
                     }
                 }
+                None
             });
 
-        // 2. Load and merge YAML file if present
+        // 2. Load and merge YAML/conf file if present
         if let Some(path) = file_path {
             if path.exists() {
                 let content =
@@ -485,6 +491,11 @@ impl Config {
                         err: e.to_string(),
                     })?;
                 config.apply_raw_file(raw)?;
+            } else if custom_path.is_some() || std::env::var("SFU_CONFIG_FILE").is_ok() {
+                return Err(ConfigError::FileReadError {
+                    path: path.display().to_string(),
+                    err: "No such file or directory".to_string(),
+                });
             }
         }
 
@@ -633,6 +644,21 @@ impl Config {
             }
             if let Some(sdp) = obs.log_raw_sdp {
                 self.observability.log_raw_sdp = sdp;
+            }
+        }
+
+        if let Some(lic) = raw.license {
+            if let Some(token) = lic.license_token {
+                let trimmed = token.trim();
+                if !trimmed.is_empty() {
+                    self.license_token = Some(trimmed.to_string());
+                }
+            }
+            if let Some(pk) = lic.license_public_key_hex {
+                let trimmed = pk.trim();
+                if !trimmed.is_empty() {
+                    self.license_public_key_hex = Some(trimmed.to_string());
+                }
             }
         }
 

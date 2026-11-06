@@ -47,11 +47,37 @@
 
 ---
 
-## ۳. متغیرهای محیطی و پیکربندی
+## ۳. روش‌های راه‌اندازی و آرگومان‌های خط فرمان (CLI)
+
+اجرای سرویس با آرگومان‌های خط فرمان:
+```bash
+# مشاهده راهنمای کامل دستورات و متغیرها
+cargo run -- --help
+
+# مشاهده نسخه باینری
+cargo run -- --version
+
+# اجرا با تعیین فایل کانفیگ دلخواه
+cargo run -- -c config.example.conf
+cargo run -- --config=/etc/sfu/production.conf
+
+# اجرا با اولویت بازنویسی پورت از متغیرهای محیطی
+GRPC_PORT=50060 cargo run -- -c config.conf
+```
+
+سلسله‌مراتب شناسایی فایل تنظیمات:
+1. آرگومان خط فرمان (`-c` یا `--config`)
+2. متغیر محیطی `SFU_CONFIG_FILE`
+3. فایل‌های محلی در مسیر جاری (`config.yaml`، `config.yml` یا `config.conf`)
+4. مقادیر پیش‌فرض تعبیه‌شده در کد
+
+> **نکته:** نمونه کامل تمام کانفیگ‌های ممکن در فایل [`config.example.conf`](file:///home/mahdi/Projects/Mahdi/Ekbatan/EkbatanRoom/sfu-media-node/config.example.conf) و [`config.example.yaml`](file:///home/mahdi/Projects/Mahdi/Ekbatan/EkbatanRoom/sfu-media-node/config.example.yaml) قرار داده شده است.
+
+### جدول متغیرهای محیطی و پیکربندی
 
 | نام متغیر | پیش‌فرض | توضیحات |
 | :--- | :--- | :--- |
-| `SFU_CONFIG_FILE` | - | مسیر فایل پیکربندی اختیاری YAML (مانند `config.yaml`) |
+| `SFU_CONFIG_FILE` | - | مسیر فایل پیکربندی اختیاری YAML/conf (مانند `config.conf`) |
 | `MEDIASOUP_LISTEN_IP` | `0.0.0.0` | آدرس IP محلی که مدیاسوپ روی آن شنود می‌کند |
 | `MEDIASOUP_ANNOUNCED_IP` | `auto` (تشخیص خودکار IP شبکه) | آدرس IP عمومی برای اعلان در ICE کاندیدها (سازگار با RFC 8828 مرورگرها؛ در صورت عدم تعیین، IP غیر-لوپ‌بک اصلی هاست به صورت خودکار شناسایی می‌شود) |
 | `RTC_MIN_PORT` | `40000` | ابتدای بازه پورت‌های UDP برای ترافیک RTC |

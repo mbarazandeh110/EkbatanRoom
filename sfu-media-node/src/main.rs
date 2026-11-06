@@ -1,5 +1,5 @@
 use sfu_media_node::proto::sfu::v1::sfu_media_engine_service_server::SfuMediaEngineServiceServer;
-use sfu_media_node::{Config, GrpcMediaEngineService, MediaNode};
+use sfu_media_node::{Cli, CliAction, Config, GrpcMediaEngineService, MediaNode};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,10 +43,31 @@ async fn wait_for_shutdown(media_node: Arc<MediaNode>) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::try_from_env()?;
+    let action = match Cli::parse_from(std::env::args()) {
+        Ok(action) => action,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+
+    let config_path = match action {
+        CliAction::Help => {
+            println!("{}", Cli::help_text());
+            return Ok(());
+        }
+        CliAction::Version => {
+            println!("{}", Cli::version_text());
+            return Ok(());
+        }
+        CliAction::Run { config_path } => config_path,
+    };
+
+    let config = Config::try_load_from_file_and_env(config_path.as_deref())?;
     sfu_media_node::observability::init_observability(&config.observability)?;
 
     tracing::info!(
+        config_path = ?config_path,
         listen_ip = %config.listen_ip,
         announced_ip = ?config.announced_ip,
         rtc_port_range = ?config.rtc_port_range(),
