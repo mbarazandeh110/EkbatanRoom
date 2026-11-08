@@ -69,6 +69,23 @@ impl MediaService {
     }
 }
 
+pub fn resolve_default_video_preferred_spatial_layer(producer_encodings_count: usize) -> u8 {
+    if let Ok(val) = std::env::var("MEDIASOUP_DEFAULT_VIDEO_PREFERRED_SPATIAL_LAYER")
+        .or_else(|_| std::env::var("SFU_DEFAULT_VIDEO_PREFERRED_SPATIAL_LAYER"))
+    {
+        if let Ok(layer) = val.trim().parse::<u8>() {
+            return layer;
+        }
+    }
+    if producer_encodings_count > 1 {
+        // Simulcast stream: default to highest available spatial layer (e.g. 2 for 3 layers: 180p, 360p, 720p)
+        (producer_encodings_count.saturating_sub(1)).min(2) as u8
+    } else {
+        // Single-layer stream: layer 0
+        0
+    }
+}
+
 #[async_trait]
 impl MediaUseCase for MediaService {
     #[tracing::instrument(
@@ -388,7 +405,12 @@ impl MediaUseCase for MediaService {
                 &params.request_id,
                 &payload_bytes,
                 || async {
-                    let (producer_physical_router_id, producer_worker_index) = {
+                    let (
+                        producer_physical_router_id,
+                        producer_worker_index,
+                        producer_kind,
+                        producer_encodings_count,
+                    ) = {
                         let p_item = self
                             .state
                             .get_producer(&params.router_id, &params.producer_id)
@@ -406,7 +428,12 @@ impl MediaUseCase for MediaService {
                             )));
                         }
 
-                        (p_item.physical_router_id.clone(), p_item.worker_index)
+                        (
+                            p_item.physical_router_id.clone(),
+                            p_item.worker_index,
+                            p_item.kind,
+                            p_item.producer.rtp_parameters().encodings.len(),
+                        )
                     };
 
                     // Extract subscriber transport, verify router ownership, and DROP guard before .await
@@ -550,6 +577,13 @@ impl MediaUseCase for MediaService {
                                     ))
                                 })?;
 
+                            if producer_kind == MediaKind::Video {
+                                let pipe_consumer_clone = pipe_pair.pipe_consumer.clone();
+                                tokio::spawn(async move {
+                                    let _ = pipe_consumer_clone.request_key_frame().await;
+                                });
+                            }
+
                             let is_source_paused = self
                                 .state
                                 .get_producer(&params.router_id, &params.producer_id)
@@ -650,6 +684,19 @@ impl MediaUseCase for MediaService {
                     let mut options = ConsumerOptions::new(producer_id, params.rtp_capabilities);
                     options.paused = params.paused;
 
+                    let video_preferred_layers = if producer_kind == MediaKind::Video {
+                        let spatial_layer =
+                            resolve_default_video_preferred_spatial_layer(producer_encodings_count);
+                        let layers = ConsumerLayers {
+                            spatial_layer,
+                            temporal_layer: Some(2),
+                        };
+                        options.preferred_layers = Some(layers);
+                        Some(layers)
+                    } else {
+                        None
+                    };
+
                     let consumer = match transport.consume(options).await {
                         Ok(c) => c,
                         Err(e) => {
@@ -663,6 +710,24 @@ impl MediaUseCase for MediaService {
                             )));
                         }
                     };
+
+                    // Explicitly apply initial preferred layers on video consumer to unfreeze targetLayers
+                    if let Some(pref) = video_preferred_layers {
+                        if let Err(e) = consumer.set_preferred_layers(pref).await {
+                            tracing::warn!(
+                                consumer_id = %consumer.id(),
+                                error = %e,
+                                "Failed to explicitly apply preferred layers on video consumer creation"
+                            );
+                        } else {
+                            tracing::debug!(
+                                consumer_id = %consumer.id(),
+                                spatial_layer = pref.spatial_layer,
+                                temporal_layer = ?pref.temporal_layer,
+                                "Explicitly applied initial preferred layers on video consumer creation"
+                            );
+                        }
+                    }
 
                     let consumer_id = consumer.id().to_string();
                     let is_closed = Arc::new(AtomicBool::new(false));
@@ -798,11 +863,17 @@ impl MediaUseCase for MediaService {
                         .collect();
 
                     let current_layers = consumer.current_layers();
-                    let initial_spatial_layer =
-                        current_layers.map(|l| l.spatial_layer as i32).unwrap_or(-1);
+                    let preferred_layers = consumer.preferred_layers();
+                    let initial_spatial_layer = current_layers
+                        .map(|l| l.spatial_layer as i32)
+                        .or_else(|| preferred_layers.map(|l| l.spatial_layer as i32))
+                        .or_else(|| video_preferred_layers.map(|l| l.spatial_layer as i32))
+                        .unwrap_or(-1);
                     let initial_temporal_layer = current_layers
                         .and_then(|l| l.temporal_layer)
                         .map(|t| t as i32)
+                        .or_else(|| preferred_layers.and_then(|l| l.temporal_layer).map(|t| t as i32))
+                        .or_else(|| video_preferred_layers.and_then(|l| l.temporal_layer).map(|t| t as i32))
                         .unwrap_or(-1);
 
                     let consumer_kind: MediaKind = from_mediasoup_kind(consumer.kind());
@@ -821,6 +892,44 @@ impl MediaUseCase for MediaService {
                                 "Requested initial keyframe for video consumer"
                             );
                         }
+
+                        // Background keyframe retry routine: In synthetic/load-test environments (e.g. livekit-cli IVF looper)
+                        // or delayed ICE/DTLS subscriber bindings, the initial keyframe may precede subscriber readiness.
+                        // Retry periodically until current_layers becomes active or max retries reached.
+                        let retry_consumer = consumer_for_kf.clone();
+                        let retry_consumer_id = consumer_id.clone();
+                        let retry_is_closed = is_closed.clone();
+                        let retry_state = self.state.clone();
+                        let retry_router_id = params.router_id.clone();
+
+                        tokio::spawn(async move {
+                            for attempt in 1..=6 {
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+
+                                if retry_is_closed.load(Ordering::SeqCst)
+                                    || !retry_state.is_router_active(&retry_router_id)
+                                {
+                                    break;
+                                }
+
+                                if let Some(current) = retry_consumer.current_layers() {
+                                    tracing::debug!(
+                                        consumer_id = %retry_consumer_id,
+                                        spatial_layer = current.spatial_layer,
+                                        temporal_layer = ?current.temporal_layer,
+                                        "Video consumer layers promoted; stopping keyframe retry loop"
+                                    );
+                                    break;
+                                }
+
+                                tracing::debug!(
+                                    consumer_id = %retry_consumer_id,
+                                    attempt = attempt,
+                                    "Retrying keyframe request for pending video consumer"
+                                );
+                                let _ = retry_consumer.request_key_frame().await;
+                            }
+                        });
                     }
 
                     // Final liveness check after all .await calls before inserting into EngineState

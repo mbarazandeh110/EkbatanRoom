@@ -481,6 +481,8 @@ async fn test_video_produce_consume_lifecycle_and_keyframe_request() {
     assert_eq!(cons_resp.codec_mime_type, "video/VP8");
     assert!(cons_resp.payload_type >= 96 && cons_resp.payload_type <= 127);
     assert!(cons_resp.ssrc > 0);
+    assert_eq!(cons_resp.initial_spatial_layer, 0);
+    assert!(cons_resp.initial_temporal_layer >= 0);
 
     // 6. Test standard ORTC paused consumer creation followed by resume
     let cons_paused_resp = service
@@ -608,4 +610,215 @@ fn test_defensive_ortc_parameter_sanitization() {
     assert_eq!(parsed_caps.codecs[0].preferred_payload_type(), Some(96));
     assert_eq!(parsed_caps.header_extensions.len(), 1);
     assert!(!parsed_caps.header_extensions[0].preferred_encrypt);
+}
+
+#[tokio::test]
+async fn test_video_simulcast_initial_preferred_layers_and_dynamic_update() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create Router
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-simulcast".to_string(),
+            room_id: "room-simulcast".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let router_id = r_resp.router_id;
+
+    // 2. Create Publisher Transport
+    let pub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-pub-tr-simulcast".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-pub-sim".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 3. Create Video Producer with 3 Simulcast Encodings (q: 180p, h: 360p, f: 720p)
+    let simulcast_video_rtp_params = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "payloadType": 96,
+                "clockRate": 90000,
+                "parameters": {},
+                "rtcpFeedback": [
+                    { "type": "nack" },
+                    { "type": "nack", "parameter": "pli" },
+                    { "type": "ccm", "parameter": "fir" },
+                    { "type": "transport-cc" }
+                ]
+            },
+            {
+                "mimeType": "video/rtx",
+                "payloadType": 97,
+                "clockRate": 90000,
+                "parameters": {
+                    "apt": 96
+                },
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": [
+            {
+                "id": 1,
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:mid"
+            },
+            {
+                "id": 2,
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"
+            },
+            {
+                "id": 3,
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"
+            }
+        ],
+        "encodings": [
+            {
+                "rid": "q",
+                "ssrc": 10000001,
+                "rtx": { "ssrc": 10000002 },
+                "maxBitrate": 150000
+            },
+            {
+                "rid": "h",
+                "ssrc": 20000001,
+                "rtx": { "ssrc": 20000002 },
+                "maxBitrate": 500000
+            },
+            {
+                "rid": "f",
+                "ssrc": 30000001,
+                "rtx": { "ssrc": 30000002 },
+                "maxBitrate": 1500000
+            }
+        ],
+        "rtcp": {
+            "cname": "simulcast-producer"
+        }
+    }"#;
+
+    let prod_resp = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-prod-simulcast".to_string(),
+            router_id: router_id.clone(),
+            transport_id: pub_tr.transport_id.clone(),
+            peer_id: "peer-pub-sim".to_string(),
+            kind: "video".to_string(),
+            rtp_parameters_json: simulcast_video_rtp_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(prod_resp.encodings.len(), 3);
+
+    // 4. Create Subscriber Transport
+    let sub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-sub-tr-simulcast".to_string(),
+            router_id: router_id.clone(),
+            peer_id: "peer-sub-sim".to_string(),
+            is_publisher: false,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 5. Consume Video Track: Verify default preferred layers activation (Lock 1 resolution)
+    let video_caps = r#"{
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "kind": "video",
+                "clockRate": 90000,
+                "preferredPayloadType": 96,
+                "rtcpFeedback": [
+                    { "type": "nack" },
+                    { "type": "nack", "parameter": "pli" },
+                    { "type": "ccm", "parameter": "fir" }
+                ],
+                "parameters": {}
+            },
+            {
+                "mimeType": "video/rtx",
+                "kind": "video",
+                "clockRate": 90000,
+                "preferredPayloadType": 97,
+                "rtcpFeedback": [],
+                "parameters": { "apt": 96 }
+            }
+        ],
+        "headerExtensions": [
+            {
+                "kind": "video",
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+                "preferredId": 1
+            }
+        ]
+    }"#;
+
+    let cons_resp = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-cons-simulcast".to_string(),
+            router_id: router_id.clone(),
+            subscriber_transport_id: sub_tr.transport_id.clone(),
+            producer_id: prod_resp.producer_id.clone(),
+            rtp_capabilities_json: video_caps.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Simulcast video consumer must have initial preferred layers set to highest spatial layer (2) and valid temporal layer
+    assert_eq!(cons_resp.initial_spatial_layer, 2);
+    assert!(cons_resp.initial_temporal_layer >= 0);
+
+    // 6. Test SetConsumerPreferredLayers RPC updates consumer preferred layers dynamically
+    let set_layer_res = service
+        .set_consumer_preferred_layers(Request::new(proto::SetConsumerPreferredLayersRequest {
+            router_id: router_id.clone(),
+            consumer_id: cons_resp.consumer_id.clone(),
+            spatial_layer: 1,
+            temporal_layer: 1,
+        }))
+        .await;
+
+    assert!(set_layer_res.is_ok());
+
+    // Clean up
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: router_id.clone(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: router_id.clone(),
+        }))
+        .await
+        .unwrap();
+}
+
+#[test]
+fn test_resolve_default_video_preferred_spatial_layer_logic() {
+    use sfu_media_node::application::media_service::resolve_default_video_preferred_spatial_layer;
+
+    // Single layer: 0
+    assert_eq!(resolve_default_video_preferred_spatial_layer(1), 0);
+    assert_eq!(resolve_default_video_preferred_spatial_layer(0), 0);
+
+    // Simulcast: highest available (capped at 2)
+    assert_eq!(resolve_default_video_preferred_spatial_layer(2), 1);
+    assert_eq!(resolve_default_video_preferred_spatial_layer(3), 2);
+    assert_eq!(resolve_default_video_preferred_spatial_layer(4), 2);
 }
