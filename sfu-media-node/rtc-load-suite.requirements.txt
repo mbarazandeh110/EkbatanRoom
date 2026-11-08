@@ -88,3 +88,57 @@ STATUS: IMPLEMENTED
      * `cargo clippy --all-targets --all-features -- -D warnings`: PASSED (0 warnings).
      * `cargo test`: PASSED (81 passed across unit and integration suites, 0 failed).
      * `cargo test --all-features`: PASSED (all enterprise cascading and license suites passed).
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-005
+SOURCE SERVICE: rtc-load-suite
+TARGET SERVICE: sfu-media-node (with signaling-coordinator coordination)
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Protocol & Contract Conformance | DTLS Transport & SDP Negotiation]
+   Resolve Publisher DTLS Role Deadlock: Enforce Media-Level `a=setup` Attributes in Publisher SDP Answers and Assign Complementary DTLS Roles (Act as DTLS Client / Active Initiator via Mediasoup `role: client`) to Prevent Handshake Freeze and Restore RTP Media Transmission.
+
+2. REASON & TECHNICAL EVIDENCE:
+   - Empirical Packet Capture (`tcpdump` on UDP port range 40000-49999):
+     * Capturing full UDP traffic during load testing (/tmp/audio-test.pcap & /tmp/video-test.pcap) revealed that on the publisher Mediasoup RTC port:
+       - Exactly 16 packets were exchanged; EVERY SINGLE PACKET had byte 0 = 0x00 or 0x01 (STUN Binding Requests and Binding Responses).
+       - ZERO DTLS packets were exchanged on the publisher transport.
+       - ZERO RTP/SRTP packets were ever transmitted by the publisher or received by Mediasoup.
+     * Clarification on Previous Audio Test:
+       - In earlier audio runs, `livekit-cli` reported 42 packets (223.3 kbps). Packet inspection revealed payload type 127, SSRC 1234, payload string `"probator"`. These were Mediasoup Bandwidth Estimator dummy probe packets, not actual Opus media! The audio publisher was equally blocked by the DTLS deadlock.
+   - Root Cause: Publisher DTLS Role Deadlock Mechanism:
+     1. `livekit-cli` (Pion WebRTC) sends Publisher Offer with `a=setup:actpass` at media level (`m=application`, `m=video`, `m=audio`).
+     2. `signaling-coordinator` sends Publisher Answer with `a=ice-lite`, and emits `a=setup:passive` ONLY at the global session level, omitting `a=setup` from media descriptions (`m=`).
+     3. Mediasoup in `sfu-media-node`: `ConnectTransport` sets local role to `server` (`role: server`, state: 'before SSL initialization'). Mediasoup waits PASSIVELY for an incoming DTLS `ClientHello`.
+     4. Pion WebRTC in `livekit-cli`: Because Mediasoup answered with `a=ice-lite`, Pion acts as ICE controlling. Because media sections omit `a=setup`, Pion's `DTLSRoleAuto` defaults an ICE controlling agent to DTLS `server` (passive)!
+     5. DEADLOCK: BOTH SIDES ACT AS DTLS SERVERS. Neither peer transmits a DTLS `ClientHello`.
+     6. Resulting Cascade:
+        - The publisher PeerConnection remains permanently in `{"transport": "PUBLISHER", "state": "connecting"}`.
+        - Pion blocks 100% of outgoing audio/video RTP packets over the unestablished DTLS transport.
+        - Mediasoup never creates `srtpRecvSession` (`WebRtcTransport.cpp:1023`), and `IsConnected()` evaluates to `false`.
+        - When `sfu-media-node` retries keyframe requests (`ConsumerRequestKeyFrame`), Mediasoup's `SendRtcpPacket` silently drops the RTCP PLI (`if (!IsConnected()) { return; }`).
+        - The video consumer remains permanently suppressed at `spatial_layer: -1`.
+   - Contrast with Working Subscriber Transport:
+     * On the subscriber transport, `signaling-coordinator` synthesized the offer with `a=setup:actpass`, `livekit-cli` answered with `m=video ... a=setup:passive`, and `signaling-coordinator` configured Mediasoup as `role: client`. Mediasoup proactively sent DTLS `ClientHello`, and the handshake completed in <100ms.
+   - Secondary Codec Alignment:
+     * When `lk load-test` runs without an explicit `--video-codec` flag, `livekit-cli` offers `video/h264`, but `signaling-coordinator` sends `SubscribedQualityUpdate` with hardcoded `codec: "vp8"`, causing `livekit-cli` to leave publication `disabled = true`.
+   - SLA Impact:
+     * Gate 1 (`gate-01-baseline`) failed with 10 dropped tracks (0.0 kbps). Violates Rule 1.2 ("No False Positives"). Gates 2-4 blocked per Rule 2.2.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `signaling-coordinator`:
+     1. Media-Level `a=setup` Enforcement:
+        In `GeneratePublisherAnswer` (`internal/adapters/inbound/livekit/sdp_mapper.go`), append `a=setup:passive` (or `a=setup:active`) directly inside every active media description (`m=application`, `m=video`, `m=audio`).
+     2. Active DTLS Role Assignment (Client Pattern):
+        Ensure complementary DTLS roles are established: configure `a=setup:active` in the publisher answer and invoke `ConnectTransport` on `sfu-media-node` with `role: client` so Mediasoup initiates the DTLS `ClientHello` (mirroring the reliable subscriber transport pattern), OR force Pion to act as DTLS client by proper attribute placement.
+     3. Dynamic Codec Alignment:
+        Ensure `SubscribedQualityUpdate` dynamically reflects the published track's actual negotiated codec (`video/vp8` or `video/h264`) rather than hardcoding `vp8`.
+   - In `sfu-media-node`:
+     * Ensure `ConnectTransport` validates that publisher WebRtcTransports establish reciprocal DTLS roles and do not stay in passive initialization.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
+   - Decision: PENDING
+   - Architectural Justification: ...
+   - Modified Files & Benchmark Verifications: ...
