@@ -59,6 +59,31 @@ func dispatchQualityUpdates(updates []pendingQualityUpdate) {
 	}
 }
 
+type pendingTrackSubscribed struct {
+	responder ports.PeerResponderPort
+	trackSID  string
+}
+
+func dispatchTrackSubscribed(items []pendingTrackSubscribed) {
+	for _, it := range items {
+		if it.responder != nil {
+			_ = it.responder.SendTrackSubscribed(it.trackSID)
+		}
+	}
+}
+
+func (a *RoomActor) preferredLayersForTrack(trackSID string) (spatialLayer int32, temporalLayer int32) {
+	for _, pubSession := range a.sessions {
+		if tr, ok := pubSession.Participant().GetTrack(trackSID); ok {
+			if len(tr.SimulcastEncodings) > 1 {
+				return int32(len(tr.SimulcastEncodings) - 1), 2
+			}
+			return 0, 2
+		}
+	}
+	return 2, 2
+}
+
 // RoomActor owns the room lifecycle, participant roster, and coordinates media resources.
 type RoomActor struct {
 	mu sync.Mutex
@@ -431,6 +456,7 @@ func (a *RoomActor) Join(
 	// 5. Subscribe the newly joined participant to all already-published tracks in the room (Late Joiner support)
 	consumedExistingCount := 0
 	var qualityUpdatesToSend []pendingQualityUpdate
+	var trackSubscribedToSend []pendingTrackSubscribed
 	for otherID, otherSession := range a.sessions {
 		if otherID == participantID {
 			continue
@@ -456,6 +482,10 @@ func (a *RoomActor) Join(
 						trackSID:  t.SID,
 						codec:     t.MimeType,
 						qualities: defaultSubscribedQualities(),
+					})
+					trackSubscribedToSend = append(trackSubscribedToSend, pendingTrackSubscribed{
+						responder: otherSession.Responder(),
+						trackSID:  t.SID,
 					})
 				}
 			}
@@ -523,6 +553,7 @@ func (a *RoomActor) Join(
 		dispatchOffers([]pendingOffer{*offerToSend})
 	}
 	dispatchQualityUpdates(qualityUpdatesToSend)
+	dispatchTrackSubscribed(trackSubscribedToSend)
 
 	return joinRes, nil
 }
@@ -711,6 +742,14 @@ func (a *RoomActor) PublishTracks(
 			}
 		}
 
+		encodings := prodRes.Encodings
+		if len(encodings) == 0 && len(tc.SimulcastRIDs) > 0 {
+			encodings = make([]domain.SimulcastLayer, 0, len(tc.SimulcastRIDs))
+			for _, rid := range tc.SimulcastRIDs {
+				encodings = append(encodings, domain.SimulcastLayer{RID: rid})
+			}
+		}
+
 		domainTrack := &domain.Track{
 			ID:                 prodRes.ProducerID,
 			SID:                trackSID,
@@ -728,7 +767,7 @@ func (a *RoomActor) PublishTracks(
 			MimeType:           trackMime,
 			ClockRate:          tc.ClockRate,
 			CName:              tc.CName,
-			SimulcastEncodings: prodRes.Encodings,
+			SimulcastEncodings: encodings,
 		}
 		_ = p.AddTrack(domainTrack)
 		publishedTracks = append(publishedTracks, domainTrack)
@@ -805,6 +844,16 @@ func (a *RoomActor) PublishTracks(
 					p.SID,
 				)
 				otherSession.Participant().AddSubscription(consRes.ConsumerID, t.ID)
+
+				if t.Kind == domain.TrackKindVideo && otherSession.SubTransportConnected() && a.mediaStreamPort != nil {
+					spatial, temporal := a.preferredLayersForTrack(t.SID)
+					_ = a.mediaStreamPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{
+						RouterID:      a.room.RouterID,
+						ConsumerID:    consRes.ConsumerID,
+						SpatialLayer:  spatial,
+						TemporalLayer: temporal,
+					})
+				}
 			}
 
 			if err := otherSession.StartOfferTransition(); err == nil {
@@ -886,30 +935,6 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 	needsIceOffer := session.ConsumePendingIceRestart()
 	needsRenegotiation := session.ConsumePendingRenegotiation()
 
-	var qualityUpdatesToSend []pendingQualityUpdate
-	seenTracks := make(map[string]bool)
-
-	for _, slot := range session.SlotTable().ListSlots() {
-		if slot.Active && slot.Kind == domain.TrackKindVideo {
-			if !seenTracks[slot.TrackSID] {
-				seenTracks[slot.TrackSID] = true
-				for _, pubSession := range a.sessions {
-					if tr, ok := pubSession.Participant().GetTrack(slot.TrackSID); ok {
-						if pubSession.Responder() != nil {
-							qualityUpdatesToSend = append(qualityUpdatesToSend, pendingQualityUpdate{
-								responder: pubSession.Responder(),
-								trackSID:  slot.TrackSID,
-								codec:     tr.MimeType,
-								qualities: defaultSubscribedQualities(),
-							})
-						}
-						break
-					}
-				}
-			}
-		}
-	}
-
 	if len(pending) > 0 {
 		for _, t := range pending {
 			consRes, err := a.mediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
@@ -922,20 +947,6 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 			})
 			if err != nil {
 				continue
-			}
-
-			if t.Kind == domain.TrackKindVideo {
-				if !seenTracks[t.SID] {
-					seenTracks[t.SID] = true
-					if pubSess, ok := a.sessions[t.PublisherID]; ok && pubSess.Responder() != nil {
-						qualityUpdatesToSend = append(qualityUpdatesToSend, pendingQualityUpdate{
-							responder: pubSess.Responder(),
-							trackSID:  t.SID,
-							codec:     t.MimeType,
-							qualities: defaultSubscribedQualities(),
-						})
-					}
-				}
 			}
 
 			pubSID := t.PublisherSID
@@ -969,6 +980,56 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 		}
 	}
 
+	var qualityUpdatesToSend []pendingQualityUpdate
+	var trackSubscribedToSend []pendingTrackSubscribed
+	seenTracks := make(map[string]bool)
+
+	for _, slot := range session.SlotTable().ListSlots() {
+		if !slot.Active || slot.Kind != domain.TrackKindVideo || slot.ConsumerID == "" {
+			continue
+		}
+
+		// REQ-004: Activate optimal preferred spatial and temporal layers on SFU consumer to unlock media flow
+		spatial, temporal := a.preferredLayersForTrack(slot.TrackSID)
+		if a.mediaStreamPort != nil {
+			if err := a.mediaStreamPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{
+				RouterID:      a.room.RouterID,
+				ConsumerID:    slot.ConsumerID,
+				SpatialLayer:  spatial,
+				TemporalLayer: temporal,
+			}); err != nil {
+				slog.WarnContext(ctx, "failed to set consumer preferred layers on answer",
+					"room_id", a.room.ID,
+					"consumer_id", slot.ConsumerID,
+					"spatial_layer", spatial,
+					"temporal_layer", temporal,
+					"error", err,
+				)
+			}
+		}
+
+		if !seenTracks[slot.TrackSID] {
+			seenTracks[slot.TrackSID] = true
+			for _, pubSession := range a.sessions {
+				if tr, ok := pubSession.Participant().GetTrack(slot.TrackSID); ok {
+					if pubSession.Responder() != nil {
+						qualityUpdatesToSend = append(qualityUpdatesToSend, pendingQualityUpdate{
+							responder: pubSession.Responder(),
+							trackSID:  slot.TrackSID,
+							codec:     tr.MimeType,
+							qualities: defaultSubscribedQualities(),
+						})
+						trackSubscribedToSend = append(trackSubscribedToSend, pendingTrackSubscribed{
+							responder: pubSession.Responder(),
+							trackSID:  slot.TrackSID,
+						})
+					}
+					break
+				}
+			}
+		}
+	}
+
 	var offerToSend *pendingOffer
 	if len(pending) > 0 || needsIceOffer || needsRenegotiation {
 		if session.State() == domain.NegotiationStateStable {
@@ -990,6 +1051,7 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 		dispatchOffers([]pendingOffer{*offerToSend})
 	}
 	dispatchQualityUpdates(qualityUpdatesToSend)
+	dispatchTrackSubscribed(trackSubscribedToSend)
 
 	return nil
 }
@@ -1098,11 +1160,16 @@ func (a *RoomActor) SetConsumerLayers(ctx context.Context, participantID, consum
 		actualConsumerID = session.SlotTable().ResolveConsumerID(consumerID)
 	}
 
+	actualTemporal := temporal
+	if actualTemporal < 0 {
+		actualTemporal = 2
+	}
+
 	return a.mediaStreamPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{
 		RouterID:      a.room.RouterID,
 		ConsumerID:    actualConsumerID,
 		SpatialLayer:  spatial,
-		TemporalLayer: temporal,
+		TemporalLayer: actualTemporal,
 	})
 }
 

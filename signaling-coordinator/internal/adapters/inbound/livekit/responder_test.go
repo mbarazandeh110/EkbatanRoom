@@ -406,3 +406,56 @@ func TestLiveKitResponder_SendSubscribedQualityUpdate_EmptyCodecDefaultsToVP8_RE
 		t.Fatalf("expected SubscribedCodecs[0].Codec == vp8, got %s", squ.SubscribedCodecs[0].Codec)
 	}
 }
+
+func TestLiveKitResponder_SendTrackSubscribed_REQ004(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	serverConnChan := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Upgrade failed: %v", err)
+			return
+		}
+		serverConnChan <- conn
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("client dial failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	serverConn := <-serverConnChan
+	defer serverConn.Close()
+
+	responder := livekit.NewLiveKitResponder(serverConn)
+
+	testTrackSID := "TR_video_subscribed_123"
+	err = responder.SendTrackSubscribed(testTrackSID)
+	if err != nil {
+		t.Fatalf("SendTrackSubscribed failed: %v", err)
+	}
+
+	_, msgBytes, err := clientConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage failed: %v", err)
+	}
+
+	var resp livekitproto.SignalResponse
+	if err := proto.Unmarshal(msgBytes, &resp); err != nil {
+		t.Fatalf("proto.Unmarshal failed: %v", err)
+	}
+
+	ts := resp.GetTrackSubscribed()
+	if ts == nil {
+		t.Fatalf("expected TrackSubscribed in SignalResponse, got: %+v", resp.Message)
+	}
+
+	if ts.GetTrackSid() != testTrackSID {
+		t.Fatalf("expected TrackSid %s, got %s", testTrackSID, ts.GetTrackSid())
+	}
+}
+

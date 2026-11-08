@@ -204,7 +204,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-004
 SOURCE SERVICE: rtc-load-suite
 TARGET SERVICE: signaling-coordinator (with sfu-media-node coordination)
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -262,7 +262,26 @@ STATUS: OPEN
        b) For synthetic test harnesses and video looper clients, ensure `sfu-media-node` / Mediasoup allows immediate stream promotion or handles initial packet tolerance so that the consumer transitions out of `spatial_layer: -1` and continuously forwards video RTP packets to subscribers.
 
 4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
-   - Decision: PENDING
-   - Architectural Justification: ...
-   - Modified Files & Benchmark Verifications: ...
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. Automatic Consumer Preferred Layer Activation: In WebRTC SFU architectures (Mediasoup worker core), video consumers initialize in an inactive state (`targetLayers: {-1, -1}`). If `preferredLayers` is unset, `targetLayers.temporal` remains `-1`, and incoming RTP packets are dropped with `INVALID_TARGET_LAYER`. To resolve this bottleneck, `RoomActor.HandleSubscriberAnswer` automatically coordinates with the SFU via `SetConsumerPreferredLayers` upon finalizing the subscriber SDP answer and establishing transport connectivity. The optimal preferred spatial layer is determined dynamically based on the publisher track's simulcast profile (`int32(len(tr.SimulcastEncodings) - 1)` for multi-layer simulcast e.g. Spatial 2 for 720p, and Spatial 0 for single-layer VP8/H.264), paired with full temporal framerate (`temporal: 2`). Furthermore, `RoomActor.PublishTracks` immediately configures preferred layers when new video tracks are published to existing connected subscribers.
+     2. Negative Temporal Layer Decoupling & Normalization: When clients or adapters pass `temporal: -1` in `SetConsumerLayers` (intended to indicate unconstrained temporal layers), `RoomActor` normalizes negative values to temporal layer 2 (the highest temporal layer) to prevent Mediasoup worker core from assigning `targetLayers.temporal = -1` which drops RTP packets.
+     3. Keyframe Synchronization & Protocol Conformance: To coordinate initial keyframe transmission from publishers for synthetic clients (`livekit-cli` / IVF loopers) and standard WebRTC encoders, `PeerResponderPort` was extended with `SendTrackSubscribed(trackSID string) error`, implemented via `LiveKitResponder` to send `SignalResponse_TrackSubscribed`. When subscribers join and finalize answers, both `SubscribedQualityUpdate` (enabling quality layers) and `TrackSubscribed` signaling notifications are broadcast to publishers to trigger keyframe delivery and activate video stream egress.
+     4. Port Interface Conformance: Exported `ports.SFUMediaPort` as an alias of `ports.MediaStreamPort` in outbound ports with strict compile-time interface assertions on `MediaNodeClient` to maintain cross-service contract consistency.
+   - Modified Files & Benchmark Verifications:
+     - `internal/ports/outbound.go`: Defined `SFUMediaPort = MediaStreamPort` alias with `SetConsumerPreferredLayers`.
+     - `internal/ports/inbound.go`: Extended `PeerResponderPort` with `SendTrackSubscribed(trackSID string) error`.
+     - `internal/adapters/outbound/media_node_grpc/client.go`: Added `_ ports.SFUMediaPort = (*MediaNodeClient)(nil)` interface assertion.
+     - `internal/adapters/inbound/livekit/responder.go`: Implemented `SendTrackSubscribed` serializing `SignalResponse_TrackSubscribed`.
+     - `internal/application/room_actor.go`:
+       - Added `preferredLayersForTrack` calculating spatial layer (2 for simulcast, 0 for single-layer) and temporal layer (2).
+       - Added `dispatchTrackSubscribed` notifying publishers upon subscription.
+       - Updated `HandleSubscriberAnswer` to drain pending tracks first and invoke `SetConsumerPreferredLayers` for all active video consumers, while dispatching both `SubscribedQualityUpdate` and `TrackSubscribed` to publishers.
+       - Updated `PublishTracks` to invoke `SetConsumerPreferredLayers` immediately for connected subscribers.
+       - Updated `SetConsumerLayers` to normalize negative temporal layers to 2.
+       - Updated `Join` to dispatch `TrackSubscribed` alongside `SubscribedQualityUpdate` when late joiners subscribe to existing video tracks.
+     - `internal/adapters/inbound/livekit/responder_test.go`: Added unit test `TestLiveKitResponder_SendTrackSubscribed_REQ004`.
+     - `internal/application/participant_session_test.go`: Added `SendTrackSubscribed` mock tracking to `mockResponder`.
+     - `internal/application/room_actor_test.go`: Added unit test `TestRoomActor_SetConsumerPreferredLayers_OnSubscriberAnswer_REQ004` covering simulcast layers, single-layer video, negative temporal layer normalization, and connected subscriber track publish.
+     - Verification: Full test suite executed with race detector (`go test -count=1 -race ./...`) - PASS (100% clean, 0 race conditions, 0 regressions).
 

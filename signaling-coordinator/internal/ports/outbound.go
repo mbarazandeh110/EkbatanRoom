@@ -29,6 +29,9 @@ type MediaStreamPort interface {
 	CloseResource(ctx context.Context, routerID string, resourceType domain.ResourceType, resourceID string) error
 }
 
+// SFUMediaPort is an alias for MediaStreamPort for backward and cross-service architectural consistency.
+type SFUMediaPort = MediaStreamPort
+
 // NodeLifecyclePort defines the outbound operations for media node monitoring and licensing.
 type NodeLifecyclePort interface {
 	ApplyLicense(ctx context.Context, licenseToken string) (*domain.ApplyLicenseResult, error)

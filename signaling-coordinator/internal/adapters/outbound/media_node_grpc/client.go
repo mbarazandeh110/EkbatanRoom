@@ -19,6 +19,7 @@ var (
 	_ ports.RouterEnginePort    = (*MediaNodeClient)(nil)
 	_ ports.TransportEnginePort = (*MediaNodeClient)(nil)
 	_ ports.MediaStreamPort     = (*MediaNodeClient)(nil)
+	_ ports.SFUMediaPort        = (*MediaNodeClient)(nil)
 	_ ports.NodeLifecyclePort   = (*MediaNodeClient)(nil)
 	_ ports.PipeTransportPort   = (*MediaNodeClient)(nil)
 )

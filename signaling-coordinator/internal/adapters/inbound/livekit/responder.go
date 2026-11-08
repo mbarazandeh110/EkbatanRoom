@@ -406,6 +406,17 @@ func (r *LiveKitResponder) SendSubscribedQualityUpdate(trackSID string, codec st
 	return r.send(msg)
 }
 
+func (r *LiveKitResponder) SendTrackSubscribed(trackSID string) error {
+	msg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_TrackSubscribed{
+			TrackSubscribed: &livekitproto.TrackSubscribed{
+				TrackSid: trackSID,
+			},
+		},
+	}
+	return r.send(msg)
+}
+
 func (r *LiveKitResponder) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

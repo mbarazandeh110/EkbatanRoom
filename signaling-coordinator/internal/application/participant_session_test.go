@@ -21,18 +21,20 @@ type mockResponder struct {
 	offers         []string
 	trickles       []string
 	partsUpdate    [][]*domain.Participant
-	mutedTracks    map[string]bool
-	qualityUpdates []qualityUpdateRecord
-	closed         bool
+	mutedTracks      map[string]bool
+	qualityUpdates   []qualityUpdateRecord
+	subscribedTracks []string
+	closed           bool
 }
 
 func newMockResponder() *mockResponder {
 	return &mockResponder{
-		offers:         make([]string, 0),
-		trickles:       make([]string, 0),
-		partsUpdate:    make([][]*domain.Participant, 0),
-		mutedTracks:    make(map[string]bool),
-		qualityUpdates: make([]qualityUpdateRecord, 0),
+		offers:           make([]string, 0),
+		trickles:         make([]string, 0),
+		partsUpdate:      make([][]*domain.Participant, 0),
+		mutedTracks:      make(map[string]bool),
+		qualityUpdates:   make([]qualityUpdateRecord, 0),
+		subscribedTracks: make([]string, 0),
 	}
 }
 
@@ -67,6 +69,11 @@ func (m *mockResponder) SendSubscribedQualityUpdate(trackSID string, codec strin
 		Codec:     codec,
 		Qualities: qualities,
 	})
+	return nil
+}
+
+func (m *mockResponder) SendTrackSubscribed(trackSID string) error {
+	m.subscribedTracks = append(m.subscribedTracks, trackSID)
 	return nil
 }
 

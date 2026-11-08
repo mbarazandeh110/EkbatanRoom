@@ -1047,6 +1047,129 @@ func TestRoomActor_SubscribedQualityUpdate_REQ002(t *testing.T) {
 	}
 }
 
+func TestRoomActor_SetConsumerPreferredLayers_OnSubscriberAnswer_REQ004(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	iceServers := []domain.IceServer{{URLs: []string{"stun:stun.example.com"}}}
+	actor := application.NewRoomActor("room-layers-req004", engine, engine, engine, iceServers)
+
+	respAlice := newMockResponder()
+	_, err := actor.Join(ctx, "alice", "Alice", respAlice)
+	if err != nil {
+		t.Fatalf("Alice join failed: %v", err)
+	}
+
+	// 1. Alice publishes a simulcast video track with 3 encodings (q, h, f)
+	simulcastSID := "TR_alice_simulcast"
+	fingerprints := []domain.DtlsFingerprintInfo{{Algorithm: "sha-256", Value: "AA:BB:CC"}}
+	_, err = actor.PublishTracks(ctx, "alice", "client", fingerprints, []domain.TrackPublishCommand{
+		{
+			Kind:              domain.TrackKindVideo,
+			TrackSID:          simulcastSID,
+			Codec:             "video/VP8",
+			ClockRate:         90000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"video/VP8"}]}`,
+			SimulcastRIDs:     []string{"q", "h", "f"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Alice PublishTracks failed: %v", err)
+	}
+
+	// 2. Bob joins the room (subscribing to Alice's track)
+	respBob := newMockResponder()
+	_, err = actor.Join(ctx, "bob", "Bob", respBob)
+	if err != nil {
+		t.Fatalf("Bob join failed: %v", err)
+	}
+
+	// Verify Alice received TrackSubscribed when Bob joined
+	if len(respAlice.subscribedTracks) < 1 || respAlice.subscribedTracks[len(respAlice.subscribedTracks)-1] != simulcastSID {
+		t.Fatalf("expected Alice to receive TrackSubscribed on Bob join, got %v", respAlice.subscribedTracks)
+	}
+
+	bobSession, _ := actor.GetSession("bob")
+	slots := bobSession.SlotTable().ListSlots()
+	if len(slots) != 1 {
+		t.Fatalf("expected 1 slot on Bob, got %d", len(slots))
+	}
+	bobConsumerID := slots[0].ConsumerID
+	if bobConsumerID == "" {
+		t.Fatalf("expected non-empty consumer ID")
+	}
+
+	engine.mu.Lock()
+	initialLayerCalls := len(engine.preferredLayers)
+	engine.mu.Unlock()
+
+	// 3. Bob sends Subscriber Answer
+	err = actor.HandleSubscriberAnswer(ctx, "bob", "client", fingerprints)
+	if err != nil {
+		t.Fatalf("Bob HandleSubscriberAnswer failed: %v", err)
+	}
+
+	// 4. Verify SetConsumerPreferredLayers was called for Bob's video consumer with Spatial 2 and Temporal 2
+	engine.mu.Lock()
+	if len(engine.preferredLayers) <= initialLayerCalls {
+		t.Fatalf("expected SetConsumerPreferredLayers to be called on HandleSubscriberAnswer, got %d calls", len(engine.preferredLayers))
+	}
+	lastCall := engine.preferredLayers[len(engine.preferredLayers)-1]
+	engine.mu.Unlock()
+
+	if lastCall.ConsumerID != bobConsumerID {
+		t.Fatalf("expected consumer ID %s, got %s", bobConsumerID, lastCall.ConsumerID)
+	}
+	if lastCall.SpatialLayer != 2 {
+		t.Fatalf("expected SpatialLayer 2 for 3-layer simulcast, got %d", lastCall.SpatialLayer)
+	}
+	if lastCall.TemporalLayer != 2 {
+		t.Fatalf("expected TemporalLayer 2 (highest framerate), got %d", lastCall.TemporalLayer)
+	}
+
+	// 5. Test Negative Temporal Layer Normalization in SetConsumerLayers
+	err = actor.SetConsumerLayers(ctx, "bob", simulcastSID, 1, -1)
+	if err != nil {
+		t.Fatalf("SetConsumerLayers failed: %v", err)
+	}
+	engine.mu.Lock()
+	normCall := engine.preferredLayers[len(engine.preferredLayers)-1]
+	engine.mu.Unlock()
+
+	if normCall.SpatialLayer != 1 {
+		t.Fatalf("expected SpatialLayer 1, got %d", normCall.SpatialLayer)
+	}
+	if normCall.TemporalLayer != 2 {
+		t.Fatalf("expected negative temporal layer (-1) to normalize to 2, got %d", normCall.TemporalLayer)
+	}
+
+	// 6. Test Single-Layer Video (spatial layer 0)
+	singleLayerSID := "TR_alice_single"
+	_, err = actor.PublishTracks(ctx, "alice", "client", nil, []domain.TrackPublishCommand{
+		{
+			Kind:              domain.TrackKindVideo,
+			TrackSID:          singleLayerSID,
+			Codec:             "video/VP8",
+			ClockRate:         90000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"video/VP8"}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Publish single track failed: %v", err)
+	}
+
+	// Bob's transport was connected, so PublishTracks immediately sets preferred layers for Bob's new consumer
+	engine.mu.Lock()
+	singleLayerCall := engine.preferredLayers[len(engine.preferredLayers)-1]
+	engine.mu.Unlock()
+
+	if singleLayerCall.SpatialLayer != 0 {
+		t.Fatalf("expected SpatialLayer 0 for single-layer video, got %d", singleLayerCall.SpatialLayer)
+	}
+	if singleLayerCall.TemporalLayer != 2 {
+		t.Fatalf("expected TemporalLayer 2 for single-layer video, got %d", singleLayerCall.TemporalLayer)
+	}
+}
+
 
 
 

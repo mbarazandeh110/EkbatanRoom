@@ -48,5 +48,6 @@ type PeerResponderPort interface {
 	SendParticipantUpdate(participants []*domain.Participant) error
 	SendTrackMuted(trackSID string, muted bool) error
 	SendSubscribedQualityUpdate(trackSID string, codec string, qualities []domain.SubscribedQuality) error
+	SendTrackSubscribed(trackSID string) error
 	Close() error
 }
