@@ -114,6 +114,86 @@ func mapDomainTracksToProto(tracks []*domain.Track) []*livekitproto.TrackInfo {
 			name = t.SID
 		}
 
+		mime := t.MimeType
+		if mime == "" {
+			if trackType == livekitproto.TrackType_VIDEO {
+				mime = "video/vp8"
+			} else {
+				mime = "audio/opus"
+			}
+		} else if !strings.Contains(mime, "/") {
+			if trackType == livekitproto.TrackType_VIDEO {
+				mime = "video/" + strings.ToLower(mime)
+			} else {
+				mime = "audio/" + strings.ToLower(mime)
+			}
+		} else {
+			mime = strings.ToLower(mime)
+		}
+
+		var layers []*livekitproto.VideoLayer
+		if trackType == livekitproto.TrackType_VIDEO {
+			if len(t.SimulcastEncodings) > 0 {
+				layers = make([]*livekitproto.VideoLayer, 0, len(t.SimulcastEncodings))
+				for _, enc := range t.SimulcastEncodings {
+					var q livekitproto.VideoQuality
+					var w uint32 = t.Width
+					var h uint32 = t.Height
+					switch strings.ToLower(enc.RID) {
+					case "q", "0", "low":
+						q = livekitproto.VideoQuality_LOW
+						if t.Width > 0 && t.Height > 0 {
+							w = t.Width / 4
+							h = t.Height / 4
+							if w == 0 {
+								w = t.Width
+							}
+							if h == 0 {
+								h = t.Height
+							}
+						}
+					case "h", "1", "medium", "med":
+						q = livekitproto.VideoQuality_MEDIUM
+						if t.Width > 0 && t.Height > 0 {
+							w = t.Width / 2
+							h = t.Height / 2
+							if w == 0 {
+								w = t.Width
+							}
+							if h == 0 {
+								h = t.Height
+							}
+						}
+					case "f", "2", "high":
+						q = livekitproto.VideoQuality_HIGH
+					default:
+						q = livekitproto.VideoQuality_HIGH
+					}
+					layers = append(layers, &livekitproto.VideoLayer{
+						Quality: q,
+						Width:   w,
+						Height:  h,
+						Bitrate: enc.MaxBitrate,
+					})
+				}
+			} else if t.Width > 0 || t.Height > 0 {
+				layers = []*livekitproto.VideoLayer{
+					{
+						Quality: livekitproto.VideoQuality_HIGH,
+						Width:   t.Width,
+						Height:  t.Height,
+					},
+				}
+			}
+		}
+
+		codecs := []*livekitproto.SimulcastCodecInfo{
+			{
+				MimeType: mime,
+				Layers:   layers,
+			},
+		}
+
 		protoTracks = append(protoTracks, &livekitproto.TrackInfo{
 			Sid:       t.SID,
 			Type:      trackType,
@@ -123,6 +203,9 @@ func mapDomainTracksToProto(tracks []*domain.Track) []*livekitproto.TrackInfo {
 			Height:    t.Height,
 			Source:    src,
 			Simulcast: len(t.SimulcastEncodings) > 0,
+			MimeType:  mime,
+			Layers:    layers,
+			Codecs:    codecs,
 		})
 	}
 	return protoTracks
@@ -297,6 +380,9 @@ func (r *LiveKitResponder) SendSubscribedQualityUpdate(trackSID string, codec st
 	if idx := strings.Index(codecName, "/"); idx != -1 {
 		codecName = codecName[idx+1:]
 	}
+	if codecName == "" {
+		codecName = "vp8"
+	}
 
 	var subscribedCodecs []*livekitproto.SubscribedCodec
 	if codecName != "" {
@@ -319,7 +405,6 @@ func (r *LiveKitResponder) SendSubscribedQualityUpdate(trackSID string, codec st
 	}
 	return r.send(msg)
 }
-
 
 func (r *LiveKitResponder) Close() error {
 	r.mu.Lock()

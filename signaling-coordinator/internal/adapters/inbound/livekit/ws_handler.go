@@ -122,13 +122,14 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	type pendingAddTrackInfo struct {
-		sid    string
-		cid    string
-		kind   domain.TrackKind
-		name   string
-		source string
-		width  uint32
-		height uint32
+		sid      string
+		cid      string
+		kind     domain.TrackKind
+		name     string
+		source   string
+		width    uint32
+		height   uint32
+		mimeType string
 	}
 	var pendingAddTracks []pendingAddTrackInfo
 	publishedMIDs := make(map[string]string)
@@ -249,6 +250,9 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					Width:             patInfo.width,
 					Height:            patInfo.height,
 				}
+				if trackCmd.Codec == "" && patInfo.mimeType != "" {
+					trackCmd.Codec = patInfo.mimeType
+				}
 
 				if assignedSID != "" {
 					trackCmd.TrackSID = assignedSID
@@ -332,14 +336,77 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case livekitproto.TrackSource_SCREEN_SHARE_AUDIO:
 				sourceStr = "SCREEN_SHARE_AUDIO"
 			}
+			var mimeType string
+			var codecs []*livekitproto.SimulcastCodecInfo
+
+			if kind == domain.TrackKindVideo {
+				if len(addTrack.GetSimulcastCodecs()) > 0 {
+					for _, sc := range addTrack.GetSimulcastCodecs() {
+						cMime := strings.TrimSpace(sc.GetCodec())
+						if cMime != "" {
+							if !strings.Contains(cMime, "/") {
+								cMime = "video/" + strings.ToLower(cMime)
+							} else {
+								cMime = strings.ToLower(cMime)
+							}
+						} else {
+							cMime = "video/vp8"
+						}
+						if mimeType == "" {
+							mimeType = cMime
+						}
+						layers := sc.GetLayers()
+						if len(layers) == 0 {
+							layers = addTrack.GetLayers()
+						}
+						cid := sc.GetCid()
+						if cid == "" {
+							cid = addTrack.GetCid()
+						}
+						codecs = append(codecs, &livekitproto.SimulcastCodecInfo{
+							MimeType:       cMime,
+							Cid:            cid,
+							Layers:         layers,
+							VideoLayerMode: sc.GetVideoLayerMode(),
+						})
+					}
+				}
+				if mimeType == "" {
+					mimeType = "video/vp8"
+				}
+				if len(codecs) == 0 {
+					codecs = []*livekitproto.SimulcastCodecInfo{
+						{
+							MimeType: mimeType,
+							Cid:      addTrack.GetCid(),
+							Layers:   addTrack.GetLayers(),
+						},
+					}
+				}
+			} else {
+				mimeType = "audio/opus"
+				codecs = []*livekitproto.SimulcastCodecInfo{
+					{
+						MimeType: mimeType,
+						Cid:      addTrack.GetCid(),
+					},
+				}
+			}
+
+			finalLayers := addTrack.GetLayers()
+			if len(finalLayers) == 0 && len(codecs) > 0 && len(codecs[0].Layers) > 0 {
+				finalLayers = codecs[0].Layers
+			}
+
 			pendingAddTracks = append(pendingAddTracks, pendingAddTrackInfo{
-				sid:    trackSID,
-				cid:    addTrack.GetCid(),
-				kind:   kind,
-				name:   addTrack.GetName(),
-				source: sourceStr,
-				width:  addTrack.GetWidth(),
-				height: addTrack.GetHeight(),
+				sid:      trackSID,
+				cid:      addTrack.GetCid(),
+				kind:     kind,
+				name:     addTrack.GetName(),
+				source:   sourceStr,
+				width:    addTrack.GetWidth(),
+				height:   addTrack.GetHeight(),
+				mimeType: mimeType,
 			})
 
 			slog.InfoContext(ctx, "received add track request",
@@ -349,6 +416,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"cid", addTrack.GetCid(),
 				"track_sid", trackSID,
 				"type", addTrack.GetType().String(),
+				"mime_type", mimeType,
 			)
 
 			trackInfo := &livekitproto.TrackInfo{
@@ -358,10 +426,12 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Muted:      addTrack.GetMuted(),
 				Width:      addTrack.GetWidth(),
 				Height:     addTrack.GetHeight(),
-				Simulcast:  len(addTrack.GetLayers()) > 0 || len(addTrack.GetSimulcastCodecs()) > 0,
+				Simulcast:  len(finalLayers) > 1 || len(addTrack.GetSimulcastCodecs()) > 0,
 				DisableDtx: addTrack.GetDisableDtx(),
 				Source:     addTrack.GetSource(),
-				Layers:     addTrack.GetLayers(),
+				Layers:     finalLayers,
+				MimeType:   mimeType,
+				Codecs:     codecs,
 			}
 
 			trackPubMsg := &livekitproto.SignalResponse{

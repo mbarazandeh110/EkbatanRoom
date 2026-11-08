@@ -702,6 +702,15 @@ func (a *RoomActor) PublishTracks(
 			trackName = prodRes.ProducerID
 		}
 
+		trackMime := tc.Codec
+		if trackMime == "" {
+			if tc.Kind == domain.TrackKindVideo {
+				trackMime = "video/vp8"
+			} else {
+				trackMime = "audio/opus"
+			}
+		}
+
 		domainTrack := &domain.Track{
 			ID:                 prodRes.ProducerID,
 			SID:                trackSID,
@@ -716,7 +725,7 @@ func (a *RoomActor) PublishTracks(
 			RTXSSRC:            tc.RTXSSRC,
 			PayloadType:        tc.PayloadType,
 			RTXPayloadType:     tc.RTXPayloadType,
-			MimeType:           tc.Codec,
+			MimeType:           trackMime,
 			ClockRate:          tc.ClockRate,
 			CName:              tc.CName,
 			SimulcastEncodings: prodRes.Encodings,

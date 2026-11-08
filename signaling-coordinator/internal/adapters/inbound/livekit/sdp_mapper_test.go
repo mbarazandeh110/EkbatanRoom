@@ -249,24 +249,24 @@ func TestSDPMapper_GenerateSubscriberOffer_ActiveAndInactiveSlots(t *testing.T) 
 
 	slots := []*domain.SDPSlot{
 		{
-			Index:          0,
-			MID:            "0",
-			Kind:           domain.TrackKindAudio,
-			Active:         true,
-			TrackSID:       "TR_audio_1",
-			ProducerID:     "prod_audio",
-			ConsumerID:     "cons_audio",
-			SSRC:           50001,
-			PayloadType:    111,
-			ClockRate:      48000,
-			MimeType:       "opus",
+			Index:       0,
+			MID:         "0",
+			Kind:        domain.TrackKindAudio,
+			Active:      true,
+			TrackSID:    "TR_audio_1",
+			ProducerID:  "prod_audio",
+			ConsumerID:  "cons_audio",
+			SSRC:        50001,
+			PayloadType: 111,
+			ClockRate:   48000,
+			MimeType:    "opus",
 		},
 		{
-			Index:          1,
-			MID:            "1",
-			Kind:           domain.TrackKindVideo,
-			Active:         false, // Inactivated slot for recycling
-			PayloadType:    96,
+			Index:       1,
+			MID:         "1",
+			Kind:        domain.TrackKindVideo,
+			Active:      false, // Inactivated slot for recycling
+			PayloadType: 96,
 		},
 	}
 
@@ -1406,5 +1406,115 @@ a=rtpmap:96 VP8/90000
 	}
 }
 
+func TestSDPMapper_ParsePublisherOffer_PrioritizeVP8OverH264_REQ003(t *testing.T) {
+	// Offer lists H264 (39) before VP8 (96) in Formats and rtpmap
+	offerH264First := `v=0
+o=- 123456789 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE video
+m=video 9 UDP/TLS/RTP/SAVPF 39 40 96 97
+c=IN IP4 0.0.0.0
+a=mid:video
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:39 H264/90000
+a=fmtp:39 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f
+a=rtpmap:40 rtx/90000
+a=fmtp:40 apt=39
+a=rtpmap:96 VP8/90000
+a=rtpmap:97 rtx/90000
+a=fmtp:97 apt=96
+a=ssrc:555666 cname:test-user
+`
 
+	parsed, err := livekit.ParsePublisherOffer(offerH264First)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+	if len(parsed.Tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(parsed.Tracks))
+	}
 
+	track := parsed.Tracks[0]
+	// VP8 must be prioritized over H264 per REQ-003 to prevent router "Unsupported codec" errors
+	if track.PayloadType != 96 {
+		t.Fatalf("expected prioritized PayloadType 96 (VP8), got %d", track.PayloadType)
+	}
+	if !strings.EqualFold(track.Codec, "VP8") {
+		t.Fatalf("expected prioritized Codec VP8, got %s", track.Codec)
+	}
+	if track.RTXPayloadType != 97 {
+		t.Fatalf("expected RTXPayloadType 97 for VP8, got %d", track.RTXPayloadType)
+	}
+
+	// Offer with only H264: H264 must still be selected
+	offerOnlyH264 := `v=0
+o=- 123456789 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE video
+m=video 9 UDP/TLS/RTP/SAVPF 39 40
+c=IN IP4 0.0.0.0
+a=mid:video
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:39 H264/90000
+a=fmtp:39 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f
+a=rtpmap:40 rtx/90000
+a=fmtp:40 apt=39
+a=ssrc:555666 cname:test-user
+`
+
+	parsedH264Only, err := livekit.ParsePublisherOffer(offerOnlyH264)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+	if len(parsedH264Only.Tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(parsedH264Only.Tracks))
+	}
+	trackH264 := parsedH264Only.Tracks[0]
+	if trackH264.PayloadType != 39 {
+		t.Fatalf("expected PayloadType 39 (H264), got %d", trackH264.PayloadType)
+	}
+	if !strings.EqualFold(trackH264.Codec, "H264") {
+		t.Fatalf("expected Codec H264, got %s", trackH264.Codec)
+	}
+	if trackH264.RTXPayloadType != 40 {
+		t.Fatalf("expected RTXPayloadType 40 for H264, got %d", trackH264.RTXPayloadType)
+	}
+
+	// Offer with H264 (39) + H264 RTX (40) and VP8 (96) with NO RTX
+	// VP8 must be chosen, and RTXPayloadType must be 0 (must NOT be set to 40)
+	offerVP8WithoutRTX := `v=0
+o=- 123456789 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE video
+m=video 9 UDP/TLS/RTP/SAVPF 39 40 96
+c=IN IP4 0.0.0.0
+a=mid:video
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:39 H264/90000
+a=fmtp:39 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f
+a=rtpmap:40 rtx/90000
+a=fmtp:40 apt=39
+a=rtpmap:96 VP8/90000
+a=ssrc:555666 cname:test-user
+`
+	parsedVP8NoRTX, err := livekit.ParsePublisherOffer(offerVP8WithoutRTX)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+	trackVP8NoRTX := parsedVP8NoRTX.Tracks[0]
+	if trackVP8NoRTX.PayloadType != 96 {
+		t.Fatalf("expected PayloadType 96 (VP8), got %d", trackVP8NoRTX.PayloadType)
+	}
+	if trackVP8NoRTX.RTXPayloadType != 0 {
+		t.Fatalf("expected RTXPayloadType 0 for VP8 when no apt matched, got %d (disparate H264 RTX was incorrectly assigned)", trackVP8NoRTX.RTXPayloadType)
+	}
+}

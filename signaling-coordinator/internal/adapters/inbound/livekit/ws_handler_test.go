@@ -315,6 +315,12 @@ func TestLiveKitWSHandler_AddTrackRequest(t *testing.T) {
 	if tp.Track.Type != livekitproto.TrackType_AUDIO || tp.Track.Name != "microphone" {
 		t.Fatalf("unexpected track info: %+v", tp.Track)
 	}
+	if tp.Track.MimeType != "audio/opus" {
+		t.Fatalf("expected Track.MimeType == audio/opus, got %s", tp.Track.MimeType)
+	}
+	if len(tp.Track.Codecs) == 0 || tp.Track.Codecs[0].MimeType != "audio/opus" {
+		t.Fatalf("expected Track.Codecs[0].MimeType == audio/opus, got %+v", tp.Track.Codecs)
+	}
 }
 
 func TestLiveKitResponder_SubscriberOfferSequenceAndMid(t *testing.T) {
@@ -864,5 +870,182 @@ func TestLiveKitWSHandler_TrackSetting_DecoupleTemporalAndSupportDisabled_REQ002
 	coord.mu.Unlock()
 }
 
+func TestLiveKitWSHandler_AddTrackRequest_VideoMimeTypeAndCodecs_REQ003(t *testing.T) {
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord)
 
+	server := httptest.NewServer(handler)
+	defer server.Close()
 
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc?room=conference-102&identity=bob&name=Bob"
+
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// Drain Join message
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read join: %v", err)
+	}
+
+	// 1. Send AddTrack request for video with explicit SimulcastCodecs
+	addTrackReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_AddTrack{
+			AddTrack: &livekitproto.AddTrackRequest{
+				Cid:    "video-cid-101",
+				Name:   "camera",
+				Type:   livekitproto.TrackType_VIDEO,
+				Source: livekitproto.TrackSource_CAMERA,
+				Width:  1280,
+				Height: 720,
+				SimulcastCodecs: []*livekitproto.SimulcastCodec{
+					{
+						Codec: "vp8",
+						Cid:   "video-cid-101",
+						Layers: []*livekitproto.VideoLayer{
+							{Quality: livekitproto.VideoQuality_LOW, Width: 320, Height: 180, Bitrate: 100000},
+							{Quality: livekitproto.VideoQuality_MEDIUM, Width: 640, Height: 360, Bitrate: 300000},
+							{Quality: livekitproto.VideoQuality_HIGH, Width: 1280, Height: 720, Bitrate: 800000},
+						},
+					},
+				},
+			},
+		},
+	}
+	reqData, _ := proto.Marshal(addTrackReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, reqData); err != nil {
+		t.Fatalf("failed to send add track request: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, respData, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read track published message: %v", err)
+	}
+
+	var signalResp livekitproto.SignalResponse
+	if err := proto.Unmarshal(respData, &signalResp); err != nil {
+		t.Fatalf("failed to unmarshal track published response: %v", err)
+	}
+
+	tp := signalResp.GetTrackPublished()
+	if tp == nil || tp.Track == nil {
+		t.Fatalf("expected TrackPublished with Track, got %+v", signalResp.Message)
+	}
+	if tp.Track.MimeType != "video/vp8" {
+		t.Fatalf("expected Track.MimeType == video/vp8, got %s", tp.Track.MimeType)
+	}
+	if len(tp.Track.Codecs) != 1 {
+		t.Fatalf("expected 1 SimulcastCodecInfo, got %d", len(tp.Track.Codecs))
+	}
+	if tp.Track.Codecs[0].MimeType != "video/vp8" {
+		t.Fatalf("expected Codecs[0].MimeType == video/vp8, got %s", tp.Track.Codecs[0].MimeType)
+	}
+	if len(tp.Track.Codecs[0].Layers) != 3 {
+		t.Fatalf("expected 3 layers in Codecs[0], got %d", len(tp.Track.Codecs[0].Layers))
+	}
+
+	// 2. Send AddTrack request for video without SimulcastCodecs (default to video/vp8)
+	addTrackDefaultReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_AddTrack{
+			AddTrack: &livekitproto.AddTrackRequest{
+				Cid:    "video-cid-default",
+				Name:   "screen",
+				Type:   livekitproto.TrackType_VIDEO,
+				Source: livekitproto.TrackSource_SCREEN_SHARE,
+				Width:  1920,
+				Height: 1080,
+			},
+		},
+	}
+	reqDefaultData, _ := proto.Marshal(addTrackDefaultReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, reqDefaultData); err != nil {
+		t.Fatalf("failed to send add track request: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, respDefaultData, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read track published message: %v", err)
+	}
+
+	var signalDefaultResp livekitproto.SignalResponse
+	if err := proto.Unmarshal(respDefaultData, &signalDefaultResp); err != nil {
+		t.Fatalf("failed to unmarshal track published response: %v", err)
+	}
+
+	tpDef := signalDefaultResp.GetTrackPublished()
+	if tpDef == nil || tpDef.Track == nil {
+		t.Fatalf("expected TrackPublished with Track, got %+v", signalDefaultResp.Message)
+	}
+	if tpDef.Track.MimeType != "video/vp8" {
+		t.Fatalf("expected Track.MimeType == video/vp8, got %s", tpDef.Track.MimeType)
+	}
+	if len(tpDef.Track.Codecs) == 0 || tpDef.Track.Codecs[0].MimeType != "video/vp8" {
+		t.Fatalf("expected Codecs[0].MimeType == video/vp8, got %+v", tpDef.Track.Codecs)
+	}
+
+	// 3. Send AddTrack request with SimulcastCodecs having empty Codec, empty Cid, and layers only in SimulcastCodecs
+	addTrackEmptyCodecReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_AddTrack{
+			AddTrack: &livekitproto.AddTrackRequest{
+				Cid:    "video-cid-fallback",
+				Name:   "webcam",
+				Type:   livekitproto.TrackType_VIDEO,
+				Source: livekitproto.TrackSource_CAMERA,
+				Width:  1280,
+				Height: 720,
+				SimulcastCodecs: []*livekitproto.SimulcastCodec{
+					{
+						Codec: "", // empty codec should default to video/vp8
+						Cid:   "", // empty cid should fall back to addTrack.Cid
+						Layers: []*livekitproto.VideoLayer{
+							{Quality: livekitproto.VideoQuality_LOW, Width: 320, Height: 180},
+							{Quality: livekitproto.VideoQuality_HIGH, Width: 1280, Height: 720},
+						},
+					},
+				},
+			},
+		},
+	}
+	reqEmptyCodecData, _ := proto.Marshal(addTrackEmptyCodecReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, reqEmptyCodecData); err != nil {
+		t.Fatalf("failed to send add track request: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, respEmptyCodecData, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read track published message: %v", err)
+	}
+
+	var signalEmptyCodecResp livekitproto.SignalResponse
+	if err := proto.Unmarshal(respEmptyCodecData, &signalEmptyCodecResp); err != nil {
+		t.Fatalf("failed to unmarshal track published response: %v", err)
+	}
+
+	tpEmpty := signalEmptyCodecResp.GetTrackPublished()
+	if tpEmpty == nil || tpEmpty.Track == nil {
+		t.Fatalf("expected TrackPublished with Track, got %+v", signalEmptyCodecResp.Message)
+	}
+	if tpEmpty.Track.MimeType != "video/vp8" {
+		t.Fatalf("expected Track.MimeType == video/vp8, got %s", tpEmpty.Track.MimeType)
+	}
+	if len(tpEmpty.Track.Codecs) != 1 || tpEmpty.Track.Codecs[0].MimeType != "video/vp8" {
+		t.Fatalf("expected Codecs[0].MimeType == video/vp8, got %+v", tpEmpty.Track.Codecs)
+	}
+	if tpEmpty.Track.Codecs[0].Cid != "video-cid-fallback" {
+		t.Fatalf("expected Codecs[0].Cid fallback to video-cid-fallback, got %s", tpEmpty.Track.Codecs[0].Cid)
+	}
+	if len(tpEmpty.Track.Layers) != 2 {
+		t.Fatalf("expected Track.Layers to be populated from SimulcastCodecs layers (len 2), got %d", len(tpEmpty.Track.Layers))
+	}
+	if !tpEmpty.Track.Simulcast {
+		t.Fatalf("expected Track.Simulcast to be true with multiple layers")
+	}
+}

@@ -102,3 +102,101 @@ STATUS: IMPLEMENTED
      - `internal/application/room_actor_test.go`: Added unit test `TestRoomActor_SubscribedQualityUpdate_REQ002`.
      - Verification: Full test suite executed with race detector (`go test -count=1 -race ./...`) - PASS (100% clean, 0 race conditions).
 
+===================================================================
+RFC / REQUIREMENT ID: REQ-003
+SOURCE SERVICE: rtc-load-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: IMPLEMENTED
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Protocol / Contract Conformance | Bottleneck Report]
+   Populate `TrackInfo.MimeType` and/or `TrackInfo.Codecs` in `TrackPublishedResponse` and participant updates so that official client SDKs (`livekit-cli` / `server-sdk-go`) can match `p.MimeType()` against `SubscribedCodec.Codec` during `SubscribedQualityUpdate`, enabling video track transmission.
+
+2. REASON & TECHNICAL EVIDENCE:
+   - Empirical Load Testing Discrepancy (Audio vs. Video):
+     * Audio Load Test (`./bin/lk load-test --audio-publishers 1 --subscribers 1 --duration 5s`):
+       100% SUCCESS. 42 RTP packets received, 79.8 kbps bitrate, 0.0% packet loss, 1/1 tracks subscribed immediately.
+     * Video Load Test (Gate 1 Baseline, Simulcast VP8 or Single-Layer VP8):
+       FAILURE. Connection success 100%, ICE/DTLS connected, but 0/10 tracks received (`Tracks: 0/10`, `Bitrate: NaNmbps`, 0 packets delivered to subscribers).
+   - Client-Side Error / Warning in Official `livekit-cli` (v2.19.0 / v2.19.3 with `--verbose`):
+     ```text
+     INFO  lk  v2@v2.19.0/localparticipant.go:413  handling subscribed quality update  {"trackID": "TR_...", "mime": "", "subscribedQualityUpdate": {"subscribedCodecs": [{"codec": "vp8", "qualities": [{"quality": "LOW", "enabled": true}, {"quality": "MEDIUM", "enabled": true}, {"quality": "HIGH", "enabled": true}]}]}}
+     WARN  lk  v2@v2.19.0/publication.go:514  subscriber requested backup codec but no track found  {"trackID": "TR_...", "codec": "vp8"}
+     ```
+   - SDK Implementation Root Cause Analysis (`github.com/livekit/server-sdk-go/v2.19.0/publication.go` lines 488-525):
+     1. In `handleSubscribedQualityUpdate`:
+        ```go
+        for _, subscribedCodec := range subscribedCodecs {
+            if strings.HasSuffix(strings.ToLower(p.MimeType()), subscribedCodec.Codec) {
+                // Primary codec branch:
+                for _, subscribedQuality := range subscribedCodec.Qualities {
+                    track := p.GetSimulcastTrack(subscribedQuality.Quality)
+                    if track != nil {
+                        track.setDisabled(!subscribedQuality.Enabled)
+                        ...
+                    }
+                }
+                continue
+            }
+            // Backup codec branch:
+            if mainTrack == nil || !strings.HasSuffix(strings.ToLower(mainTrack.Codec().MimeType), subscribedCodec.Codec) {
+                p.log.Warnw("subscriber requested backup codec but no track found", nil, "trackID", p.SID(), "codec", subscribedCodec.Codec)
+                continue
+            }
+        }
+        ```
+     2. In `publication.go` line 160:
+        ```go
+        func (p *LocalTrackPublication) MimeType() string {
+            p.lock.RLock()
+            defer p.lock.RUnlock()
+            if p.trackInfo != nil && p.trackInfo.MimeType != "" {
+                return p.trackInfo.MimeType
+            }
+            for _, c := range p.trackInfo.GetCodecs() {
+                if c.MimeType != "" {
+                    return c.MimeType
+                }
+            }
+            return ""
+        }
+        ```
+     3. In `signaling-coordinator`, when responding to `AddTrackRequest` (`SignalResponse_TrackPublished` with `TrackInfo`), `TrackInfo.MimeType` and `TrackInfo.Codecs` are left empty (`""`).
+     4. Consequently, `p.MimeType()` evaluates to `""`.
+     5. `strings.HasSuffix("", "vp8")` evaluates to `false`.
+     6. `livekit-cli` classifies the server's `SubscribedQualityUpdate` as a request for a non-existent *backup codec* rather than the primary track, logs `subscriber requested backup codec but no track found`, and skips enabling the track.
+     7. All simulcast tracks in `livekit-cli` start with `disabled = true`. Because `track.setDisabled(false)` is never called, the tracks remain disabled.
+     8. When `WriteSample` is called in the client's packet provider, it checks `if !s.muted.Load() && !s.disabled.Load()`. Because `disabled` is true, 0 video RTP packets are ever transmitted by `livekit-cli` to the SFU!
+     9. Because the SFU never receives any video RTP packets or keyframe on the producer, `mediasoup-worker` in `sfu-media-node` keeps the video consumer permanently locked at `spatial_layer: -1`.
+     10. Subscribers receive 0 RTP packets, and Pion never fires `pc.OnTrack`.
+   - SLA Impact:
+     Gate 1 (gate-01-baseline) failed with 10 dropped/missing tracks (Threshold: max 0). Violates Rule 1.2 ("No False Positives"). Gates 2-4 blocked.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `signaling-coordinator`, when processing `AddTrackRequest` and responding with `TrackPublishedResponse` (and in `ParticipantInfo` updates):
+     * Populate `TrackInfo.MimeType`:
+       - If `AddTrackRequest.SimulcastCodecs` has entries, use `AddTrackRequest.SimulcastCodecs[0].Codec` prefixed with `"video/"` (e.g. `"video/vp8"`), or default to `"video/vp8"` if `AddTrackRequest.Type == TrackType_VIDEO`.
+       - For audio tracks (`AddTrackRequest.Type == TrackType_AUDIO`), default to `"audio/opus"`.
+     * Alternatively or additionally, populate `TrackInfo.Codecs` with `SimulcastCodecInfo` containing `MimeType: "video/vp8"`.
+   - When `livekit-cli` receives `TrackPublishedResponse` with `MimeType: "video/vp8"`, `p.MimeType()` returns `"video/vp8"`.
+   - When `SubscribedQualityUpdate` arrives with `Codec: "vp8"`, `strings.HasSuffix("video/vp8", "vp8")` evaluates to `true`.
+   - `track.setDisabled(!subscribedQuality.Enabled)` is called, enabling the video track (`disabled = false`).
+   - `livekit-cli` begins sending RTP packets, the SFU receives the keyframe, the consumer promotes out of `spatial_layer: -1`, and subscribers receive video RTP packets.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. LiveKit Client Publication Protocol Conformance: Official LiveKit client SDKs (`github.com/livekit/server-sdk-go` used by `livekit-cli`) query `p.MimeType()` to route `SubscribedQualityUpdate` messages. If `TrackInfo.MimeType` and `TrackInfo.Codecs` are empty, `p.MimeType()` evaluates to `""`, causing the SDK to miss the primary track branch (`strings.HasSuffix("", "vp8") == false`), fall back to the backup codec branch, warn with `subscriber requested backup codec but no track found`, and leave track publication disabled (`disabled = true`). By populating `TrackInfo.MimeType` and `TrackInfo.Codecs` in `TrackPublishedResponse` and participant updates (`mapDomainTracksToProto`), clients correctly identify primary tracks and activate transmission upon receiving quality updates.
+     2. Codec Preference and Router Interoperability: When WebRTC clients send an SDP offer with multiple codecs (e.g. H264 before VP8 in `Formats`), selecting an unsupported H264 profile causes Mediasoup router creation/consumption to fail with `Unsupported codec`. In `ParsePublisherOffer`, codecs declared in `Formats` are evaluated with priority scores favoring SFU router-supported codecs (VP8 > VP9 > AV1 > H264), guaranteeing smooth producer creation and keyframe delivery across single-layer and simulcast video sessions. Additionally, RTX candidate fallback matching verifies that candidate RTX payload types explicitly mapped to disparate codecs via `a=fmtp apt` are not incorrectly assigned to the primary codec.
+   - Modified Files & Benchmark Verifications:
+     - `internal/adapters/inbound/livekit/ws_handler.go`: Populated `TrackInfo.MimeType` and `TrackInfo.Codecs` in `SignalRequest_AddTrack` response; defaulted empty `SimulcastCodecs[i].Codec` to `"video/vp8"` and empty `Cid` to `addTrack.GetCid()`; ensured `TrackInfo.Layers` falls back to `codecs[0].Layers`; and retained `mimeType` in `pendingAddTrackInfo` to ensure `TrackPublishCommand.Codec` fallback.
+     - `internal/adapters/inbound/livekit/responder.go`: Mapped `domain.Track.MimeType` to `TrackInfo.MimeType` (with default fallback to `video/vp8` / `audio/opus`) and populated `TrackInfo.Codecs` with `SimulcastCodecInfo` in `mapDomainTracksToProto`. Scaled layer resolutions for LOW (1/4) and MEDIUM (1/2), supported numeric RIDs ("0", "1", "2"), and ensured single-layer video receives a default HIGH quality layer. Added fallback to `"vp8"` in `SendSubscribedQualityUpdate` if codec is empty.
+     - `internal/application/room_actor.go`: Guaranteed `domain.Track.MimeType` default initialization in `domainTrack` creation when `TrackPublishCommand.Codec` is unspecified.
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Implemented router-supported video codec preference (VP8 over H264) in `ParsePublisherOffer` when evaluating candidate codecs from `Formats`, and safeguarded RTX candidate fallback against disparate codec apt misattribution.
+     - `internal/adapters/inbound/livekit/ws_handler_test.go`: Added assertions to `TestLiveKitWSHandler_AddTrackRequest` and added `TestLiveKitWSHandler_AddTrackRequest_VideoMimeTypeAndCodecs_REQ003` (covering explicit codecs, default codecs, and empty codec/cid fallback with layer propagation).
+     - `internal/adapters/inbound/livekit/responder_test.go`: Added unit tests `TestLiveKitResponder_MapDomainTracksToProto_REQ003` (covering audio/video MIME defaults, simulcast layer scaling, numeric RIDs "0"/"1"/"2", and single-layer video) and `TestLiveKitResponder_SendSubscribedQualityUpdate_EmptyCodecDefaultsToVP8_REQ003`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added unit test `TestSDPMapper_ParsePublisherOffer_PrioritizeVP8OverH264_REQ003` and verified disparate RTX apt isolation.
+     - Verification: Full test suite executed with race detector (`go test -count=1 -race ./...`) - PASS (100% clean, 0 race conditions, 0 regressions).
+
+

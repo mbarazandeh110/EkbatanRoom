@@ -43,17 +43,17 @@ type ParsedSubscriberAnswer struct {
 // outside this list (e.g. toffset, video-content-type, video-timing, color-space) will
 // trigger deserialization failures in Mediasoup and must be filtered out.
 var supportedRtpHeaderExtensionURIs = map[string]bool{
-	"urn:ietf:params:rtp-hdrext:sdes:mid":                                                       true,
-	"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id":                                            true,
-	"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id":                                   true,
-	"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time":                               true,
+	"urn:ietf:params:rtp-hdrext:sdes:mid":                                                     true,
+	"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id":                                           true,
+	"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id":                                  true,
+	"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time":                              true,
 	"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01":               true,
-	"urn:ietf:params:rtp-hdrext:ssrc-audio-level":                                              true,
+	"urn:ietf:params:rtp-hdrext:ssrc-audio-level":                                             true,
 	"https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension": true,
-	"urn:3gpp:video-orientation":                                                               true,
-	"http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time":                            true,
-	"http://www.webrtc.org/experiments/rtp-hdrext/playout-delay":                               true,
-	"urn:mediasoup:params:rtp-hdrext:packet-id":                                                true,
+	"urn:3gpp:video-orientation":                                                              true,
+	"http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time":                           true,
+	"http://www.webrtc.org/experiments/rtp-hdrext/playout-delay":                              true,
+	"urn:mediasoup:params:rtp-hdrext:packet-id":                                               true,
 }
 
 // getOfferDirection extracts the transmission direction from an m-section or the session description.
@@ -269,11 +269,19 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			clockRate = 90000
 		}
 
+		type parsedCodecInfo struct {
+			pt        uint32
+			name      string
+			clockRate uint32
+			channels  uint32
+		}
+		rtpmapCodecs := make(map[uint32]parsedCodecInfo)
 		var rtxCandidates []uint32
+
 		for _, attr := range md.Attributes {
-			if attr.Key == "rtpmap" {
+			if strings.EqualFold(attr.Key, "rtpmap") {
 				// e.g. "111 opus/48000/2" or "96 VP8/90000"
-				parts := strings.SplitN(attr.Value, " ", 2)
+				parts := strings.SplitN(strings.TrimSpace(attr.Value), " ", 2)
 				if len(parts) == 2 {
 					payloadNum, err := strconv.ParseUint(parts[0], 10, 32)
 					if err == nil {
@@ -281,26 +289,70 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 						if len(subParts) >= 2 {
 							name := subParts[0]
 							rate, _ := strconv.ParseUint(subParts[1], 10, 32)
+							var ch uint32
+							if len(subParts) >= 3 {
+								if parsedChannels, err := strconv.ParseUint(subParts[2], 10, 32); err == nil && parsedChannels > 0 {
+									ch = uint32(parsedChannels)
+								}
+							}
 							if strings.EqualFold(name, "rtx") {
 								rtxCandidates = append(rtxCandidates, uint32(payloadNum))
 							} else if strings.EqualFold(name, "red") || strings.EqualFold(name, "ulpfec") || strings.HasPrefix(strings.ToLower(name), "flexfec") {
 								// REQ-025: Skip FEC/redundancy wrapper codecs when determining primary media codec
 								continue
-							} else if pt == 0 {
-								pt = uint32(payloadNum)
-								codecName = name
-								if rate > 0 {
-									clockRate = uint32(rate)
-								}
-								if len(subParts) >= 3 {
-									if parsedChannels, err := strconv.ParseUint(subParts[2], 10, 32); err == nil && parsedChannels > 0 {
-										channels = uint32(parsedChannels)
-									}
+							} else {
+								rtpmapCodecs[uint32(payloadNum)] = parsedCodecInfo{
+									pt:        uint32(payloadNum),
+									name:      name,
+									clockRate: uint32(rate),
+									channels:  ch,
 								}
 							}
 						}
 					}
 				}
+			}
+		}
+
+		// Select candidate codecs matching md.MediaName.Formats in declared preference order
+		var candidateCodecs []parsedCodecInfo
+		for _, f := range md.MediaName.Formats {
+			if payloadNum, err := strconv.ParseUint(strings.TrimSpace(f), 10, 32); err == nil {
+				if cInfo, ok := rtpmapCodecs[uint32(payloadNum)]; ok {
+					candidateCodecs = append(candidateCodecs, cInfo)
+				}
+			}
+		}
+		if len(candidateCodecs) == 0 {
+			for _, cInfo := range rtpmapCodecs {
+				candidateCodecs = append(candidateCodecs, cInfo)
+			}
+		}
+
+		// Select the codec with highest router preference (VP8 > H264 for video to avoid "Unsupported codec" per REQ-003)
+		if len(candidateCodecs) > 0 {
+			bestIdx := 0
+			bestScore := -1
+			for i, c := range candidateCodecs {
+				score := 10
+				if kind == domain.TrackKindVideo {
+					score = scoreVideoCodec(c.name)
+				} else if kind == domain.TrackKindAudio {
+					score = scoreAudioCodec(c.name)
+				}
+				if score > bestScore {
+					bestScore = score
+					bestIdx = i
+				}
+			}
+			chosen := candidateCodecs[bestIdx]
+			pt = chosen.pt
+			codecName = chosen.name
+			if chosen.clockRate > 0 {
+				clockRate = chosen.clockRate
+			}
+			if chosen.channels > 0 {
+				channels = chosen.channels
 			}
 		}
 
@@ -368,9 +420,14 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 				break
 			}
 		}
-		// Fallback: If no apt explicitly matched but RTX candidate exists (e.g. single RTX in m-line without fmtp)
+		// Fallback: If no apt was matched, select an RTX candidate only if it does not belong to another codec
 		if rtxPT == 0 && len(rtxCandidates) > 0 {
-			rtxPT = rtxCandidates[0]
+			for _, cand := range rtxCandidates {
+				if aptVal, exists := fmtpAptMap[cand]; !exists || aptVal == pt {
+					rtxPT = cand
+					break
+				}
+			}
 		}
 
 		// Build RTP parameters JSON for SFU node
@@ -564,6 +621,34 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 		RemoteFingerprints: fingerprints,
 		Tracks:             tracks,
 	}, nil
+}
+
+// scoreVideoCodec assigns a preference score to video codecs.
+// VP8 is assigned highest priority to ensure compatibility with SFU router capabilities,
+// prioritizing it over H264 to prevent "Unsupported codec" errors during single-layer / load tests (REQ-003).
+func scoreVideoCodec(name string) int {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "VP8":
+		return 100
+	case "VP9":
+		return 90
+	case "AV1":
+		return 80
+	case "H264":
+		return 50
+	default:
+		return 10
+	}
+}
+
+// scoreAudioCodec assigns a preference score to audio codecs.
+func scoreAudioCodec(name string) int {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "opus":
+		return 100
+	default:
+		return 10
+	}
 }
 
 // selectPrimaryFingerprint selects a single DTLS fingerprint from the available list per RFC 8122,
