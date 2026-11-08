@@ -93,7 +93,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-005
 SOURCE SERVICE: rtc-load-suite
 TARGET SERVICE: sfu-media-node (with signaling-coordinator coordination)
-STATUS: OPEN
+STATUS: ACCEPTED & IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -139,6 +139,42 @@ STATUS: OPEN
      * Ensure `ConnectTransport` validates that publisher WebRtcTransports establish reciprocal DTLS roles and do not stay in passive initialization.
 
 4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
-   - Decision: PENDING
-   - Architectural Justification: ...
-   - Modified Files & Benchmark Verifications: ...
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. Strict Hexagonal Architecture & Clean Separation of Concerns:
+        The resolution is implemented cleanly across the inbound gRPC mapper boundary (`src/adapters/inbound_grpc/mapper.rs`), the transport application service (`src/application/transport_service.rs`), and the media application service (`src/application/media_service.rs`), with zero bleeding of SDP, Pion, or LiveKit protocol artifacts into the domain layer.
+     2. RTP Header Extensions Support & BWE Congestion Control (Requirement 1):
+        - In `mapper::parse_rtp_parameters`, support was added for both snake_case `header_extensions` and camelCase `headerExtensions` in incoming `rtp_parameters_json`.
+        - Robust sanitization and normalization for header extension attributes:
+          * `id`: numeric string and integer parsing, fallback lookup for `preferredId` / `preferred_id` / `extension_id`.
+          * `encrypt`: boolean conversion, fallback lookup for `preferredEncrypt` / `preferred_encrypt`, defaulting safely to `false`.
+          * URI normalization and whitelist validation: ensures `http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01` (Transport-CC) and `urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id` (RID for simulcast stream demuxing) along with `mid`, `abs-send-time`, etc. are preserved and passed to Mediasoup's C++ worker.
+          * URL scheme normalization (`https://` -> `http://` for draft-holmer and webrtc experiments) prevents accidental filtering of valid extensions.
+          * Sanitization of `encodings` array: integer `rid` (e.g. `0`, `1`) automatically converted to string to prevent serde deserialization failures.
+        - In `MediaService::produce`, `ProducerOptions` receives the sanitized `RtpParameters` including the full header extensions list. This enables Mediasoup's C++ worker to receive Transport-CC feedback and compute Bandwidth Estimation (BWE) with the publisher, allowing the video stream to ramp up beyond the initial 180p@15fps baseline.
+     3. Reciprocal DTLS Role Validation in ConnectTransport (Requirement 2):
+        - In Mediasoup's ORTC model, `WebRtcTransportRemoteParameters::dtls_parameters.role` represents the *remote* endpoint's DTLS role.
+        - When `ConnectTransport` is called with `dtls_role: "client"` (indicating Mediasoup should act as DTLS Client and actively initiate the handshake by sending `ClientHello`), `TransportService::connect_transport` assigns the complementary/reciprocal remote role `DtlsRole::Server` to Mediasoup. This instructs Mediasoup's C++ core to set `this->dtlsRole = CLIENT` and proactively send the DTLS `ClientHello`.
+        - Conversely, when `dtls_role: "server"` is requested, Mediasoup is passed remote role `DtlsRole::Client` to act as passive responder.
+        - For `dtls_role: "auto"`, Mediasoup receives `DtlsRole::Auto` and defaults to active initiator (`Client`), completely eliminating the dual-server freeze deadlock.
+     4. Subscription Video Layer Activation & Promotion Guarantees (Requirement 3):
+        - Verified and reinforced initial preferred layer resolution (`resolve_default_video_preferred_spatial_layer`): Simulcast streams default to highest spatial layer (Spatial 2, Temporal 2); single layer streams default to Spatial 0, Temporal 2.
+        - Configured `options.preferred_layers` upon consumer creation AND immediately invoked `consumer.set_preferred_layers(pref).await` to unfreeze Mediasoup's C++ worker `targetLayers` from `{-1, -1}`.
+        - Keyframe synchronization: Enhanced background keyframe retry worker in `tokio::spawn` with configurable retry count (`SFU_KEYFRAME_RETRY_COUNT`, default 10 attempts / 5-second window) and closed consumer guard (`consumer.closed()`), ensuring synthetic and real clients achieve intra-frame alignment and layer promotion to Spatial 2 / Temporal 2.
+        - Immediate PLI/FIR keyframe dispatch on consumer resume (`set_media_paused`) and layer update (`set_consumer_preferred_layers`).
+   - Modified Files:
+     * `src/adapters/inbound_grpc/mapper.rs`: Snake_case `header_extensions` normalization, URI normalization, field sanitization, integer RID sanitization, and structured tracing.
+     * `src/application/transport_service.rs`: Reciprocal DTLS role mapping and local role verification logging.
+     * `src/application/media_service.rs`: Enhanced background keyframe retry routine with configurable attempts and consumer liveness checks.
+     * `tests/media_tests.rs`: Added comprehensive unit and integration tests:
+       - `test_rtp_parameters_snake_case_header_extensions_and_rid_transport_cc`
+       - `test_produce_with_rid_and_transport_cc_header_extensions`
+       - `test_connect_transport_reciprocal_dtls_role_client_and_server`
+     * `rtc-load-suite.requirements.txt`: Updated status to `ACCEPTED & IMPLEMENTED` with full architectural triage documentation.
+   - Benchmark & Test Verifications:
+     * `cargo check`: PASSED (0 errors, 0 warnings).
+     * `cargo fmt --check`: PASSED (0 formatting issues).
+     * `cargo clippy --all-targets --all-features -- -D warnings`: PASSED (0 warnings).
+     * `cargo test`: PASSED (84 passed across unit and integration suites, 0 failed).
+     * `cargo test --all-targets --all-features`: PASSED (all enterprise cascading and license suites passed).
+

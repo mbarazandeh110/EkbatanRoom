@@ -822,3 +822,288 @@ fn test_resolve_default_video_preferred_spatial_layer_logic() {
     assert_eq!(resolve_default_video_preferred_spatial_layer(3), 2);
     assert_eq!(resolve_default_video_preferred_spatial_layer(4), 2);
 }
+
+#[test]
+fn test_rtp_parameters_snake_case_header_extensions_and_rid_transport_cc() {
+    use sfu_media_node::adapters::inbound_grpc::mapper::parse_rtp_parameters;
+
+    // Test JSON with snake_case "header_extensions", https URI for Transport-CC, string IDs, and int RID
+    let raw_json = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "payloadType": 96,
+                "clockRate": 90000,
+                "rtcpFeedback": [
+                    { "type": "nack" },
+                    { "type": "transport-cc" }
+                ]
+            }
+        ],
+        "header_extensions": [
+            {
+                "id": "1",
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:mid"
+            },
+            {
+                "id": 2,
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"
+            },
+            {
+                "id": "3",
+                "uri": "https://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
+            },
+            {
+                "id": 4,
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"
+            }
+        ],
+        "encodings": [
+            {
+                "rid": 0,
+                "ssrc": 10001,
+                "maxBitrate": 150000
+            },
+            {
+                "rid": "h",
+                "ssrc": 20001,
+                "maxBitrate": 500000
+            }
+        ],
+        "rtcp": {
+            "cname": "test-cname"
+        }
+    }"#;
+
+    let parsed = parse_rtp_parameters(raw_json).expect("Should parse snake_case header_extensions");
+    assert_eq!(parsed.header_extensions.len(), 4);
+    assert_eq!(parsed.header_extensions[0].id, 1);
+    assert_eq!(parsed.header_extensions[1].id, 2);
+    assert_eq!(parsed.header_extensions[2].id, 3);
+    assert_eq!(parsed.header_extensions[3].id, 4);
+
+    // Verify https was normalized to http for draft-holmer
+    assert_eq!(
+        parsed.header_extensions[2].uri,
+        mediasoup::prelude::RtpHeaderExtensionUri::TransportWideCcDraft01
+    );
+    assert_eq!(
+        parsed.header_extensions[1].uri,
+        mediasoup::prelude::RtpHeaderExtensionUri::RtpStreamId
+    );
+
+    // Verify numeric RID was converted to string
+    assert_eq!(parsed.encodings[0].rid.as_deref(), Some("0"));
+    assert_eq!(parsed.encodings[1].rid.as_deref(), Some("h"));
+}
+
+#[tokio::test]
+async fn test_produce_with_rid_and_transport_cc_header_extensions() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    // 1. Create Router
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-hdr-ext".to_string(),
+            room_id: "room-hdr-ext".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 2. Create Transport
+    let tr_resp = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-tr-hdr-ext".to_string(),
+            router_id: r_resp.router_id.clone(),
+            peer_id: "peer-hdr-ext".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 3. Produce with snake_case header_extensions containing RID & Transport-CC
+    let rtp_params = r#"{
+        "mid": "video-main",
+        "codecs": [
+            {
+                "mimeType": "video/VP8",
+                "payloadType": 96,
+                "clockRate": 90000,
+                "rtcpFeedback": [
+                    { "type": "nack" },
+                    { "type": "nack", "parameter": "pli" },
+                    { "type": "transport-cc" }
+                ]
+            }
+        ],
+        "header_extensions": [
+            {
+                "id": 1,
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:mid"
+            },
+            {
+                "id": 2,
+                "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"
+            },
+            {
+                "id": 3,
+                "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
+            }
+        ],
+        "encodings": [
+            {
+                "rid": "q",
+                "ssrc": 10001,
+                "maxBitrate": 150000
+            },
+            {
+                "rid": "h",
+                "ssrc": 20001,
+                "maxBitrate": 500000
+            },
+            {
+                "rid": "f",
+                "ssrc": 30001,
+                "maxBitrate": 1500000
+            }
+        ]
+    }"#;
+
+    let prod_resp = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-prod-hdr-ext".to_string(),
+            router_id: r_resp.router_id.clone(),
+            transport_id: tr_resp.transport_id.clone(),
+            peer_id: "peer-hdr-ext".to_string(),
+            kind: "video".to_string(),
+            rtp_parameters_json: rtp_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!prod_resp.producer_id.is_empty());
+    assert_eq!(prod_resp.encodings.len(), 3);
+    assert_eq!(prod_resp.encodings[0].rid, "q");
+    assert_eq!(prod_resp.encodings[1].rid, "h");
+    assert_eq!(prod_resp.encodings[2].rid, "f");
+
+    // Clean up
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r_resp.router_id.clone(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: r_resp.router_id.clone(),
+        }))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_connect_transport_reciprocal_dtls_role_client_and_server() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-dtls".to_string(),
+            room_id: "room-dtls".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 1. Publisher transport with dtls_role: "client"
+    // Mediasoup must establish local role CLIENT and actively send ClientHello (no freeze!)
+    let pub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-tr-pub-dtls".to_string(),
+            router_id: r_resp.router_id.clone(),
+            peer_id: "peer-pub-dtls".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let remote_fp = proto::DtlsFingerprintInfo {
+        algorithm: "sha-256".to_string(),
+        value: "E4:87:72:DE:DE:D6:75:A5:C0:5E:2B:A3:8F:69:B8:31:84:87:C7:E2:03:7E:63:F6:FD:E5:5D:84:1F:B5:1D:93".to_string(),
+    };
+
+    let connect_pub_res = service
+        .connect_transport(Request::new(proto::ConnectTransportRequest {
+            router_id: r_resp.router_id.clone(),
+            transport_id: pub_tr.transport_id.clone(),
+            dtls_role: "client".to_string(),
+            remote_fingerprints: vec![remote_fp.clone()],
+        }))
+        .await;
+
+    assert!(connect_pub_res.is_ok());
+
+    // Verify Mediasoup transport local DTLS role is Client
+    let pub_transport_item = node
+        .state
+        .transports
+        .get(&pub_tr.transport_id)
+        .expect("Transport item must exist");
+    assert_eq!(
+        pub_transport_item.transport.dtls_parameters().role,
+        mediasoup::types::data_structures::DtlsRole::Client
+    );
+    drop(pub_transport_item);
+
+    // 2. Subscriber transport with dtls_role: "server"
+    // Mediasoup must establish local role SERVER (passive responder)
+    let sub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-tr-sub-dtls".to_string(),
+            router_id: r_resp.router_id.clone(),
+            peer_id: "peer-sub-dtls".to_string(),
+            is_publisher: false,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let connect_sub_res = service
+        .connect_transport(Request::new(proto::ConnectTransportRequest {
+            router_id: r_resp.router_id.clone(),
+            transport_id: sub_tr.transport_id.clone(),
+            dtls_role: "server".to_string(),
+            remote_fingerprints: vec![remote_fp],
+        }))
+        .await;
+
+    assert!(connect_sub_res.is_ok());
+
+    let sub_transport_item = node
+        .state
+        .transports
+        .get(&sub_tr.transport_id)
+        .expect("Transport item must exist");
+    assert_eq!(
+        sub_transport_item.transport.dtls_parameters().role,
+        mediasoup::types::data_structures::DtlsRole::Server
+    );
+    drop(sub_transport_item);
+
+    // Clean up
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r_resp.router_id.clone(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: r_resp.router_id.clone(),
+        }))
+        .await
+        .unwrap();
+}

@@ -480,7 +480,7 @@ impl TransportUseCase for TransportService {
         validation::validate_not_empty("transport_id", &params.transport_id)?;
 
         // Extract transport, check router ownership, and DROP guard before .await (Deadlock fix)
-        let (transport, peer_id) = {
+        let (transport, peer_id, is_publisher) = {
             let t_item = self
                 .state
                 .transports
@@ -506,21 +506,49 @@ impl TransportUseCase for TransportService {
                 )));
             }
 
-            (t_item.transport.clone(), t_item.peer_id.clone())
+            (
+                t_item.transport.clone(),
+                t_item.peer_id.clone(),
+                t_item.is_publisher,
+            )
         };
         tracing::Span::current().record("peer_id", peer_id.as_str());
 
-        let role = match params.dtls_role {
+        // In Mediasoup's ORTC model, WebRtcTransportRemoteParameters::dtls_parameters.role
+        // represents the REMOTE endpoint's DTLS role (dtlsRemoteRole).
+        // In WebRtcTransport.cpp:
+        // - if dtlsRemoteRole == CLIENT -> Mediasoup local role = SERVER (waits passively for ClientHello)
+        // - if dtlsRemoteRole == SERVER or AUTO -> Mediasoup local role = CLIENT (proactively sends ClientHello)
+        //
+        // When ConnectTransport is invoked with DtlsRole::Client (e.g. for publisher transports
+        // where Mediasoup must actively initiate the DTLS handshake via ClientHello to prevent
+        // handshake deadlock with ICE-controlling agents), Mediasoup must be instructed to become
+        // DTLS Client. To achieve this, the remote role passed to Mediasoup must be Server.
+        // Reciprocal DTLS role mapping:
+        // - Requested role Client -> remote role Server (Mediasoup becomes active Client)
+        // - Requested role Server -> remote role Client (Mediasoup becomes passive Server)
+        // - Requested role Auto -> remote role Auto (Mediasoup defaults to active Client)
+        let mediasoup_remote_role = match params.dtls_role {
+            crate::domain::entities::DtlsRole::Client => {
+                mediasoup::types::data_structures::DtlsRole::Server
+            }
+            crate::domain::entities::DtlsRole::Server => {
+                mediasoup::types::data_structures::DtlsRole::Client
+            }
             crate::domain::entities::DtlsRole::Auto => {
                 mediasoup::types::data_structures::DtlsRole::Auto
             }
-            crate::domain::entities::DtlsRole::Client => {
-                mediasoup::types::data_structures::DtlsRole::Client
-            }
-            crate::domain::entities::DtlsRole::Server => {
-                mediasoup::types::data_structures::DtlsRole::Server
-            }
         };
+
+        tracing::info!(
+            router_id = %params.router_id,
+            transport_id = %params.transport_id,
+            peer_id = %peer_id,
+            is_publisher = is_publisher,
+            requested_dtls_role = ?params.dtls_role,
+            mediasoup_remote_role = ?mediasoup_remote_role,
+            "Connecting transport with reciprocal DTLS role assignment"
+        );
 
         let fp_tuples: Vec<(String, String)> = params
             .remote_fingerprints
@@ -529,12 +557,22 @@ impl TransportUseCase for TransportService {
             .collect();
         let fingerprints = crate::domain::validation::parse_dtls_fingerprints(&fp_tuples)?;
 
-        let dtls_parameters = DtlsParameters { role, fingerprints };
+        let dtls_parameters = DtlsParameters {
+            role: mediasoup_remote_role,
+            fingerprints,
+        };
 
         transport
             .connect(WebRtcTransportRemoteParameters { dtls_parameters })
             .await
             .map_err(|e| SfuDomainError::Mediasoup(format!("Failed to connect transport: {e}")))?;
+
+        let established_local_role = transport.dtls_parameters().role;
+        tracing::info!(
+            transport_id = %params.transport_id,
+            established_local_dtls_role = ?established_local_role,
+            "WebRtcTransport DTLS role successfully established"
+        );
 
         Ok(())
     }

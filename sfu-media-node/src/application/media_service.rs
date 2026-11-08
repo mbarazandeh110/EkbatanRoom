@@ -176,6 +176,7 @@ impl MediaUseCase for MediaService {
                         kind = %params.kind,
                         encodings = ?params.rtp_parameters.encodings,
                         codecs = ?params.rtp_parameters.codecs,
+                        header_extensions = ?params.rtp_parameters.header_extensions,
                         "Starting transport.produce with sanitized RTP parameters"
                     );
 
@@ -901,12 +902,17 @@ impl MediaUseCase for MediaService {
                         let retry_is_closed = is_closed.clone();
                         let retry_state = self.state.clone();
                         let retry_router_id = params.router_id.clone();
+                        let retry_attempts: usize = std::env::var("SFU_KEYFRAME_RETRY_COUNT")
+                            .ok()
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(10);
 
                         tokio::spawn(async move {
-                            for attempt in 1..=6 {
+                            for attempt in 1..=retry_attempts {
                                 tokio::time::sleep(Duration::from_millis(500)).await;
 
-                                if retry_is_closed.load(Ordering::SeqCst)
+                                if retry_consumer.closed()
+                                    || retry_is_closed.load(Ordering::SeqCst)
                                     || !retry_state.is_router_active(&retry_router_id)
                                 {
                                     break;
@@ -925,6 +931,7 @@ impl MediaUseCase for MediaService {
                                 tracing::debug!(
                                     consumer_id = %retry_consumer_id,
                                     attempt = attempt,
+                                    max_attempts = retry_attempts,
                                     "Retrying keyframe request for pending video consumer"
                                 );
                                 let _ = retry_consumer.request_key_frame().await;

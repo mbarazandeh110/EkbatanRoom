@@ -32,9 +32,25 @@ impl From<SfuDomainError> for tonic::Status {
     }
 }
 
+fn normalize_header_extension_uri(uri: &str) -> String {
+    let trimmed = uri.trim();
+    if trimmed
+        .starts_with("https://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01")
+    {
+        "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01".to_string()
+    } else if let Some(suffix) =
+        trimmed.strip_prefix("https://www.webrtc.org/experiments/rtp-hdrext/")
+    {
+        format!("http://www.webrtc.org/experiments/rtp-hdrext/{suffix}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn is_supported_header_extension_uri(uri: &str) -> bool {
+    let normalized = normalize_header_extension_uri(uri);
     matches!(
-        uri,
+        normalized.as_str(),
         "urn:ietf:params:rtp-hdrext:sdes:mid"
             | "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"
             | "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"
@@ -87,7 +103,19 @@ pub fn parse_rtp_parameters(json_str: &str) -> Result<RtpParameters, SfuDomainEr
     })?;
 
     if let Some(root_obj) = root_val.as_object_mut() {
-        // 1. Sanitize headerExtensions
+        // 1. Normalize snake_case header_extensions to camelCase headerExtensions
+        if let Some(snake_exts) = root_obj.remove("header_extensions") {
+            let use_snake = match root_obj.get("headerExtensions") {
+                None => true,
+                Some(serde_json::Value::Array(arr)) => arr.is_empty(),
+                _ => true,
+            };
+            if use_snake {
+                root_obj.insert("headerExtensions".to_string(), snake_exts);
+            }
+        }
+
+        // Sanitize headerExtensions
         if let Some(exts) = root_obj
             .get_mut("headerExtensions")
             .and_then(|v| v.as_array_mut())
@@ -97,25 +125,44 @@ pub fn parse_rtp_parameters(json_str: &str) -> Result<RtpParameters, SfuDomainEr
                     return false;
                 };
 
-                // Inject default encrypt: false if absent or null
+                // Inject default encrypt: false if absent or null, also checking preferredEncrypt / preferred_encrypt
                 if !ext_map.contains_key("encrypt")
                     || ext_map.get("encrypt").map(|v| v.is_null()).unwrap_or(false)
                 {
-                    ext_map.insert("encrypt".to_string(), serde_json::Value::Bool(false));
+                    let enc = ext_map
+                        .get("preferredEncrypt")
+                        .or_else(|| ext_map.get("preferred_encrypt"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    ext_map.insert("encrypt".to_string(), serde_json::Value::Bool(enc));
                 }
 
-                // Sanitize numeric id if sent as string
+                // Sanitize numeric id if sent as string or named preferredId / preferred_id / extension_id
+                if !ext_map.contains_key("id") {
+                    if let Some(alt_id) = ext_map
+                        .get("preferredId")
+                        .or_else(|| ext_map.get("preferred_id"))
+                        .or_else(|| ext_map.get("extension_id"))
+                    {
+                        ext_map.insert("id".to_string(), alt_id.clone());
+                    }
+                }
                 if let Some(id_val) = ext_map.get("id") {
                     if let Some(id_str) = id_val.as_str() {
                         if let Ok(num) = id_str.trim().parse::<u16>() {
                             ext_map.insert("id".to_string(), serde_json::json!(num));
                         }
+                    } else if let Some(id_num) = id_val.as_u64() {
+                        ext_map.insert("id".to_string(), serde_json::json!(id_num as u16));
                     }
                 }
 
-                // Validate and filter URI
+                // Normalize URI (e.g. https -> http for draft-holmer and webrtc experiments)
                 if let Some(uri_val) = ext_map.get("uri").and_then(|u| u.as_str()) {
-                    if is_supported_header_extension_uri(uri_val) {
+                    let normalized_uri = normalize_header_extension_uri(uri_val);
+                    if is_supported_header_extension_uri(&normalized_uri) {
+                        ext_map
+                            .insert("uri".to_string(), serde_json::Value::String(normalized_uri));
                         true
                     } else {
                         tracing::debug!(
@@ -130,10 +177,25 @@ pub fn parse_rtp_parameters(json_str: &str) -> Result<RtpParameters, SfuDomainEr
             });
         }
 
-        // 2. Sanitize encodings (ssrc, rtx.ssrc, codecPayloadType, maxBitrate)
+        // 2. Sanitize encodings (ssrc, rtx.ssrc, codecPayloadType, maxBitrate, rid)
         if let Some(encs) = root_obj.get_mut("encodings").and_then(|v| v.as_array_mut()) {
             for enc in encs {
                 if let Some(enc_map) = enc.as_object_mut() {
+                    // Sanitize rid if sent as number
+                    if let Some(rid_val) = enc_map.get("rid") {
+                        if let Some(num) = rid_val.as_i64() {
+                            enc_map.insert(
+                                "rid".to_string(),
+                                serde_json::Value::String(num.to_string()),
+                            );
+                        } else if let Some(u) = rid_val.as_u64() {
+                            enc_map.insert(
+                                "rid".to_string(),
+                                serde_json::Value::String(u.to_string()),
+                            );
+                        }
+                    }
+
                     // Sanitize primary media SSRC
                     if let Some(ssrc_val) = enc_map.get("ssrc") {
                         if let Some(cleaned_ssrc) = sanitize_ssrc_value(ssrc_val) {
@@ -265,6 +327,18 @@ pub fn parse_rtp_capabilities(json_str: &str) -> Result<RtpCapabilities, SfuDoma
     })?;
 
     if let Some(root_obj) = root_val.as_object_mut() {
+        // Normalize snake_case header_extensions to camelCase headerExtensions
+        if let Some(snake_exts) = root_obj.remove("header_extensions") {
+            let use_snake = match root_obj.get("headerExtensions") {
+                None => true,
+                Some(serde_json::Value::Array(arr)) => arr.is_empty(),
+                _ => true,
+            };
+            if use_snake {
+                root_obj.insert("headerExtensions".to_string(), snake_exts);
+            }
+        }
+
         // Sanitize headerExtensions
         if let Some(exts) = root_obj
             .get_mut("headerExtensions")
@@ -281,10 +355,31 @@ pub fn parse_rtp_capabilities(json_str: &str) -> Result<RtpCapabilities, SfuDoma
                         .map(|v| v.is_null())
                         .unwrap_or(false)
                 {
-                    ext_map.insert(
-                        "preferredEncrypt".to_string(),
-                        serde_json::Value::Bool(false),
-                    );
+                    let enc = ext_map
+                        .get("preferred_encrypt")
+                        .or_else(|| ext_map.get("encrypt"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    ext_map.insert("preferredEncrypt".to_string(), serde_json::Value::Bool(enc));
+                }
+
+                if !ext_map.contains_key("preferredId") {
+                    if let Some(alt_id) = ext_map
+                        .get("preferred_id")
+                        .or_else(|| ext_map.get("id"))
+                        .or_else(|| ext_map.get("extension_id"))
+                    {
+                        ext_map.insert("preferredId".to_string(), alt_id.clone());
+                    }
+                }
+                if let Some(id_val) = ext_map.get("preferredId") {
+                    if let Some(id_str) = id_val.as_str() {
+                        if let Ok(num) = id_str.trim().parse::<u16>() {
+                            ext_map.insert("preferredId".to_string(), serde_json::json!(num));
+                        }
+                    } else if let Some(id_num) = id_val.as_u64() {
+                        ext_map.insert("preferredId".to_string(), serde_json::json!(id_num as u16));
+                    }
                 }
 
                 if !ext_map.contains_key("direction")
@@ -297,7 +392,10 @@ pub fn parse_rtp_capabilities(json_str: &str) -> Result<RtpCapabilities, SfuDoma
                 }
 
                 if let Some(uri_val) = ext_map.get("uri").and_then(|u| u.as_str()) {
-                    if is_supported_header_extension_uri(uri_val) {
+                    let normalized_uri = normalize_header_extension_uri(uri_val);
+                    if is_supported_header_extension_uri(&normalized_uri) {
+                        ext_map
+                            .insert("uri".to_string(), serde_json::Value::String(normalized_uri));
                         true
                     } else {
                         tracing::debug!(
@@ -491,6 +589,7 @@ pub fn from_produce_request(req: proto::ProduceRequest) -> Result<ProduceParams,
         kind = %req.kind,
         encodings = ?rtp_parameters.encodings,
         codecs = ?rtp_parameters.codecs,
+        header_extensions = ?rtp_parameters.header_extensions,
         "deserialized Producer rtp_parameters"
     );
 
