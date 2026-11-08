@@ -459,3 +459,63 @@ func TestLiveKitResponder_SendTrackSubscribed_REQ004(t *testing.T) {
 	}
 }
 
+func TestLiveKitResponder_SendSubscribedQualityUpdate_H264_REQ005(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	serverConnChan := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Upgrade failed: %v", err)
+			return
+		}
+		serverConnChan <- conn
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("client dial failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	serverConn := <-serverConnChan
+	defer serverConn.Close()
+
+	responder := livekit.NewLiveKitResponder(serverConn)
+
+	qualities := []domain.SubscribedQuality{
+		{Quality: domain.VideoQualityLow, Enabled: true},
+		{Quality: domain.VideoQualityHigh, Enabled: true},
+	}
+
+	err = responder.SendSubscribedQualityUpdate("TR_h264_test", "video/h264", qualities)
+	if err != nil {
+		t.Fatalf("SendSubscribedQualityUpdate failed: %v", err)
+	}
+
+	_, msgBytes, err := clientConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage failed: %v", err)
+	}
+
+	var resp livekitproto.SignalResponse
+	if err := proto.Unmarshal(msgBytes, &resp); err != nil {
+		t.Fatalf("proto.Unmarshal failed: %v", err)
+	}
+
+	squ := resp.GetSubscribedQualityUpdate()
+	if squ == nil {
+		t.Fatalf("expected SubscribedQualityUpdate in SignalResponse, got nil")
+	}
+
+	if len(squ.SubscribedCodecs) != 1 {
+		t.Fatalf("expected 1 SubscribedCodec, got %d", len(squ.SubscribedCodecs))
+	}
+	if squ.SubscribedCodecs[0].Codec != "h264" {
+		t.Fatalf("expected SubscribedCodec.Codec == 'h264', got '%s'", squ.SubscribedCodecs[0].Codec)
+	}
+}
+
+

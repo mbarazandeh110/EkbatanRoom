@@ -149,7 +149,7 @@ a=ssrc:5555 cname:explicit-fb
 	}
 }
 
-func TestSDPMapper_GeneratePublisherAnswer_ExplicitPassive(t *testing.T) {
+func TestSDPMapper_GeneratePublisherAnswer_ActiveDTLSRole_REQ005(t *testing.T) {
 	transport := &domain.TransportInfo{
 		TransportID: "pub-transport",
 		IceUfrag:    "server-ufrag",
@@ -167,10 +167,33 @@ func TestSDPMapper_GeneratePublisherAnswer_ExplicitPassive(t *testing.T) {
 		t.Fatalf("GeneratePublisherAnswer failed: %v", err)
 	}
 
-	// Must contain a=setup:passive for DTLS encryption handshake
-	if !strings.Contains(answer, "a=setup:passive") {
-		t.Fatalf("expected a=setup:passive in answer, got:\n%s", answer)
+	// REQ-005: Must contain a=setup:active at session and media levels to prevent DTLS deadlock
+	if !strings.Contains(answer, "a=setup:active") {
+		t.Fatalf("expected a=setup:active in answer, got:\n%s", answer)
 	}
+
+	var ans sdp.SessionDescription
+	if err := ans.Unmarshal([]byte(answer)); err != nil {
+		t.Fatalf("failed to unmarshal publisher answer: %v", err)
+	}
+
+	// Verify session level setup:active
+	sessionSetup, ok := ans.Attribute("setup")
+	if !ok || sessionSetup != "active" {
+		t.Fatalf("expected session-level a=setup:active, got %s (found: %v)", sessionSetup, ok)
+	}
+
+	// Verify media-level setup:active in every media section (audio, video)
+	if len(ans.MediaDescriptions) == 0 {
+		t.Fatalf("expected media descriptions in answer, got 0")
+	}
+	for i, md := range ans.MediaDescriptions {
+		mediaSetup, ok := md.Attribute("setup")
+		if !ok || mediaSetup != "active" {
+			t.Fatalf("expected media[%d] (%s) to have a=setup:active, got %s (found: %v)", i, md.MediaName.Media, mediaSetup, ok)
+		}
+	}
+
 	// REQ-017: ice-lite attribute
 	if !strings.Contains(answer, "a=ice-lite") {
 		t.Fatalf("expected a=ice-lite in answer for Mediasoup compatibility, got:\n%s", answer)
@@ -1518,3 +1541,214 @@ a=ssrc:555666 cname:test-user
 		t.Fatalf("expected RTXPayloadType 0 for VP8 when no apt matched, got %d (disparate H264 RTX was incorrectly assigned)", trackVP8NoRTX.RTXPayloadType)
 	}
 }
+
+func TestSDPMapper_DTLSRole_DeadlockResolution_REQ005(t *testing.T) {
+	// 1. Client offers actpass -> SFU must adopt "client" role to initiate DTLS ClientHello
+	offerActpass := `v=0
+o=- 112233 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:video-1
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:96 VP8/90000
+`
+	parsed, err := livekit.ParsePublisherOffer(offerActpass)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+	if parsed.DTLSRole != "client" {
+		t.Fatalf("expected SFU DTLSRole 'client' when client sends actpass, got '%s'", parsed.DTLSRole)
+	}
+
+	// 2. Client offers passive -> SFU must adopt "client" role
+	offerPassive := strings.ReplaceAll(offerActpass, "a=setup:actpass", "a=setup:passive")
+	parsedPassive, err := livekit.ParsePublisherOffer(offerPassive)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+	if parsedPassive.DTLSRole != "client" {
+		t.Fatalf("expected SFU DTLSRole 'client' when client sends passive, got '%s'", parsedPassive.DTLSRole)
+	}
+
+	// 3. Client offers active -> SFU must adopt "server" role
+	offerActive := strings.ReplaceAll(offerActpass, "a=setup:actpass", "a=setup:active")
+	parsedActive, err := livekit.ParsePublisherOffer(offerActive)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+	if parsedActive.DTLSRole != "server" {
+		t.Fatalf("expected SFU DTLSRole 'server' when client sends active, got '%s'", parsedActive.DTLSRole)
+	}
+}
+
+func TestSDPMapper_GeneratePublisherAnswer_MediaLevelSetupActive_AllSections_REQ005(t *testing.T) {
+	// Offer containing application (DataChannel), audio, and video sections
+	offerThreeMedia := `v=0
+o=- 998877 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE datachannel audio video
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+c=IN IP4 0.0.0.0
+a=mid:datachannel
+a=sctp-port:5000
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=mid:audio
+a=sendonly
+a=setup:actpass
+a=rtpmap:111 opus/48000/2
+a=ssrc:1111 cname:alice
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:video
+a=sendonly
+a=setup:actpass
+a=rtpmap:96 VP8/90000
+a=ssrc:2222 cname:alice
+`
+	transport := &domain.TransportInfo{
+		TransportID: "pub-transport",
+		IceUfrag:    "server-ufrag",
+		IcePwd:      "server-pwd",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "11:22:33:44:55:66"},
+		},
+	}
+
+	answer, err := livekit.GeneratePublisherAnswer(offerThreeMedia, transport)
+	if err != nil {
+		t.Fatalf("GeneratePublisherAnswer failed: %v", err)
+	}
+
+	var ans sdp.SessionDescription
+	if err := ans.Unmarshal([]byte(answer)); err != nil {
+		t.Fatalf("failed to unmarshal answer: %v", err)
+	}
+
+	// Session level must have a=setup:active
+	sessionSetup, ok := ans.Attribute("setup")
+	if !ok || sessionSetup != "active" {
+		t.Fatalf("expected session level a=setup:active, got '%s' (found: %v)", sessionSetup, ok)
+	}
+
+	// Every media section (application, audio, video) MUST have a=setup:active directly
+	if len(ans.MediaDescriptions) != 3 {
+		t.Fatalf("expected 3 media sections in answer, got %d", len(ans.MediaDescriptions))
+	}
+
+	expectedMids := []string{"datachannel", "audio", "video"}
+	for i, md := range ans.MediaDescriptions {
+		mid, _ := md.Attribute("mid")
+		if mid != expectedMids[i] {
+			t.Fatalf("expected mid %s at index %d, got %s", expectedMids[i], i, mid)
+		}
+		setupVal, hasSetup := md.Attribute("setup")
+		if !hasSetup {
+			t.Fatalf("media section %s (%s) is missing a=setup attribute!", mid, md.MediaName.Media)
+		}
+		if setupVal != "active" {
+			t.Fatalf("media section %s (%s) has a=setup:%s, expected a=setup:active", mid, md.MediaName.Media, setupVal)
+		}
+	}
+}
+
+func TestSDPMapper_HeaderExtensions_MidRidTransportCC_REQ005(t *testing.T) {
+	// Offer matching browser / Pion client declaring MID, RID (Simulcast), and Transport-CC
+	offerWithExt := `v=0
+o=- 445566 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE video
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:video
+a=sendonly
+a=setup:actpass
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:96 VP8/90000
+a=extmap:1 urn:ietf:params:rtp-hdrext:sdes:mid
+a=extmap:2 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id
+a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=rid:f send
+a=rid:h send
+a=rid:q send
+a=simulcast:send f;h;q
+a=ssrc:3001 cname:test
+`
+	parsed, err := livekit.ParsePublisherOffer(offerWithExt)
+	if err != nil {
+		t.Fatalf("ParsePublisherOffer failed: %v", err)
+	}
+
+	if len(parsed.Tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(parsed.Tracks))
+	}
+
+	track := parsed.Tracks[0]
+
+	// Verify both headerExtensions and header_extensions are present in RtpParametersJSON
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal([]byte(track.RtpParametersJSON), &rawMap); err != nil {
+		t.Fatalf("failed to unmarshal track.RtpParametersJSON: %v", err)
+	}
+
+	if _, ok := rawMap["headerExtensions"]; !ok {
+		t.Fatalf("expected headerExtensions key in RtpParametersJSON")
+	}
+	if _, ok := rawMap["header_extensions"]; !ok {
+		t.Fatalf("expected header_extensions key in RtpParametersJSON per REQ-005")
+	}
+
+	var rtpParams struct {
+		HeaderExtensions []struct {
+			ID      int    `json:"id"`
+			URI     string `json:"uri"`
+			Encrypt bool   `json:"encrypt"`
+		} `json:"headerExtensions"`
+		HeaderExtensionsSnake []struct {
+			ID      int    `json:"id"`
+			URI     string `json:"uri"`
+			Encrypt bool   `json:"encrypt"`
+		} `json:"header_extensions"`
+	}
+
+	if err := json.Unmarshal([]byte(track.RtpParametersJSON), &rtpParams); err != nil {
+		t.Fatalf("failed to unmarshal typed RtpParametersJSON: %v", err)
+	}
+
+	if len(rtpParams.HeaderExtensions) != 3 {
+		t.Fatalf("expected 3 header extensions, got %d: %+v", len(rtpParams.HeaderExtensions), rtpParams.HeaderExtensions)
+	}
+	if len(rtpParams.HeaderExtensionsSnake) != 3 {
+		t.Fatalf("expected 3 header_extensions (snake_case), got %d", len(rtpParams.HeaderExtensionsSnake))
+	}
+
+	extByURI := make(map[string]int)
+	for _, ext := range rtpParams.HeaderExtensions {
+		extByURI[ext.URI] = ext.ID
+		if ext.Encrypt != false {
+			t.Fatalf("expected encrypt: false for extension %s", ext.URI)
+		}
+	}
+
+	// Verify MID
+	if id, ok := extByURI["urn:ietf:params:rtp-hdrext:sdes:mid"]; !ok || id != 1 {
+		t.Fatalf("expected MID extension id 1, got id=%d (found=%v)", id, ok)
+	}
+	// Verify RID
+	if id, ok := extByURI["urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"]; !ok || id != 2 {
+		t.Fatalf("expected RID extension id 2, got id=%d (found=%v)", id, ok)
+	}
+	// Verify Transport-CC
+	if id, ok := extByURI["http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"]; !ok || id != 3 {
+		t.Fatalf("expected Transport-CC extension id 3, got id=%d (found=%v)", id, ok)
+	}
+}
+

@@ -289,7 +289,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-005
 SOURCE SERVICE: rtc-load-suite
 TARGET SERVICE: signaling-coordinator (with sfu-media-node coordination)
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -335,6 +335,25 @@ STATUS: OPEN
      * Ensure `ConnectTransport` validates that publisher WebRtcTransports establish reciprocal DTLS roles and do not stay in passive initialization.
 
 4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
-   - Decision: PENDING
-   - Architectural Justification: ...
-   - Modified Files & Benchmark Verifications: ...
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. Publisher DTLS Role Deadlock Resolution (RFC 8842 / RFC 4145):
+        Omission of the `a=setup` attribute at the SDP media description level (`m=`) causes client-side WebRTC engines (specifically Pion WebRTC's `DTLSRoleAuto`) to default controlling ICE agents to DTLS `server` (passive). When Mediasoup also assumes a passive server role, both peers await incoming `ClientHello` packets indefinitely, freezing the DTLS handshake and completely blocking outgoing and incoming media packets. To establish deterministic and complementary roles, `GeneratePublisherAnswer` explicitly injects `a=setup:active` both at the global session level and directly within each active media description (`m=application`, `m=audio`, `m=video`). Concurrently, `ParsePublisherOffer` assigns `dtlsRole = "client"` for `actpass` and `passive` offers, propagating `role: client` via `ConnectTransport` to `sfu-media-node`. Mediasoup proactively transmits the DTLS `ClientHello` while the client acts as the DTLS server, eliminating the handshake stalemate and enabling immediate SRTP session establishment.
+     2. Header Extensions Extraction for SFU BWE and Simulcast (RFC 8866 / RFC 5285 / RFC 8285):
+        In `ParsePublisherOffer`, client-declared header extensions (`a=extmap`) are parsed with media-level declarations taking precedence over session-level attributes. Standard and essential extensions—including MID (`urn:ietf:params:rtp-hdrext:sdes:mid`), RID (`urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id`), and Transport-CC (`http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01`)—are filtered against Mediasoup-supported URIs and serialized into both `headerExtensions` and `header_extensions` in `rtp_parameters_json`, complete with the mandatory `"encrypt": false` boolean field. This provides Mediasoup's Bandwidth Estimator (BWE) with vital feedback to dynamically estimate transport capacity and avoid video stream suppression.
+     3. Dynamic Codec Alignment for SubscribedQualityUpdate:
+        To prevent official client SDKs (`livekit-cli` / `server-sdk-go`) from leaving publication disabled (`disabled = true`) when streaming with default non-VP8 codecs (such as H.264), `RoomActor.PublishTracks` dynamically normalizes the published track's MIME type. `RoomActor` propagates the track's negotiated codec (`t.MimeType`) in `SubscribedQualityUpdate` across initial publication, late-joiner connection, and subscriber answer processing. `LiveKitResponder.SendSubscribedQualityUpdate` extracts the codec identifier (e.g. `h264`, `vp8`) and populates `SubscribedCodec`, allowing clients to match primary publications and start RTP streaming.
+   - Modified Files & Benchmark Verifications:
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Added `a=setup:active` at session level and within every media description in `GeneratePublisherAnswer`. Updated `ParsePublisherOffer` to set `dtlsRole = "client"` for `actpass` and `passive`. Extracted and sorted header extensions into both `headerExtensions` and `header_extensions`.
+     - `internal/application/room_actor.go`: Dynamically normalized domain track MIME type prefix in `PublishTracks` and ensured `pendingQualityUpdate` always carries the track's actual MIME type across `Join`, `PublishTracks`, and `HandleSubscriberAnswer`.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`:
+       - Updated `TestSDPMapper_GeneratePublisherAnswer_ActiveDTLSRole_REQ005` asserting session and media level `a=setup:active`.
+       - Added `TestSDPMapper_DTLSRole_DeadlockResolution_REQ005` verifying reciprocal DTLS role assignment.
+       - Added `TestSDPMapper_GeneratePublisherAnswer_MediaLevelSetupActive_AllSections_REQ005` verifying media-level setup in application, audio, and video sections.
+       - Added `TestSDPMapper_HeaderExtensions_MidRidTransportCC_REQ005` verifying MID, RID, Transport-CC, and snake_case / camelCase JSON fields.
+     - `internal/application/room_actor_test.go`:
+       - Added `TestRoomActor_SubscribedQualityUpdate_DynamicCodecH264_REQ005` validating end-to-end dynamic H.264 quality updates on publish, late-join, and answer.
+     - `internal/adapters/inbound/livekit/responder_test.go`:
+       - Added `TestLiveKitResponder_SendSubscribedQualityUpdate_H264_REQ005`.
+     - `.agents/skills/livekit-sdp-synthesizer/SKILL.md`: Documented active DTLS role assignment and dynamic codec requirements.
+     - Verification: Full test suite executed with race detector (`go test -count=1 -race ./...`) - PASS (100% clean, 0 race conditions, 0 regressions).

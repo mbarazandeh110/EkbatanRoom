@@ -1170,6 +1170,81 @@ func TestRoomActor_SetConsumerPreferredLayers_OnSubscriberAnswer_REQ004(t *testi
 	}
 }
 
+func TestRoomActor_SubscribedQualityUpdate_DynamicCodecH264_REQ005(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	actor := application.NewRoomActor("room-h264", engine, engine, engine, nil)
+
+	respAlice := newMockResponder()
+	_, err := actor.Join(ctx, "alice", "Alice", respAlice)
+	if err != nil {
+		t.Fatalf("Alice join failed: %v", err)
+	}
+
+	h264TrackSID := "TR_h264_test"
+
+	// 1. Publish H.264 video track (declared as "H264" from publisher offer)
+	_, err = actor.PublishTracks(ctx, "alice", "client", nil, []domain.TrackPublishCommand{
+		{
+			Kind:              domain.TrackKindVideo,
+			TrackSID:          h264TrackSID,
+			Codec:             "H264", // without video/ prefix initially
+			ClockRate:         90000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"video/H264"}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("PublishTracks failed: %v", err)
+	}
+
+	// Alice should receive SubscribedQualityUpdate immediately reflecting H264, NOT hardcoded vp8
+	if len(respAlice.qualityUpdates) < 1 {
+		t.Fatalf("expected SubscribedQualityUpdate for Alice on publish, got 0")
+	}
+	qu1 := respAlice.qualityUpdates[len(respAlice.qualityUpdates)-1]
+	if qu1.TrackSID != h264TrackSID {
+		t.Fatalf("expected trackSID %s, got %s", h264TrackSID, qu1.TrackSID)
+	}
+	if !strings.EqualFold(qu1.Codec, "video/h264") {
+		t.Fatalf("expected dynamic H264 codec in SubscribedQualityUpdate, got hardcoded or mismatched '%s'", qu1.Codec)
+	}
+
+	// 2. Late joiner Bob connects
+	respBob := newMockResponder()
+	aliceUpdatesBefore := len(respAlice.qualityUpdates)
+	_, err = actor.Join(ctx, "bob", "Bob", respBob)
+	if err != nil {
+		t.Fatalf("Bob join failed: %v", err)
+	}
+
+	// Alice must receive SubscribedQualityUpdate when Bob joins, retaining H.264 codec
+	if len(respAlice.qualityUpdates) <= aliceUpdatesBefore {
+		t.Fatalf("expected Alice to receive SubscribedQualityUpdate upon Bob joining")
+	}
+	qu2 := respAlice.qualityUpdates[len(respAlice.qualityUpdates)-1]
+	if !strings.EqualFold(qu2.Codec, "video/h264") {
+		t.Fatalf("expected dynamic H264 codec on late joiner, got '%s'", qu2.Codec)
+	}
+
+	// 3. Bob answers subscriber offer (HandleSubscriberAnswer)
+	aliceUpdatesBeforeAnswer := len(respAlice.qualityUpdates)
+	err = actor.HandleSubscriberAnswer(ctx, "bob", "client", []domain.DtlsFingerprintInfo{
+		{Algorithm: "sha-256", Value: "11:22:33"},
+	})
+	if err != nil {
+		t.Fatalf("HandleSubscriberAnswer failed: %v", err)
+	}
+
+	if len(respAlice.qualityUpdates) <= aliceUpdatesBeforeAnswer {
+		t.Fatalf("expected Alice to receive SubscribedQualityUpdate upon Bob answer")
+	}
+	qu3 := respAlice.qualityUpdates[len(respAlice.qualityUpdates)-1]
+	if !strings.EqualFold(qu3.Codec, "video/h264") {
+		t.Fatalf("expected dynamic H264 codec on subscriber answer, got '%s'", qu3.Codec)
+	}
+}
+
+
 
 
 

@@ -740,6 +740,13 @@ func (a *RoomActor) PublishTracks(
 			} else {
 				trackMime = "audio/opus"
 			}
+		} else {
+			// REQ-005: Dynamically normalize published track MIME type (e.g. video/vp8 or video/h264)
+			if tc.Kind == domain.TrackKindVideo && !strings.HasPrefix(strings.ToLower(trackMime), "video/") {
+				trackMime = "video/" + trackMime
+			} else if tc.Kind == domain.TrackKindAudio && !strings.HasPrefix(strings.ToLower(trackMime), "audio/") {
+				trackMime = "audio/" + trackMime
+			}
 		}
 
 		encodings := prodRes.Encodings

@@ -3,6 +3,7 @@ package livekit
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -118,11 +119,11 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 				})
 			}
 		}
-		if attr.Key == "setup" {
-			switch strings.TrimSpace(attr.Value) {
-			case "actpass", "active":
+		if strings.EqualFold(attr.Key, "setup") {
+			switch strings.TrimSpace(strings.ToLower(attr.Value)) {
+			case "actpass", "passive":
 				dtlsRole = "client"
-			case "passive":
+			case "active":
 				dtlsRole = "server"
 			}
 		}
@@ -134,7 +135,7 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 	for _, md := range s.MediaDescriptions {
 		// Media level fingerprints and setup (check for ALL media descriptions, including application)
 		for _, attr := range md.Attributes {
-			if attr.Key == "fingerprint" {
+			if strings.EqualFold(attr.Key, "fingerprint") {
 				parts := strings.SplitN(attr.Value, " ", 2)
 				if len(parts) == 2 {
 					fingerprints = append(fingerprints, domain.DtlsFingerprintInfo{
@@ -143,11 +144,11 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 					})
 				}
 			}
-			if attr.Key == "setup" {
-				switch strings.TrimSpace(attr.Value) {
-				case "actpass", "active":
+			if strings.EqualFold(attr.Key, "setup") {
+				switch strings.TrimSpace(strings.ToLower(attr.Value)) {
+				case "actpass", "passive":
 					dtlsRole = "client"
-				case "passive":
+				case "active":
 					dtlsRole = "server"
 				}
 			}
@@ -519,26 +520,55 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 			})
 		}
 
-		// Parse header extensions (a=extmap) from session and media level
-		headerExtensions := make([]map[string]interface{}, 0)
-		extmapSeen := make(map[int]bool)
-		for _, attr := range append(s.Attributes, md.Attributes...) {
+		// Parse header extensions (a=extmap) from media and session levels (media overrides session per RFC 8866)
+		extMap := make(map[int]string)
+		for _, attr := range s.Attributes {
 			if strings.EqualFold(attr.Key, "extmap") {
 				fields := strings.Fields(attr.Value)
 				if len(fields) >= 2 {
 					idStr := strings.Split(fields[0], "/")[0]
 					uri := fields[1]
-					// REQ-024: Only include header extensions supported by Mediasoup's RtpHeaderExtensionUri enum
-					if id, err := strconv.Atoi(idStr); err == nil && !extmapSeen[id] && supportedRtpHeaderExtensionURIs[uri] {
-						extmapSeen[id] = true
-						headerExtensions = append(headerExtensions, map[string]interface{}{
-							"id":      id,
-							"uri":     uri,
-							"encrypt": false,
-						})
+					if id, err := strconv.Atoi(idStr); err == nil && supportedRtpHeaderExtensionURIs[uri] {
+						extMap[id] = uri
 					}
 				}
 			}
+		}
+		for _, attr := range md.Attributes {
+			if strings.EqualFold(attr.Key, "extmap") {
+				fields := strings.Fields(attr.Value)
+				if len(fields) >= 2 {
+					idParts := strings.Split(fields[0], "/")
+					idStr := idParts[0]
+					if id, err := strconv.Atoi(idStr); err == nil {
+						if len(idParts) > 1 && strings.EqualFold(idParts[1], "inactive") {
+							delete(extMap, id)
+							continue
+						}
+						uri := fields[1]
+						if supportedRtpHeaderExtensionURIs[uri] {
+							extMap[id] = uri
+						} else {
+							delete(extMap, id)
+						}
+					}
+				}
+			}
+		}
+
+		extIDs := make([]int, 0, len(extMap))
+		for id := range extMap {
+			extIDs = append(extIDs, id)
+		}
+		sort.Ints(extIDs)
+
+		headerExtensions := make([]map[string]interface{}, 0, len(extIDs))
+		for _, id := range extIDs {
+			headerExtensions = append(headerExtensions, map[string]interface{}{
+				"id":      id,
+				"uri":     extMap[id],
+				"encrypt": false,
+			})
 		}
 
 		// Parse Simulcast RIDs (a=rid)
@@ -589,10 +619,11 @@ func ParsePublisherOffer(offerSDP string) (*ParsedPublisherOffer, error) {
 		}
 
 		rtpParams := map[string]interface{}{
-			"codecs":           codecs,
-			"headerExtensions": headerExtensions,
-			"encodings":        encodings,
-			"rtcp":             rtcpParams,
+			"codecs":            codecs,
+			"headerExtensions":  headerExtensions,
+			"header_extensions": headerExtensions,
+			"encodings":         encodings,
+			"rtcp":              rtcpParams,
 		}
 		if mid != "" {
 			rtpParams["mid"] = mid
@@ -771,7 +802,7 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 		sdp.Attribute{Key: "ice-pwd", Value: transport.IcePwd},
 		sdp.Attribute{Key: "ice-options", Value: "trickle"},
 		sdp.Attribute{Key: "ice-lite"},
-		sdp.Attribute{Key: "setup", Value: "passive"},
+		sdp.Attribute{Key: "setup", Value: "active"}, // REQ-005: active DTLS initiator role
 	)
 
 	if fp := selectPrimaryFingerprint(transport.DtlsFingerprints); fp != nil {
@@ -830,6 +861,10 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 		if mid != "" {
 			ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "mid", Value: mid})
 		}
+
+		// REQ-005: Enforce media-level a=setup:active in every media section
+		// (m=application, m=video, m=audio) to prevent DTLS role deadlock with Pion WebRTC clients.
+		ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{Key: "setup", Value: "active"})
 
 		if !isApp {
 			// RFC 3264 Section 6.1: Conform direction (inactive if offer is inactive/recvonly/port 0, otherwise recvonly)
