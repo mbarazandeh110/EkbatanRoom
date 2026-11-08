@@ -200,3 +200,69 @@ STATUS: IMPLEMENTED
      - Verification: Full test suite executed with race detector (`go test -count=1 -race ./...`) - PASS (100% clean, 0 race conditions, 0 regressions).
 
 
+===================================================================
+RFC / REQUIREMENT ID: REQ-004
+SOURCE SERVICE: rtc-load-suite
+TARGET SERVICE: signaling-coordinator (with sfu-media-node coordination)
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Bottleneck Report | Protocol & Media Pipeline Coordination]
+   Resolve Video Consumer Layer Promotion Lock (`spatial_layer: -1` & `targetLayers: {-1, -1}`) under `livekit-cli` Load Testing: Coordinate initial video consumer preferred layer activation and keyframe synchronization between signaling and SFU pipeline to ensure RTP media egress to subscribers.
+
+2. REASON & TECHNICAL EVIDENCE:
+   - Verification of REQ-003:
+     * Signaling coordinator implementation of REQ-003 was verified. `livekit-cli` receives `TrackPublishedResponse` with `mimeType: "video/vp8"` and valid `Codecs`.
+     * Verbose execution logs confirm `livekit-cli` matches `p.MimeType()` against `SubscribedQualityUpdate`, eliminates the `subscriber requested backup codec but no track found` warning, sets `track.setDisabled(false)`, and logs `updating layer enable {"quality": "LOW/MEDIUM/HIGH", "enabled": true, "codec": "vp8"}`.
+   - Comparative Differential Evidence (Audio vs. Video):
+     * Audio Load Test (`./bin/lk load-test --audio-publishers 1 --subscribers 1 --duration 5s`):
+       - 100% SUCCESS: 42 RTP packets received, 80.3 kbps bitrate, 0% packet loss, 1/1 tracks received immediately.
+       - Proves UDP socket routing, STUN/ICE binding on `tun0` (10.8.0.4), DTLS handshake, and client-side Pion WebRTC `OnTrack` pipeline function properly end-to-end.
+     * Video Load Test (Gate 1 Baseline Sanity: 1 publisher, 10 subscribers, VP8 Simulcast 720p/360p/180p, 30s):
+       - 100% FAILURE: Connection Success Rate = 100.0% (all 11 WebSockets and PeerConnections connected), but ZERO media tracks received (`Tracks: 0/10`, `Bitrate: 0.0 kbps / NaNmbps`, 10 dropped tracks).
+       - Single-layer VP8 (`--no-simulcast`) and H.264 also exhibit identical zero-track delivery.
+   - Network Socket Layer Verification (`/proc/net/snmp` & `/proc/net/dev`):
+     * UDP datagram counters during video test: Publisher transmitted ~130 KB (~150-210 UDP packets) to the SFU RTC port.
+     * ZERO video RTP packets were forwarded by the SFU towards the subscriber sockets (egress bitrate = 0 kbps).
+   - Server & C++ Engine (`mediasoup-sys` v0.23.0) Root Cause Attribution:
+     Investigation of Mediasoup worker core (`SimulcastProducerStreamManager.cpp`, `Producer.cpp`, `Consumer.cpp`, `BitrateAllocator.cpp`) identified a dual-lock stalemate:
+     1. Lock 1 - Initial Target Layers Suppression (`targetLayers = {-1, -1}`):
+        In `SimulcastProducerStreamManager::ProcessRtpPacket`:
+        ```cpp
+        if (this->targetLayers.temporal == -1) {
+            return DROP; // All incoming packets dropped with INVALID_TARGET_LAYER
+        }
+        ```
+        When a consumer is created, `targetLayers` initializes to `{-1, -1}`. Layer recalculation (`RecalculateTargetLayers`) and BWE bitrate allocation (`BitrateAllocator`) only promote `targetLayers` if `producerRtpStream->GetScore() > 0` and `producerRtpStream->GetTemporalLayerBitrate() > 0`. At stream inception, bitrate evaluates to 0 bps. Crucially, `MayChangeLayers()` is ONLY invoked during lifecycle transitions and RTCP Sender Reports (`ProducerNewRtpStream`, `ProducerRtcpSenderReport`, `ProducerRtpStreamScore`, `OnResumed`) and NEVER on regular incoming RTP data packets. As a result, incoming RTP packets are dropped before BWE has an opportunity to allocate target layers.
+     2. Lock 2 - Keyframe Promotion Guard (`currentSpatialLayer = -1`):
+        In `SimulcastProducerStreamManager::ProcessRtpPacket`:
+        ```cpp
+        if (this->currentSpatialLayer != this->targetLayers.spatial && spatialLayer == this->targetLayers.spatial) {
+            if (this->keyFrameSupported && !packet->IsKeyFrame()) {
+                return BUFFER; // Discards/buffers until keyframe is received
+            }
+            shouldSwitchCurrentSpatialLayer = true;
+        }
+        ```
+        Switching out of `currentSpatialLayer = -1` strictly requires an intra-frame (`packet->IsKeyFrame() == true`).
+        When `Consume` is called on `sfu-media-node`, Mediasoup logs `Requested initial keyframe for video consumer` (`method:ConsumerRequestKeyFrame`), dispatching an RTCP PLI/FIR back to the publisher.
+        However, `livekit-cli` is a synthetic test client that streams pre-recorded frames from an embedded IVF file (`ivfreader`) in a sequential loop. It does not possess an active video encoder to generate an IDR keyframe on-demand in response to in-band RTCP PLI/FIR.
+        Because the initial IVF keyframe (frame 0) was already transmitted before the subscriber ICE/DTLS completed, Mediasoup's consumer never receives a keyframe on the target spatial layer. Consequently, `currentSpatialLayer` remains locked at `-1`, suppressing 100% of video RTP egress.
+   - SLA Impact:
+     Gate 1 (`gate-01-baseline`) failed with 10 dropped/missing tracks (Threshold: max 0). Violates Rule 1.2 ("No False Positives"). Downstream Gates 2-4 are BLOCKED per sequential gating protocol.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - Immediate Layer & Keyframe Synchronization:
+     * When subscriber answers are finalized and consumer transports are established, ensure the SFU video consumer is activated with valid target layers:
+       a) In `sfu-media-node`, configure the consumer's initial preferred layers upon creation or during `ConsumeRequest` (e.g. defaulting to spatial layer 0 or layer 2).
+       b) Alternatively/additionally, `signaling-coordinator` should invoke `SetConsumerPreferredLayers` (gRPC `SetConsumerPreferredLayersRequest` to `sfu-media-node`) once the subscriber peer connection completes negotiation.
+     * Ensure keyframe propagation is compatible with simulated / synthetic clients:
+       a) Propagate signaling-level keyframe requests or negotiate keyframe cadence so publishers deliver a fresh keyframe after subscriber attachment.
+       b) For synthetic test harnesses and video looper clients, ensure `sfu-media-node` / Mediasoup allows immediate stream promotion or handles initial packet tolerance so that the consumer transitions out of `spatial_layer: -1` and continuously forwards video RTP packets to subscribers.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
+   - Decision: PENDING
+   - Architectural Justification: ...
+   - Modified Files & Benchmark Verifications: ...
+
