@@ -357,3 +357,74 @@ STATUS: IMPLEMENTED
        - Added `TestLiveKitResponder_SendSubscribedQualityUpdate_H264_REQ005`.
      - `.agents/skills/livekit-sdp-synthesizer/SKILL.md`: Documented active DTLS role assignment and dynamic codec requirements.
      - Verification: Full test suite executed with race detector (`go test -count=1 -race ./...`) - PASS (100% clean, 0 race conditions, 0 regressions).
+
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-006
+SOURCE SERVICE: rtc-load-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Protocol & Contract Conformance | DTLS Role Assignment on Subscriber Transports]
+   Assign Active DTLS Role (`dtlsRole = "client"`) for Subscriber Transports in `ParseSubscriberAnswer` When Client Answers `a=setup:passive` to Prevent Dual-Server Handshake Deadlock and Restore Audio/Video Media Delivery to Subscribers.
+
+2. REASON & TECHNICAL EVIDENCE:
+   - Empirical Load Testing Discrepancy & Symptom:
+     * During Gate 1 (Baseline Sanity: 1 publisher, 10 subscribers) as well as differential single-participant runs (`./bin/lk load-test --audio-publishers 1 --subscribers 1 --duration 5s` and `--publishers 1 --subscribers 1 --no-simulcast`), WebSocket signaling and ICE connections succeed (100% success rate).
+     * However, 0/10 media tracks are delivered to subscribers (`Tracks: 0/10`, `Bitrate: NaNmbps`, 0 RTP packets received by subscribers).
+   - Client-Side Diagnostic Evidence (`livekit-cli` / Pion WebRTC v4 verbose execution):
+     * Publisher Transport: Transitions cleanly to connected:
+       `2026-11-08T19:53:04.123+0330 DEBUG lk v2@v2.19.0/transport.go:250 peer connection state changed {"transport": "PUBLISHER", "state": "connected"}`
+     * Subscriber Transport: Enters `connecting` state, establishes ICE, but NEVER transitions to `connected`:
+       `2026-11-08T19:53:04.106+0330 DEBUG lk v2@v2.19.0/transport.go:250 peer connection state changed {"transport": "SUBSCRIBER", "state": "connecting"}`
+       `2026-11-08T19:53:04.106+0330 DEBUG lk v2@v2.19.0/engine.go:1055 sending answer for subscriber {"answer": {"type":"answer","sdp":"... a=setup:passive ... "}}`
+       `2026-11-08T19:53:04.311+0330 DEBUG lk v2@v2.19.0/engine.go:659 ICE connected {"transport": "SUBSCRIBER", "iceCandidatePair": ...}`
+       (Handshake stalls here until timeout / test completion; peer connection remains in `connecting` and never reaches `connected`).
+   - Server-Side Diagnostic Evidence (`sfu-media-node` logs):
+     * Subscriber transport connection log:
+       `{"timestamp":"2026-11-08T16:23:04.110434Z","level":"INFO","fields":{"message":"Connecting transport with reciprocal DTLS role assignment","router_id":"...","transport_id":"66dcb41b-bd40-47dd-9c45-879c923a39a0","peer_id":"user-23b2e8e0","is_publisher":false,"requested_dtls_role":"Server","mediasoup_remote_role":"Client"}}`
+       `{"message":"WebRtcTransport DTLS role successfully established","transport_id":"66dcb41b-bd40-47dd-9c45-879c923a39a0","established_local_dtls_role":"Server"}`
+     * ICE completes on the transport:
+       `2026-11-08T16:23:04.311370Z RTC::WebRtcTransport::OnIceServerSelectedTuple() | ICE selected tuple`
+       `2026-11-08T16:23:04.311454Z RTC::WebRtcTransport::OnIceServerCompleted() | ICE completed`
+     * ZERO DTLS packets or handshake events occur on the subscriber transport after ICE completes (`RTC::WebRtcTransport::OnDtlsTransportConnected()` is never emitted for transport `66dcb41b`).
+   - Root Cause Mechanism (Bottleneck Attribution Decision Tree):
+     1. In `signaling-coordinator/internal/adapters/inbound/livekit/sdp_mapper.go`:
+        `ParseSubscriberAnswer` parses the client's SDP answer attributes:
+        ```go
+        if attr.Key == "setup" {
+            switch strings.TrimSpace(attr.Value) {
+            case "active":
+                dtlsRole = "client"
+            case "passive":
+                dtlsRole = "server"
+            }
+        }
+        ```
+     2. When the client answers `a=setup:passive` (as Pion WebRTC always does when answering an `actpass` offer per RFC 4145 / RFC 8842), the client is declaring itself as the DTLS Server.
+     3. `ParseSubscriberAnswer` directly maps `"passive"` to `dtlsRole = "server"`.
+     4. `RoomActor.HandleSubscriberAnswer` invokes `transportPort.ConnectTransport` passing `DtlsRole: "server"`.
+     5. `sfu-media-node`'s `ConnectTransport` receives `dtls_role: "server"`. Per the cross-service contract established in REQ-005, `sfu-media-node` interprets `dtls_role` as the requested role for Mediasoup, inverting it for the remote endpoint (`mediasoup_remote_role = Client`).
+     6. Consequently, Mediasoup's local role is established as `Server` (`established_local_dtls_role: "Server"`), causing Mediasoup to wait passively for an incoming `ClientHello`.
+     7. DEADLOCK: BOTH PEERS ARE DTLS SERVERS.
+        - `livekit-cli` (Pion) has `a=setup:passive` and waits for the server to send `ClientHello`.
+        - Mediasoup has local role `Server` and waits for the client to send `ClientHello`.
+        - Neither peer transmits `ClientHello`.
+        - The DTLS handshake never completes, SRTP keys are never derived, and all media forwarding to the subscriber remains blocked.
+   - Contrast with Working Publisher Transport (REQ-005):
+     * In `ParsePublisherOffer`, `dtlsRole` was explicitly set to `"client"`. `sfu-media-node` assigned local role `Client` to Mediasoup, Mediasoup actively sent `ClientHello`, and the DTLS handshake completed in 3ms.
+   - SLA Impact:
+     * Gate 1 (`gate-01-baseline`) fails with 10 dropped tracks (0.0 kbps). Violates Rule 1.2 ("No False Positives"). Downstream Gates 2-4 blocked per sequential gating.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `signaling-coordinator/internal/adapters/inbound/livekit/sdp_mapper.go` in `ParseSubscriberAnswer`:
+     * When the client's subscriber answer specifies `a=setup:passive`, the answering client is DTLS Server, which means Mediasoup MUST act as the active DTLS Client.
+     * Therefore, `ParseSubscriberAnswer` must assign `dtlsRole = "client"` (or invert `active` -> `"server"` and `passive` -> `"client"`, with default fallback to `"client"`).
+     * When `dtlsRole = "client"` is passed to `ConnectTransport`, `sfu-media-node` sets Mediasoup's local role to `Client`, prompting Mediasoup to actively send `ClientHello` immediately upon ICE connection, completing the DTLS handshake and enabling immediate RTP packet delivery to subscribers.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
+   - Decision: PENDING
+   - Architectural Justification: ...
+   - Modified Files & Benchmark Verifications: ...
