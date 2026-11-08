@@ -766,6 +766,44 @@ func GeneratePublisherAnswer(offerSDP string, transport *domain.TransportInfo) (
 					ansMd.Attributes = append(ansMd.Attributes, attr)
 				} else if k == "extmap" {
 					ansMd.Attributes = append(ansMd.Attributes, attr)
+				} else if k == "rid" {
+					// REQ-002: Negotiate simulcast RID: offer has "rid:<id> send ...", answer must have "rid:<id> recv ..."
+					fields := strings.Fields(attr.Value)
+					val := attr.Value
+					if len(fields) >= 2 && strings.EqualFold(fields[1], "send") {
+						fields[1] = "recv"
+						val = strings.Join(fields, " ")
+					} else if len(fields) == 1 {
+						val = fields[0] + " recv"
+					}
+					ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{
+						Key:   "rid",
+						Value: val,
+					})
+				} else if k == "simulcast" {
+					// REQ-002: RFC 8853 Section 5.2: If offer has "simulcast:send ...", answer must have "simulcast:recv ..."
+					trimmed := strings.TrimSpace(attr.Value)
+					var ansVal string
+					parts := strings.Fields(trimmed)
+					for i, p := range parts {
+						if strings.EqualFold(p, "send") && i+1 < len(parts) {
+							ansVal = "recv " + parts[i+1]
+							break
+						}
+					}
+					if ansVal == "" {
+						if strings.HasPrefix(strings.ToLower(trimmed), "send ") {
+							ansVal = "recv " + strings.TrimSpace(trimmed[5:])
+						} else if strings.EqualFold(trimmed, "send") {
+							ansVal = "recv"
+						}
+					}
+					if ansVal != "" {
+						ansMd.Attributes = append(ansMd.Attributes, sdp.Attribute{
+							Key:   "simulcast",
+							Value: ansVal,
+						})
+					}
 				}
 			}
 		} else {

@@ -47,5 +47,6 @@ type PeerResponderPort interface {
 	SendTrickle(candidate string, target int) error
 	SendParticipantUpdate(participants []*domain.Participant) error
 	SendTrackMuted(trackSID string, muted bool) error
+	SendSubscribedQualityUpdate(trackSID string, codec string, qualities []domain.SubscribedQuality) error
 	Close() error
 }

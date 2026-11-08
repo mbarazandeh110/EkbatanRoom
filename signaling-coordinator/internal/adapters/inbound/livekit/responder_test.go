@@ -87,3 +87,81 @@ func TestLiveKitResponder_SendParticipantUpdate_MapsDisconnectedState(t *testing
 		t.Fatalf("expected Bob state to be DISCONNECTED, got: %v", bobInfo)
 	}
 }
+
+func TestLiveKitResponder_SendSubscribedQualityUpdate(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	serverConnChan := make(chan *websocket.Conn, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Upgrade failed: %v", err)
+			return
+		}
+		serverConnChan <- conn
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("client dial failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	serverConn := <-serverConnChan
+	defer serverConn.Close()
+
+	responder := livekit.NewLiveKitResponder(serverConn)
+
+	qualities := []domain.SubscribedQuality{
+		{Quality: domain.VideoQualityLow, Enabled: true},
+		{Quality: domain.VideoQualityMedium, Enabled: true},
+		{Quality: domain.VideoQualityHigh, Enabled: true},
+	}
+
+	err = responder.SendSubscribedQualityUpdate("TR_video_test", "video/VP8", qualities)
+	if err != nil {
+		t.Fatalf("SendSubscribedQualityUpdate failed: %v", err)
+	}
+
+	_, msgBytes, err := clientConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage failed: %v", err)
+	}
+
+	var resp livekitproto.SignalResponse
+	if err := proto.Unmarshal(msgBytes, &resp); err != nil {
+		t.Fatalf("proto.Unmarshal failed: %v", err)
+	}
+
+	squ := resp.GetSubscribedQualityUpdate()
+	if squ == nil {
+		t.Fatalf("expected SubscribedQualityUpdate in SignalResponse, got: %+v", resp.Message)
+	}
+
+	if squ.TrackSid != "TR_video_test" {
+		t.Fatalf("expected TrackSid == TR_video_test, got %s", squ.TrackSid)
+	}
+
+	if len(squ.SubscribedQualities) != 3 {
+		t.Fatalf("expected 3 SubscribedQualities, got %d", len(squ.SubscribedQualities))
+	}
+	for _, q := range squ.SubscribedQualities {
+		if !q.Enabled {
+			t.Fatalf("expected quality %v to be enabled", q.Quality)
+		}
+	}
+
+	if len(squ.SubscribedCodecs) != 1 {
+		t.Fatalf("expected 1 SubscribedCodec, got %d", len(squ.SubscribedCodecs))
+	}
+	sc := squ.SubscribedCodecs[0]
+	if sc.Codec != "vp8" {
+		t.Fatalf("expected codec == vp8, got %s", sc.Codec)
+	}
+	if len(sc.Qualities) != 3 {
+		t.Fatalf("expected 3 qualities in SubscribedCodec, got %d", len(sc.Qualities))
+	}
+}
+

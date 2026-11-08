@@ -256,3 +256,18 @@ type NodeEvent struct {
 	LayerChanged   *LayerChangedEvent
 	ResourceClosed *ResourceClosedEvent
 }
+
+type VideoQuality int32
+
+const (
+	VideoQualityLow    VideoQuality = 0
+	VideoQualityMedium VideoQuality = 1
+	VideoQualityHigh   VideoQuality = 2
+	VideoQualityOff    VideoQuality = 3
+)
+
+type SubscribedQuality struct {
+	Quality VideoQuality
+	Enabled bool
+}
+

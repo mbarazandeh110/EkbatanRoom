@@ -981,5 +981,72 @@ func TestRoomActor_LeaveDuringWaitingForAnswer_PendingRenegotiation(t *testing.T
 	}
 }
 
+func TestRoomActor_SubscribedQualityUpdate_REQ002(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	actor := application.NewRoomActor("room-squ-req002", engine, engine, engine, nil)
+
+	respAlice := newMockResponder()
+	_, err := actor.Join(ctx, "alice", "Alice", respAlice)
+	if err != nil {
+		t.Fatalf("Alice join failed: %v", err)
+	}
+
+	// 1. Alice publishes a video track
+	videoTrackSID := "TR_alice_cam"
+	_, err = actor.PublishTracks(ctx, "alice", "client", nil, []domain.TrackPublishCommand{
+		{
+			Kind:              domain.TrackKindVideo,
+			TrackSID:          videoTrackSID,
+			Codec:             "video/VP8",
+			ClockRate:         90000,
+			RtpParametersJSON: `{"codecs":[{"mimeType":"video/VP8"}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Alice PublishTracks failed: %v", err)
+	}
+
+	// Alice should receive SubscribedQualityUpdate immediately upon publishing
+	if len(respAlice.qualityUpdates) < 1 {
+		t.Fatalf("expected Alice to receive SubscribedQualityUpdate on publish, got %d", len(respAlice.qualityUpdates))
+	}
+	qu1 := respAlice.qualityUpdates[len(respAlice.qualityUpdates)-1]
+	if qu1.TrackSID != videoTrackSID {
+		t.Fatalf("expected TrackSID %s, got %s", videoTrackSID, qu1.TrackSID)
+	}
+	if qu1.Codec != "video/VP8" {
+		t.Fatalf("expected Codec video/VP8, got %s", qu1.Codec)
+	}
+
+	// 2. Bob joins the room (late joiner) subscribing to Alice's video track
+	respBob := newMockResponder()
+	initialUpdates := len(respAlice.qualityUpdates)
+	_, err = actor.Join(ctx, "bob", "Bob", respBob)
+	if err != nil {
+		t.Fatalf("Bob join failed: %v", err)
+	}
+
+	// Alice must receive SubscribedQualityUpdate when Bob joins and subscribes
+	if len(respAlice.qualityUpdates) <= initialUpdates {
+		t.Fatalf("expected Alice to receive SubscribedQualityUpdate when Bob joins, got %d (was %d)",
+			len(respAlice.qualityUpdates), initialUpdates)
+	}
+
+	// 3. Bob handles subscriber answer
+	beforeAnswerUpdates := len(respAlice.qualityUpdates)
+	err = actor.HandleSubscriberAnswer(ctx, "bob", "client", nil)
+	if err != nil {
+		t.Fatalf("Bob HandleSubscriberAnswer failed: %v", err)
+	}
+
+	// Alice must receive SubscribedQualityUpdate when Bob completes answer
+	if len(respAlice.qualityUpdates) <= beforeAnswerUpdates {
+		t.Fatalf("expected Alice to receive SubscribedQualityUpdate when Bob answers, got %d (was %d)",
+			len(respAlice.qualityUpdates), beforeAnswerUpdates)
+	}
+}
+
+
 
 

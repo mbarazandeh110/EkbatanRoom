@@ -183,6 +183,60 @@ func TestSDPMapper_GeneratePublisherAnswer_ExplicitPassive(t *testing.T) {
 	}
 }
 
+func TestSDPMapper_GeneratePublisherAnswer_SimulcastNegotiation_REQ002(t *testing.T) {
+	offerWithSimulcast := `v=0
+o=- 12345 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:video-0
+a=sendonly
+a=setup:actpass
+a=rtpmap:96 VP8/90000
+a=rtcp-fb:96 nack
+a=rtcp-fb:96 nack pli
+a=rtcp-fb:96 ccm fir
+a=rid:q send
+a=rid:h send
+a=rid:f send
+a=simulcast:send q;h;f
+`
+	transport := &domain.TransportInfo{
+		TransportID: "pub-simulcast",
+		IceUfrag:    "ufrag-sim",
+		IcePwd:      "pwd-sim",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "11:22:33:44"},
+		},
+	}
+
+	answer, err := livekit.GeneratePublisherAnswer(offerWithSimulcast, transport)
+	if err != nil {
+		t.Fatalf("GeneratePublisherAnswer failed: %v", err)
+	}
+
+	// Verify that simulcast attributes are negotiated to recv per RFC 8853 / REQ-002
+	if !strings.Contains(answer, "a=simulcast:recv q;h;f") {
+		t.Fatalf("expected a=simulcast:recv q;h;f in answer per REQ-002, got:\n%s", answer)
+	}
+	if !strings.Contains(answer, "a=rid:q recv") {
+		t.Fatalf("expected a=rid:q recv in answer, got:\n%s", answer)
+	}
+	if !strings.Contains(answer, "a=rid:h recv") {
+		t.Fatalf("expected a=rid:h recv in answer, got:\n%s", answer)
+	}
+	if !strings.Contains(answer, "a=rid:f recv") {
+		t.Fatalf("expected a=rid:f recv in answer, got:\n%s", answer)
+	}
+	if strings.Contains(answer, "a=simulcast:send") {
+		t.Fatalf("unexpected a=simulcast:send in answer (should be recv)")
+	}
+	if strings.Contains(answer, "a=rid:q send") {
+		t.Fatalf("unexpected a=rid:q send in answer (should be recv)")
+	}
+}
+
 func TestSDPMapper_GenerateSubscriberOffer_ActiveAndInactiveSlots(t *testing.T) {
 	transport := &domain.TransportInfo{
 		TransportID: "sub-transport",

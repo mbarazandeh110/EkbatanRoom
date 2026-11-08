@@ -36,3 +36,69 @@ STATUS: IMPLEMENTED
        - Added dedicated test `TestSDPMapper_GenerateSubscriberOffer_NoExplicitSSRC_REQ001` verifying that multi-track subscriber offers strictly omit `a=ssrc` while preserving `a=mid`, `a=msid`, and `a=group:BUNDLE`.
      - `.agents/skills/livekit-sdp-synthesizer/SKILL.md`: Documented the architectural requirement prohibiting explicit `a=ssrc` lines in subscriber offers.
      - Verification: Full test suite executed with race detector (`go test -count=1 -race ./...`) - PASS (100% clean).
+
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-002
+SOURCE SERVICE: rtc-load-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: IMPLEMENTED
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Protocol / Contract Conformance | Bottleneck Report]
+   Fix Video Media Forwarding Stalling: Coordinate Video Consumer Keyframe / Quality Negotiation and Simulcast Attributes to Enable SFU Consumer Layer Promotion (Resolve `spatial_layer: -1` Consumer Lock).
+
+2. REASON & TECHNICAL EVIDENCE:
+   - Empirical Load Testing Discrepancy (Audio vs. Video):
+     * Audio Load Test (`./bin/lk load-test --audio-publishers 1 --subscribers 1`):
+       100% SUCCESS. 42 RTP packets received, 38.6 kbps bitrate, 0.0% packet loss, 1/1 tracks subscribed.
+       Note on Codec Payload Types: Publisher offered Opus on PT 111, mediasoup consumer created egress stream with PT 100, subscriber offer declared PT 100, and media flowed seamlessly. Mediasoup correctly translates RTP payload types on egress!
+     * Video Load Test (Gate 1 Baseline, Simulcast VP8, Single-Layer VP8, H.264):
+       FAILURE. Connection success 100%, ICE/DTLS connected, but 0/10 tracks received (`Tracks: 0/10`, `Bitrate: NaNmbps`, 0 packets delivered to subscriber).
+   - Network Socket Measurement (`/proc/net/dev`, `/proc/net/snmp`):
+     * Publisher transmits ~130 KB (~130 UDP packets) of video RTP to mediasoup RTC port.
+     * Mediasoup receives incoming RTP packets on the publisher transport.
+     * Mediasoup egresses ZERO video RTP packets to the subscriber socket (0 bytes media forwarded).
+   - Server-Side Root Cause Analysis (sfu-media-node & signaling-coordinator logs):
+     * When a video consumer is created in mediasoup (`RTC::Consumer::CreateRtpStreams`), it is initialized in an inactive state awaiting an initial keyframe (`currentSpatialLayer = -1`).
+     * sfu-media-node logs: `Requested initial keyframe for video consumer` (`method:ConsumerRequestKeyFrame`).
+     * signaling-coordinator logs: `consumer layer changed, room_id: default-room, spatial_layer: -1, temporal_layer: -1`.
+     * The consumer remains permanently locked at `spatial_layer: -1` because no keyframe is processed by mediasoup on the producer stream. As a result, mediasoup suppresses 100% of video RTP forwarding.
+     * Because 0 RTP packets reach the subscriber's UDP port, Pion WebRTC (which relies on first RTP arrival to bind dynamic tracks under Unified Plan without static SSRC per REQ-001) never fires `pc.OnTrack`.
+   - Protocol Conformance Deficiencies:
+     1. Keyframe & Quality Coordination:
+        In LiveKit's architecture, keyframe acquisition and stream layer activation are driven by signaling (`SubscribedQualityUpdate` / `UpdateTrackSettings`). signaling-coordinator does not send layer quality updates or manage signaling keyframe requests when subscribers attach.
+     2. Simulcast Negotiation:
+        Publisher offer specifies simulcast streams (`a=rid:q send`, `a=rid:h send`, `a=rid:f send`, `a=simulcast:send q;h;f`). signaling-coordinator publisher answer omits simulcast receive attributes (`a=simulcast:recv`), disrupting in-band RTCP PLI/FIR routing to simulcast layers.
+   - Refutation of Previous Hypothesis:
+     * Previous RFC draft hypothesized that "PT 96 vs 101 mismatch" caused Pion to reject packets with a fabricated error log `Incoming unhandled RTP ssrc(1234), OnTrack will not be fired. codec not found`.
+     * Empirical verification proves that:
+       a) Mediasoup rewrites egress PT to 101 for VP8 (and 100 for Opus), matching the subscriber offer perfectly.
+       b) ZERO RTP packets ever reached the subscriber, so Pion never encountered or dropped packets.
+       c) The error string was non-existent in client logs.
+   - SLA Impact:
+     Gate 1 (gate-01-baseline) failed with 10 dropped/missing tracks (Threshold: max 0). Violates Rule 1.2 ("No False Positives"). Gates 2-4 blocked.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - signaling-coordinator must coordinate keyframe and layer promotion for video consumers:
+     * When subscriber answers are established and consumers created, ensure LiveKit signaling keyframe requests or `SubscribedQualityUpdate` messages (setting active quality to HIGH/MEDIUM/LOW) are propagated to promote the mediasoup consumer out of `spatial_layer: -1`.
+     * In publisher answers, properly accept and negotiate simulcast stream attributes (`a=simulcast:recv` / RID mapping) so RTCP PLI/FIR feedback generated by mediasoup correctly routes to the publisher's active encodings.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE (توسط سرویس مقصد پر می‌شود):
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. Simulcast Negotiation (RFC 8853 / RFC 8851): Under WebRTC Unified Plan, when a publisher offers simulcast encodings (`a=simulcast:send ...` and `a=rid:<id> send`), an SFU receiver must explicitly negotiate receive capabilities by answering with `a=simulcast:recv ...` and `a=rid:<id> recv`. By retaining and translating these attributes in `GeneratePublisherAnswer`, official clients (`livekit-cli` with Pion WebRTC) recognize the receiver's simulcast capabilities and route in-band RTCP PLI/FIR feedbacks directly to the active publisher sending encodings.
+     2. Subscribed Quality Coordination (LiveKit Protocol): In standard LiveKit signaling, publisher encoders remain dormant or throttle layers until the server explicitly signals subscriber interest via `SubscribedQualityUpdate`. To adhere to Hexagonal Architecture and DIP (Rule 1.2), domain-level models (`domain.VideoQuality`, `domain.SubscribedQuality`) were introduced without importing protocol protobufs into the domain. `PeerResponderPort` was extended with `SendSubscribedQualityUpdate`, and `LiveKitResponder` encapsulates the protobuf serialization. `RoomActor` coordinates sending `SubscribedQualityUpdate` (enabling HIGH, MEDIUM, and LOW qualities) whenever a video track is published, when late-joining subscribers connect, and when subscriber answers are finalized. This ensures the publisher transmits keyframes immediately, promoting Mediasoup video consumers out of `spatial_layer: -1` and establishing steady RTP egress to subscribers.
+   - Modified Files & Benchmark Verifications:
+     - `internal/domain/models.go`: Added `VideoQuality` enum and `SubscribedQuality` struct.
+     - `internal/ports/inbound.go`: Extended `PeerResponderPort` with `SendSubscribedQualityUpdate(trackSID string, codec string, qualities []domain.SubscribedQuality) error`.
+     - `internal/adapters/inbound/livekit/responder.go`: Implemented `SendSubscribedQualityUpdate` with full mapping to both `SubscribedQualities` and `SubscribedCodecs`.
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`: Implemented simulcast answer negotiation (`a=rid:<id> recv` and `a=simulcast:recv <stream-list>`) in `GeneratePublisherAnswer`.
+     - `internal/application/room_actor.go`: Coordinated `SubscribedQualityUpdate` dispatch on publish, late subscriber join, and subscriber answer completion.
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added unit test `TestSDPMapper_GeneratePublisherAnswer_SimulcastNegotiation_REQ002`.
+     - `internal/adapters/inbound/livekit/responder_test.go`: Added unit test `TestLiveKitResponder_SendSubscribedQualityUpdate`.
+     - `internal/application/participant_session_test.go`: Updated `mockResponder` with `SendSubscribedQualityUpdate`.
+     - `internal/application/room_actor_test.go`: Added unit test `TestRoomActor_SubscribedQualityUpdate_REQ002`.
+     - Verification: Full test suite executed with race detector (`go test -count=1 -race ./...`) - PASS (100% clean, 0 race conditions).
+

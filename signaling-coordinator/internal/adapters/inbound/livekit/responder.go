@@ -1,6 +1,7 @@
 package livekit
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -282,6 +283,43 @@ func (r *LiveKitResponder) SendTrackMuted(trackSID string, muted bool) error {
 	}
 	return r.send(msg)
 }
+
+func (r *LiveKitResponder) SendSubscribedQualityUpdate(trackSID string, codec string, qualities []domain.SubscribedQuality) error {
+	protoQualities := make([]*livekitproto.SubscribedQuality, 0, len(qualities))
+	for _, q := range qualities {
+		protoQualities = append(protoQualities, &livekitproto.SubscribedQuality{
+			Quality: livekitproto.VideoQuality(q.Quality),
+			Enabled: q.Enabled,
+		})
+	}
+
+	codecName := strings.ToLower(codec)
+	if idx := strings.Index(codecName, "/"); idx != -1 {
+		codecName = codecName[idx+1:]
+	}
+
+	var subscribedCodecs []*livekitproto.SubscribedCodec
+	if codecName != "" {
+		subscribedCodecs = []*livekitproto.SubscribedCodec{
+			{
+				Codec:     codecName,
+				Qualities: protoQualities,
+			},
+		}
+	}
+
+	msg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_SubscribedQualityUpdate{
+			SubscribedQualityUpdate: &livekitproto.SubscribedQualityUpdate{
+				TrackSid:            trackSID,
+				SubscribedQualities: protoQualities,
+				SubscribedCodecs:    subscribedCodecs,
+			},
+		},
+	}
+	return r.send(msg)
+}
+
 
 func (r *LiveKitResponder) Close() error {
 	r.mu.Lock()

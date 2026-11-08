@@ -9,22 +9,30 @@ import (
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
 
+type qualityUpdateRecord struct {
+	TrackSID  string
+	Codec     string
+	Qualities []domain.SubscribedQuality
+}
+
 type mockResponder struct {
 	ports.PeerResponderPort
-	joinResp    *domain.JoinResult
-	offers      []string
-	trickles    []string
-	partsUpdate [][]*domain.Participant
-	mutedTracks map[string]bool
-	closed      bool
+	joinResp       *domain.JoinResult
+	offers         []string
+	trickles       []string
+	partsUpdate    [][]*domain.Participant
+	mutedTracks    map[string]bool
+	qualityUpdates []qualityUpdateRecord
+	closed         bool
 }
 
 func newMockResponder() *mockResponder {
 	return &mockResponder{
-		offers:      make([]string, 0),
-		trickles:    make([]string, 0),
-		partsUpdate: make([][]*domain.Participant, 0),
-		mutedTracks: make(map[string]bool),
+		offers:         make([]string, 0),
+		trickles:       make([]string, 0),
+		partsUpdate:    make([][]*domain.Participant, 0),
+		mutedTracks:    make(map[string]bool),
+		qualityUpdates: make([]qualityUpdateRecord, 0),
 	}
 }
 
@@ -50,6 +58,15 @@ func (m *mockResponder) SendParticipantUpdate(participants []*domain.Participant
 
 func (m *mockResponder) SendTrackMuted(trackSID string, muted bool) error {
 	m.mutedTracks[trackSID] = muted
+	return nil
+}
+
+func (m *mockResponder) SendSubscribedQualityUpdate(trackSID string, codec string, qualities []domain.SubscribedQuality) error {
+	m.qualityUpdates = append(m.qualityUpdates, qualityUpdateRecord{
+		TrackSID:  trackSID,
+		Codec:     codec,
+		Qualities: qualities,
+	})
 	return nil
 }
 

@@ -36,6 +36,29 @@ type pendingOffer struct {
 	sid       string
 }
 
+type pendingQualityUpdate struct {
+	responder ports.PeerResponderPort
+	trackSID  string
+	codec     string
+	qualities []domain.SubscribedQuality
+}
+
+func defaultSubscribedQualities() []domain.SubscribedQuality {
+	return []domain.SubscribedQuality{
+		{Quality: domain.VideoQualityLow, Enabled: true},
+		{Quality: domain.VideoQualityMedium, Enabled: true},
+		{Quality: domain.VideoQualityHigh, Enabled: true},
+	}
+}
+
+func dispatchQualityUpdates(updates []pendingQualityUpdate) {
+	for _, u := range updates {
+		if u.responder != nil {
+			_ = u.responder.SendSubscribedQualityUpdate(u.trackSID, u.codec, u.qualities)
+		}
+	}
+}
+
 // RoomActor owns the room lifecycle, participant roster, and coordinates media resources.
 type RoomActor struct {
 	mu sync.Mutex
@@ -407,6 +430,7 @@ func (a *RoomActor) Join(
 
 	// 5. Subscribe the newly joined participant to all already-published tracks in the room (Late Joiner support)
 	consumedExistingCount := 0
+	var qualityUpdatesToSend []pendingQualityUpdate
 	for otherID, otherSession := range a.sessions {
 		if otherID == participantID {
 			continue
@@ -423,6 +447,17 @@ func (a *RoomActor) Join(
 			})
 			if err != nil {
 				continue
+			}
+
+			if t.Kind == domain.TrackKindVideo {
+				if otherSession.Responder() != nil {
+					qualityUpdatesToSend = append(qualityUpdatesToSend, pendingQualityUpdate{
+						responder: otherSession.Responder(),
+						trackSID:  t.SID,
+						codec:     t.MimeType,
+						qualities: defaultSubscribedQualities(),
+					})
+				}
 			}
 
 			pubSID := t.PublisherSID
@@ -487,6 +522,7 @@ func (a *RoomActor) Join(
 	if offerToSend != nil {
 		dispatchOffers([]pendingOffer{*offerToSend})
 	}
+	dispatchQualityUpdates(qualityUpdatesToSend)
 
 	return joinRes, nil
 }
@@ -774,6 +810,20 @@ func (a *RoomActor) PublishTracks(
 		}
 	}
 
+	var qualityUpdatesToSend []pendingQualityUpdate
+	if session.Responder() != nil {
+		for _, t := range publishedTracks {
+			if t.Kind == domain.TrackKindVideo {
+				qualityUpdatesToSend = append(qualityUpdatesToSend, pendingQualityUpdate{
+					responder: session.Responder(),
+					trackSID:  t.SID,
+					codec:     t.MimeType,
+					qualities: defaultSubscribedQualities(),
+				})
+			}
+		}
+	}
+
 	broadcastResponders, broadcastParts := a.collectBroadcastLocked()
 
 	pubTrans := session.PubTransport()
@@ -781,6 +831,7 @@ func (a *RoomActor) PublishTracks(
 
 	dispatchBroadcast(broadcastResponders, broadcastParts)
 	dispatchOffers(offersToSend)
+	dispatchQualityUpdates(qualityUpdatesToSend)
 
 	return pubTrans, nil
 }
@@ -826,6 +877,30 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 	needsIceOffer := session.ConsumePendingIceRestart()
 	needsRenegotiation := session.ConsumePendingRenegotiation()
 
+	var qualityUpdatesToSend []pendingQualityUpdate
+	seenTracks := make(map[string]bool)
+
+	for _, slot := range session.SlotTable().ListSlots() {
+		if slot.Active && slot.Kind == domain.TrackKindVideo {
+			if !seenTracks[slot.TrackSID] {
+				seenTracks[slot.TrackSID] = true
+				for _, pubSession := range a.sessions {
+					if tr, ok := pubSession.Participant().GetTrack(slot.TrackSID); ok {
+						if pubSession.Responder() != nil {
+							qualityUpdatesToSend = append(qualityUpdatesToSend, pendingQualityUpdate{
+								responder: pubSession.Responder(),
+								trackSID:  slot.TrackSID,
+								codec:     tr.MimeType,
+								qualities: defaultSubscribedQualities(),
+							})
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+
 	if len(pending) > 0 {
 		for _, t := range pending {
 			consRes, err := a.mediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
@@ -838,6 +913,20 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 			})
 			if err != nil {
 				continue
+			}
+
+			if t.Kind == domain.TrackKindVideo {
+				if !seenTracks[t.SID] {
+					seenTracks[t.SID] = true
+					if pubSess, ok := a.sessions[t.PublisherID]; ok && pubSess.Responder() != nil {
+						qualityUpdatesToSend = append(qualityUpdatesToSend, pendingQualityUpdate{
+							responder: pubSess.Responder(),
+							trackSID:  t.SID,
+							codec:     t.MimeType,
+							qualities: defaultSubscribedQualities(),
+						})
+					}
+				}
 			}
 
 			pubSID := t.PublisherSID
@@ -891,6 +980,7 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 	if offerToSend != nil {
 		dispatchOffers([]pendingOffer{*offerToSend})
 	}
+	dispatchQualityUpdates(qualityUpdatesToSend)
 
 	return nil
 }
