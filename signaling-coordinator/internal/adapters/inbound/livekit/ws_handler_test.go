@@ -37,8 +37,11 @@ type mockCoordinator struct {
 	pausedCalls         int
 	lastLayerTrackSID   string
 	lastSpatialLayer    int32
-	lastTemporalLayer   int32
-	layerCalls          int
+	lastTemporalLayer      int32
+	layerCalls             int
+	subscriberAnswerCount  int
+	lastSubscriberDTLSRole string
+	lastSubscriberFPS      []domain.DtlsFingerprintInfo
 }
 
 func (m *mockCoordinator) SetConsumerPaused(ctx context.Context, roomID, participantID, trackSID string, paused bool) error {
@@ -120,6 +123,11 @@ func (m *mockCoordinator) SetTrackMuted(ctx context.Context, roomID, participant
 }
 
 func (m *mockCoordinator) HandleSubscriberAnswer(ctx context.Context, roomID, participantID string, dtlsRole string, fingerprints []domain.DtlsFingerprintInfo) error {
+	m.mu.Lock()
+	m.subscriberAnswerCount++
+	m.lastSubscriberDTLSRole = dtlsRole
+	m.lastSubscriberFPS = fingerprints
+	m.mu.Unlock()
 	return nil
 }
 
@@ -1049,3 +1057,83 @@ func TestLiveKitWSHandler_AddTrackRequest_VideoMimeTypeAndCodecs_REQ003(t *testi
 		t.Fatalf("expected Track.Simulcast to be true with multiple layers")
 	}
 }
+
+func TestLiveKitWSHandler_SubscriberAnswer_PassiveYieldsClientRole_REQ006(t *testing.T) {
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc?room=conf-req006&identity=bob&name=Bob"
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, resp, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101 Switching Protocols, got %d", resp.StatusCode)
+	}
+
+	// Consume initial Join response
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read initial join response: %v", err)
+	}
+
+	// Send subscriber answer with a=setup:passive (Pion WebRTC official client answer)
+	subAnswerSDP := `v=0
+o=- 776655 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:0
+a=recvonly
+a=setup:passive
+a=fingerprint:sha-256 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77
+a=rtpmap:96 VP8/90000
+`
+	answerReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_Answer{
+			Answer: &livekitproto.SessionDescription{
+				Type: "answer",
+				Sdp:  subAnswerSDP,
+			},
+		},
+	}
+	answerData, err := proto.Marshal(answerReq)
+	if err != nil {
+		t.Fatalf("failed to marshal answer request: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, answerData); err != nil {
+		t.Fatalf("failed to write answer message: %v", err)
+	}
+
+	// Wait briefly for ws_handler goroutine to process the answer
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		coord.mu.Lock()
+		count := coord.subscriberAnswerCount
+		role := coord.lastSubscriberDTLSRole
+		fps := coord.lastSubscriberFPS
+		coord.mu.Unlock()
+		if count > 0 {
+			if role != "client" {
+				t.Fatalf("expected coordinator HandleSubscriberAnswer to receive dtlsRole 'client' for passive answer (REQ-006), got '%s'", role)
+			}
+			if len(fps) != 1 || fps[0].Algorithm != "sha-256" {
+				t.Fatalf("expected 1 remote sha-256 fingerprint, got %+v", fps)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for HandleSubscriberAnswer to be called")
+}
+

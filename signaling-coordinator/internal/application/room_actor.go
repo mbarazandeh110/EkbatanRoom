@@ -919,10 +919,14 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 
 	// Connect Subscriber Transport on the SFU (once per transport lifecycle)
 	if len(fingerprints) > 0 && !session.SubTransportConnected() {
+		role := dtlsRole
+		if role == "" {
+			role = "client"
+		}
 		err := a.transportPort.ConnectTransport(ctx, &domain.ConnectTransportCommand{
 			RouterID:           a.room.RouterID,
 			TransportID:        p.SubscriberTransportID,
-			DtlsRole:           dtlsRole,
+			DtlsRole:           role,
 			RemoteFingerprints: fingerprints,
 		})
 		if err == nil {

@@ -1035,6 +1035,7 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 			md.Attributes = append(md.Attributes,
 				sdp.Attribute{Key: "mid", Value: slot.MID},
 				sdp.Attribute{Key: "inactive"},
+				sdp.Attribute{Key: "setup", Value: "actpass"},
 			)
 			offer.MediaDescriptions = append(offer.MediaDescriptions, md)
 			continue
@@ -1059,6 +1060,7 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 		md.Attributes = append(md.Attributes,
 			sdp.Attribute{Key: "mid", Value: slot.MID},
 			sdp.Attribute{Key: "sendonly"},
+			sdp.Attribute{Key: "setup", Value: "actpass"},
 			sdp.Attribute{Key: "rtcp-mux"},
 			sdp.Attribute{
 				Key:   "rtpmap",
@@ -1134,6 +1136,11 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 }
 
 // ParseSubscriberAnswer extracts DTLS role and remote fingerprints from client's subscriber answer.
+// In WebRTC DTLS negotiation (RFC 4145 / RFC 8842), roles are reciprocal:
+// - When the remote client answers "passive" (acting as DTLS Server), the SFU (Mediasoup) MUST act
+//   as the active DTLS Client ("client") to initiate the DTLS handshake (ClientHello) (REQ-006).
+// - When the remote client answers "active" (acting as DTLS Client), the SFU MUST act as DTLS Server ("server").
+// - When unspecified or "actpass", default to "client" to proactively initiate the handshake.
 func ParseSubscriberAnswer(answerSDP string) (*ParsedSubscriberAnswer, error) {
 	var s sdp.SessionDescription
 	if err := s.Unmarshal([]byte(answerSDP)); err != nil {
@@ -1141,23 +1148,32 @@ func ParseSubscriberAnswer(answerSDP string) (*ParsedSubscriberAnswer, error) {
 	}
 
 	fingerprints := make([]domain.DtlsFingerprintInfo, 0)
-	dtlsRole := "client"
-
-	for _, attr := range s.Attributes {
-		if attr.Key == "fingerprint" {
-			parts := strings.SplitN(attr.Value, " ", 2)
-			if len(parts) == 2 {
+	seenFp := make(map[string]bool)
+	addFingerprint := func(val string) {
+		parts := strings.SplitN(strings.TrimSpace(val), " ", 2)
+		if len(parts) == 2 {
+			key := strings.ToLower(parts[0]) + ":" + parts[1]
+			if !seenFp[key] {
+				seenFp[key] = true
 				fingerprints = append(fingerprints, domain.DtlsFingerprintInfo{
 					Algorithm: parts[0],
 					Value:     parts[1],
 				})
 			}
 		}
-		if attr.Key == "setup" {
-			switch strings.TrimSpace(attr.Value) {
-			case "active":
+	}
+
+	dtlsRole := "client"
+
+	for _, attr := range s.Attributes {
+		if strings.EqualFold(attr.Key, "fingerprint") {
+			addFingerprint(attr.Value)
+		}
+		if strings.EqualFold(attr.Key, "setup") {
+			switch strings.TrimSpace(strings.ToLower(attr.Value)) {
+			case "passive", "actpass":
 				dtlsRole = "client"
-			case "passive":
+			case "active":
 				dtlsRole = "server"
 			}
 		}
@@ -1165,20 +1181,14 @@ func ParseSubscriberAnswer(answerSDP string) (*ParsedSubscriberAnswer, error) {
 
 	for _, md := range s.MediaDescriptions {
 		for _, attr := range md.Attributes {
-			if attr.Key == "fingerprint" {
-				parts := strings.SplitN(attr.Value, " ", 2)
-				if len(parts) == 2 {
-					fingerprints = append(fingerprints, domain.DtlsFingerprintInfo{
-						Algorithm: parts[0],
-						Value:     parts[1],
-					})
-				}
+			if strings.EqualFold(attr.Key, "fingerprint") {
+				addFingerprint(attr.Value)
 			}
-			if attr.Key == "setup" {
-				switch strings.TrimSpace(attr.Value) {
-				case "active":
+			if strings.EqualFold(attr.Key, "setup") {
+				switch strings.TrimSpace(strings.ToLower(attr.Value)) {
+				case "passive", "actpass":
 					dtlsRole = "client"
-				case "passive":
+				case "active":
 					dtlsRole = "server"
 				}
 			}

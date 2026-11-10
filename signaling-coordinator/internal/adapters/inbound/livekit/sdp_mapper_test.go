@@ -1752,3 +1752,170 @@ a=ssrc:3001 cname:test
 	}
 }
 
+func TestSDPMapper_ParseSubscriberAnswer_DTLSRole_DeadlockResolution_REQ006(t *testing.T) {
+	// Base subscriber answer with media-level setup
+	sampleSubscriberAnswer := `v=0
+o=- 234567 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:0
+a=recvonly
+a=setup:passive
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=rtpmap:96 VP8/90000
+`
+
+	// 1. Client answers "passive" (Pion WebRTC standard answer to actpass offer)
+	// Mediasoup must adopt "client" role to actively send ClientHello and resolve deadlock
+	parsed, err := livekit.ParseSubscriberAnswer(sampleSubscriberAnswer)
+	if err != nil {
+		t.Fatalf("ParseSubscriberAnswer failed: %v", err)
+	}
+	if parsed.DTLSRole != "client" {
+		t.Fatalf("expected SFU DTLSRole 'client' when client answers passive, got '%s'", parsed.DTLSRole)
+	}
+	if len(parsed.RemoteFingerprints) != 1 {
+		t.Fatalf("expected 1 remote fingerprint, got %d", len(parsed.RemoteFingerprints))
+	}
+	if parsed.RemoteFingerprints[0].Algorithm != "sha-256" {
+		t.Fatalf("expected sha-256 fingerprint, got %s", parsed.RemoteFingerprints[0].Algorithm)
+	}
+
+	// 2. Client answers "passive" at session level
+	sessionPassive := `v=0
+o=- 234567 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=setup:passive
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+c=IN IP4 0.0.0.0
+a=mid:0
+a=recvonly
+a=rtpmap:111 opus/48000/2
+`
+	parsedSessPassive, err := livekit.ParseSubscriberAnswer(sessionPassive)
+	if err != nil {
+		t.Fatalf("ParseSubscriberAnswer failed: %v", err)
+	}
+	if parsedSessPassive.DTLSRole != "client" {
+		t.Fatalf("expected SFU DTLSRole 'client' when client answers passive at session level, got '%s'", parsedSessPassive.DTLSRole)
+	}
+
+	// 3. Client answers "active" -> SFU must adopt "server" role
+	answerActive := strings.ReplaceAll(sampleSubscriberAnswer, "a=setup:passive", "a=setup:active")
+	parsedActive, err := livekit.ParseSubscriberAnswer(answerActive)
+	if err != nil {
+		t.Fatalf("ParseSubscriberAnswer failed: %v", err)
+	}
+	if parsedActive.DTLSRole != "server" {
+		t.Fatalf("expected SFU DTLSRole 'server' when client answers active, got '%s'", parsedActive.DTLSRole)
+	}
+
+	// 4. Client answers "actpass" -> SFU defaults to "client" role
+	answerActpass := strings.ReplaceAll(sampleSubscriberAnswer, "a=setup:passive", "a=setup:actpass")
+	parsedActpass, err := livekit.ParseSubscriberAnswer(answerActpass)
+	if err != nil {
+		t.Fatalf("ParseSubscriberAnswer failed: %v", err)
+	}
+	if parsedActpass.DTLSRole != "client" {
+		t.Fatalf("expected SFU DTLSRole 'client' when client answers actpass, got '%s'", parsedActpass.DTLSRole)
+	}
+
+	// 5. Client answer omits a=setup entirely -> SFU defaults to "client" role
+	answerNoSetup := strings.ReplaceAll(sampleSubscriberAnswer, "a=setup:passive\n", "")
+	parsedNoSetup, err := livekit.ParseSubscriberAnswer(answerNoSetup)
+	if err != nil {
+		t.Fatalf("ParseSubscriberAnswer failed: %v", err)
+	}
+	if parsedNoSetup.DTLSRole != "client" {
+		t.Fatalf("expected default SFU DTLSRole 'client' when a=setup is omitted, got '%s'", parsedNoSetup.DTLSRole)
+	}
+
+	// 6. Case-insensitivity & whitespace trimming
+	answerCase := strings.ReplaceAll(sampleSubscriberAnswer, "a=setup:passive", "a=SETUP:  PASSIVE  ")
+	parsedCase, err := livekit.ParseSubscriberAnswer(answerCase)
+	if err != nil {
+		t.Fatalf("ParseSubscriberAnswer failed: %v", err)
+	}
+	if parsedCase.DTLSRole != "client" {
+		t.Fatalf("expected SFU DTLSRole 'client' for 'a=SETUP:  PASSIVE  ', got '%s'", parsedCase.DTLSRole)
+	}
+
+	// 7. Duplicate fingerprints at session and media level are deduplicated
+	answerDupFP := `v=0
+o=- 234567 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=setup:passive
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=mid:0
+a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00
+a=setup:passive
+`
+	parsedDupFP, err := livekit.ParseSubscriberAnswer(answerDupFP)
+	if err != nil {
+		t.Fatalf("ParseSubscriberAnswer failed: %v", err)
+	}
+	if len(parsedDupFP.RemoteFingerprints) != 1 {
+		t.Fatalf("expected deduplication to 1 fingerprint, got %d", len(parsedDupFP.RemoteFingerprints))
+	}
+}
+
+func TestSDPMapper_GenerateSubscriberOffer_MediaLevelSetupActpass_REQ006(t *testing.T) {
+	transport := &domain.TransportInfo{
+		TransportID: "sub-transport-req006",
+		IceUfrag:    "ufrag-req006",
+		IcePwd:      "pwd-req006",
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF"},
+		},
+	}
+	slots := []*domain.SDPSlot{
+		{
+			Index:          0,
+			MID:            "0",
+			Kind:           domain.TrackKindVideo,
+			Active:         true,
+			PayloadType:    96,
+			RTXPayloadType: 97,
+			MimeType:       "video/vp8",
+			ClockRate:      90000,
+			TrackSID:       "TR_video_1",
+			PublisherSID:   "PA_pub_1",
+		},
+		{
+			Index:       1,
+			MID:         "1",
+			Kind:        domain.TrackKindAudio,
+			Active:      false, // recycled inactive slot
+			PayloadType: 111,
+			MimeType:    "audio/opus",
+			ClockRate:   48000,
+			TrackSID:    "TR_audio_1",
+			PublisherSID: "PA_pub_1",
+		},
+	}
+
+	offer, err := livekit.GenerateSubscriberOffer(transport, slots, "PA_sub_1")
+	if err != nil {
+		t.Fatalf("GenerateSubscriberOffer failed: %v", err)
+	}
+
+	// 1. Session level must have a=setup:actpass
+	if !strings.Contains(offer, "a=setup:actpass") {
+		t.Fatalf("expected a=setup:actpass in subscriber offer, got:\n%s", offer)
+	}
+
+	// 2. Count a=setup:actpass occurrences: 1 at session level + 1 in active m-line + 1 in inactive m-line = 3
+	setupCount := strings.Count(offer, "a=setup:actpass")
+	if setupCount < 3 {
+		t.Fatalf("expected a=setup:actpass at session level and within each media description, got count=%d in:\n%s", setupCount, offer)
+	}
+}
+

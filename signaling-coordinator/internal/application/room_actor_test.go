@@ -1244,6 +1244,61 @@ func TestRoomActor_SubscribedQualityUpdate_DynamicCodecH264_REQ005(t *testing.T)
 	}
 }
 
+func TestRoomActor_HandleSubscriberAnswer_ConnectTransportDtlsRole_REQ006(t *testing.T) {
+	ctx := context.Background()
+	engine := newMockOutboundEngine()
+	actor := application.NewRoomActor("room-req006", engine, engine, engine, nil)
+
+	respAlice := newMockResponder()
+	respBob := newMockResponder()
+
+	_, _ = actor.Join(ctx, "alice", "Alice", respAlice)
+	_, _ = actor.Join(ctx, "bob", "Bob", respBob)
+
+	// Alice publishes audio track
+	_, err := actor.PublishTracks(ctx, "alice", "client", []domain.DtlsFingerprintInfo{
+		{Algorithm: "sha-256", Value: "11:22:33"},
+	}, []domain.TrackPublishCommand{
+		{
+			Kind:        domain.TrackKindAudio,
+			TrackSID:    "TR_audio_1",
+			PayloadType: 111,
+			Codec:       "opus",
+			ClockRate:   48000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("PublishTracks failed: %v", err)
+	}
+
+	// Bob receives subscriber offer and answers with empty dtlsRole (defensive fallback test)
+	err = actor.HandleSubscriberAnswer(ctx, "bob", "", []domain.DtlsFingerprintInfo{
+		{Algorithm: "sha-256", Value: "AA:BB:CC"},
+	})
+	if err != nil {
+		t.Fatalf("HandleSubscriberAnswer failed: %v", err)
+	}
+
+	// Verify that ConnectTransport was called with DtlsRole == "client"
+	engine.mu.Lock()
+	var bobSubConnect *domain.ConnectTransportCommand
+	for _, cmd := range engine.connectedTransports {
+		if strings.HasPrefix(cmd.TransportID, "sub-") {
+			bobSubConnect = cmd
+			break
+		}
+	}
+	engine.mu.Unlock()
+
+	if bobSubConnect == nil {
+		t.Fatalf("expected ConnectTransport to be called for Bob's subscriber transport")
+	}
+	if bobSubConnect.DtlsRole != "client" {
+		t.Fatalf("expected ConnectTransport DtlsRole to be 'client', got '%s'", bobSubConnect.DtlsRole)
+	}
+}
+
+
 
 
 
