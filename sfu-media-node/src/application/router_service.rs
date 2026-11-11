@@ -93,11 +93,13 @@ impl RouterUseCase for RouterService {
 
         let payload_bytes = format!("{request_id}:{room_id}").into_bytes();
         let metrics_ref = self.metrics.clone();
+        let state_for_valid = self.state.clone();
 
         self.cache
-            .execute_or_get_with_hook(
+            .execute_or_get_validated(
                 request_id,
                 &payload_bytes,
+                move |(router_id, _, _)| state_for_valid.is_router_active(router_id),
                 || async {
                     // Acquire singleflight lock for this room_id to serialize concurrent creation
                     let lock = self

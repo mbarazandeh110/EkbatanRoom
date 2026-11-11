@@ -163,11 +163,19 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         .into_bytes();
 
         let metrics_ref = self.metrics.clone();
+        let state_for_valid = self.state.clone();
 
         self.create_pipe_transport_cache
-            .execute_or_get_with_hook(
+            .execute_or_get_validated(
                 &params.request_id,
                 &payload_bytes,
+                move |cached: &CreatePipeTransportResult| {
+                    state_for_valid
+                        .pipe_transports
+                        .get(&cached.pipe_transport_id)
+                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false)
+                },
                 || async {
                     let (router, worker_index) = {
                         let r_item =
@@ -375,11 +383,19 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         .into_bytes();
 
         let metrics_ref = self.metrics.clone();
+        let state_for_valid = self.state.clone();
+        let router_id_for_valid = params.router_id.clone();
 
         self.pipe_produce_cache
-            .execute_or_get_with_hook(
+            .execute_or_get_validated(
                 &params.request_id,
                 &payload_bytes,
+                move |cached: &ProduceResult| {
+                    state_for_valid
+                        .get_producer(&router_id_for_valid, &cached.producer_id)
+                        .map(|p| !p.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false)
+                },
                 || async {
                     let (pipe_transport, transport_worker_index) = {
                         let t_item = self
@@ -519,36 +535,6 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         })
                         .detach();
 
-                    if params.kind == DomainMediaKind::Audio {
-                        let observer_opt =
-                            self.state.routers.get(&params.router_id).and_then(|r| {
-                                if transport_worker_index == r.worker_index {
-                                    Some(r.audio_level_observer.clone())
-                                } else {
-                                    r.sub_routers
-                                        .get(&transport_worker_index)
-                                        .map(|sub| sub.audio_level_observer.clone())
-                                }
-                            });
-                        if let Some(observer) = observer_opt {
-                            use mediasoup::rtp_observer::{
-                                RtpObserver, RtpObserverAddProducerOptions,
-                            };
-                            if let Err(e) = observer
-                                .add_producer(RtpObserverAddProducerOptions::new(producer.id()))
-                                .await
-                            {
-                                tracing::warn!(
-                                    router_id = %params.router_id,
-                                    producer_id = %producer_id,
-                                    worker_index = %transport_worker_index,
-                                    error = %e,
-                                    "Failed to add pipe audio producer to AudioLevelObserver"
-                                );
-                            }
-                        }
-                    }
-
                     if !self.state.is_router_active(&params.router_id) {
                         drop(producer);
                         return Err(SfuDomainError::NotFound(format!(
@@ -655,11 +641,19 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         .into_bytes();
 
         let metrics_ref = self.metrics.clone();
+        let state_for_valid = self.state.clone();
 
         self.pipe_consume_cache
-            .execute_or_get_with_hook(
+            .execute_or_get_validated(
                 &params.request_id,
                 &payload_bytes,
+                move |cached: &ConsumeResult| {
+                    state_for_valid
+                        .consumers
+                        .get(&cached.consumer_id)
+                        .map(|c| !c.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false)
+                },
                 || async {
                     let pipe_transport = {
                         let t_item = self
@@ -733,6 +727,8 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         r_item.worker_index
                     };
 
+                    let mut in_flight_pipe_counter = None;
+
                     // If producer was created on a Sub-Router, pipe it to main router where pipe_transport lives
                     if producer_physical_router_id != params.router_id {
                         let singleflight_key = format!(
@@ -752,19 +748,26 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         );
                         let _guard = lock.lock().await;
 
-                        let already_piped = self
+                        let existing_counter = self
                             .state
                             .piped_producers
                             .get(&params.producer_id)
-                            .map(|entries| {
-                                entries.iter().any(|e| {
-                                    e.router_id == params.router_id
-                                        && e.target_router_id == params.router_id
-                                })
-                            })
-                            .unwrap_or(false);
+                            .and_then(|entries| {
+                                entries
+                                    .iter()
+                                    .find(|e| {
+                                        e.router_id == params.router_id
+                                            && e.target_router_id == params.router_id
+                                    })
+                                    .map(|e| {
+                                        e.in_flight_consumes.fetch_add(1, Ordering::SeqCst);
+                                        e.in_flight_consumes.clone()
+                                    })
+                            });
 
-                        if !already_piped {
+                        if let Some(counter) = existing_counter {
+                            in_flight_pipe_counter = Some(counter);
+                        } else {
                             let (pub_router, target_router) = {
                                 let r_item = self
                                     .state
@@ -831,6 +834,9 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                             self.worker_pool
                                 .add_resource_score(main_worker_index, 1);
 
+                            let counter = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+                            in_flight_pipe_counter = Some(counter.clone());
+
                             let entry = PipedProducerEntry {
                                 router_id: params.router_id.clone(),
                                 pipe_consumer: pipe_pair.pipe_consumer,
@@ -838,6 +844,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                                 source_worker_index: producer_worker_index,
                                 target_router_id: params.router_id.clone(),
                                 target_worker_index: main_worker_index,
+                                in_flight_consumes: counter,
                             };
 
                             self.state
@@ -848,12 +855,26 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         }
                     }
 
-                    let producer_id_obj: ProducerId = params.producer_id.parse().map_err(|e| {
-                        SfuDomainError::InvalidArgument(format!(
-                            "Invalid producer_id '{}': {e}",
-                            params.producer_id
-                        ))
-                    })?;
+                    let _in_flight_guard =
+                        crate::application::state::PipedConsumeInFlightGuard::new(
+                            in_flight_pipe_counter,
+                        );
+
+                    let producer_id_obj: ProducerId = match params.producer_id.parse() {
+                        Ok(id) => id,
+                        Err(e) => {
+                            drop(_in_flight_guard);
+                            self.rollback_unused_pipe(
+                                &params.router_id,
+                                &params.producer_id,
+                                &params.router_id,
+                            );
+                            return Err(SfuDomainError::InvalidArgument(format!(
+                                "Invalid producer_id '{}': {e}",
+                                params.producer_id
+                            )));
+                        }
+                    };
 
                     let mut consumer_options =
                         ConsumerOptions::new(producer_id_obj, RtpCapabilities::default());
@@ -862,6 +883,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     let consumer = match pipe_transport.consume(consumer_options).await {
                         Ok(c) => c,
                         Err(e) => {
+                            drop(_in_flight_guard);
                             self.rollback_unused_pipe(
                                 &params.router_id,
                                 &params.producer_id,
@@ -876,8 +898,8 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     let consumer_for_kf = consumer.clone();
                     let consumer_id = consumer.id().to_string();
 
-                    // Immediate RTCP PLI/FIR keyframe dispatch for video pipe consumer
-                    if consumer_for_kf.kind() == mediasoup::prelude::MediaKind::Video {
+                    // Immediate RTCP PLI/FIR keyframe dispatch for non-paused video pipe consumer
+                    if !is_source_paused && consumer_for_kf.kind() == mediasoup::prelude::MediaKind::Video {
                         if let Err(e) = consumer_for_kf.request_key_frame().await {
                             tracing::warn!(
                                 consumer_id = %consumer_id,
@@ -895,6 +917,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     // Final liveness check after all .await calls before inserting into EngineState
                     if !self.state.is_router_active(&params.router_id) {
                         drop(consumer);
+                        drop(_in_flight_guard);
                         self.rollback_unused_pipe(
                             &params.router_id,
                             &params.producer_id,
@@ -914,6 +937,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         .unwrap_or(false);
                     if !pt_active {
                         drop(consumer);
+                        drop(_in_flight_guard);
                         self.rollback_unused_pipe(
                             &params.router_id,
                             &params.producer_id,
@@ -932,6 +956,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         .unwrap_or(false);
                     if !producer_active {
                         drop(consumer);
+                        drop(_in_flight_guard);
                         self.rollback_unused_pipe(
                             &params.router_id,
                             &params.producer_id,
@@ -1042,6 +1067,9 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         .entry(params.producer_id.clone())
                         .or_default()
                         .insert(consumer_id.clone());
+
+                    // Drop in-flight guard safely after registration in producer_consumers
+                    drop(_in_flight_guard);
 
                     let c_weight = if domain_kind == DomainMediaKind::Audio {
                         1

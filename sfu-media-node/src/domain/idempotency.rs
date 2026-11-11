@@ -101,6 +101,24 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
         Fut: std::future::Future<Output = Result<T, SfuDomainError>>,
         H: FnOnce(),
     {
+        self.execute_or_get_validated(request_id, payload, |_| true, action, on_hit)
+            .await
+    }
+
+    pub async fn execute_or_get_validated<F, Fut, V, H>(
+        &self,
+        request_id: &str,
+        payload: &[u8],
+        is_valid: V,
+        action: F,
+        on_hit: H,
+    ) -> Result<T, SfuDomainError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, SfuDomainError>>,
+        V: FnOnce(&T) -> bool,
+        H: FnOnce(),
+    {
         let request_id = request_id.trim();
         if request_id.is_empty() {
             return Err(SfuDomainError::InvalidArgument(
@@ -123,16 +141,17 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
                             completed_at,
                         } => {
                             if now.duration_since(*completed_at) < self.ttl {
-                                if payload_hash == &hash {
-                                    on_hit();
-                                    return Ok(response.clone());
-                                } else {
+                                if payload_hash != &hash {
                                     return Err(SfuDomainError::IdempotencyConflict(format!(
                                         "request_id '{request_id}' already executed with different payload"
                                     )));
                                 }
+                                if is_valid(response) {
+                                    on_hit();
+                                    return Ok(response.clone());
+                                }
+                                // If previous resource is closed or invalid, replace cached entry with fresh InFlight
                             }
-                            // Expired completed entry: overwrite with InFlight
                             occupied.insert(IdempotencyEntry::InFlight {
                                 payload_hash: hash.clone(),
                                 created_at: now,
@@ -367,5 +386,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res, "immediate-retry");
+    }
+
+    #[tokio::test]
+    async fn test_idempotent_reexecution_when_resource_invalid() {
+        let cache = IdempotencyCache::new(Duration::from_secs(60), Duration::from_secs(5));
+        let call_count = Arc::new(AtomicUsize::new(0));
+
+        let action = || {
+            let count = call_count.clone();
+            async move {
+                let id = count.fetch_add(1, Ordering::SeqCst);
+                Ok(format!("resource-{id}"))
+            }
+        };
+
+        // First call: succeeds and caches response
+        let res1 = cache
+            .execute_or_get_validated("req-val", b"payload", |_| true, action, || {})
+            .await
+            .unwrap();
+        assert_eq!(res1, "resource-0");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second call with is_valid returning false (simulating closed resource):
+        // It must invalidate cache entry and re-execute action!
+        let res2 = cache
+            .execute_or_get_validated("req-val", b"payload", |_| false, action, || {})
+            .await
+            .unwrap();
+        assert_eq!(res2, "resource-1");
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 }

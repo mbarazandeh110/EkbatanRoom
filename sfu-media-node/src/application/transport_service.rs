@@ -96,11 +96,19 @@ impl TransportUseCase for TransportService {
         .into_bytes();
 
         let metrics_ref = self.metrics.clone();
+        let state_for_valid = self.state.clone();
 
         self.create_transport_cache
-            .execute_or_get_with_hook(
+            .execute_or_get_validated(
                 &params.request_id,
                 &payload_bytes,
+                move |cached: &CreateTransportResult| {
+                    state_for_valid
+                        .transports
+                        .get(&cached.transport_id)
+                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false)
+                },
                 || async {
                     // Extract primary router info and sub_routers map (DROP guard immediately)
                     let (primary_router, primary_worker_index, sub_routers) = {

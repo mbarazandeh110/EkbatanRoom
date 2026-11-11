@@ -127,11 +127,19 @@ impl MediaUseCase for MediaService {
         .into_bytes();
 
         let metrics_ref = self.metrics.clone();
+        let state_for_valid = self.state.clone();
+        let router_id_for_valid = params.router_id.clone();
 
         self.produce_cache
-            .execute_or_get_with_hook(
+            .execute_or_get_validated(
                 &params.request_id,
                 &payload_bytes,
+                move |cached: &ProduceResult| {
+                    state_for_valid
+                        .get_producer(&router_id_for_valid, &cached.producer_id)
+                        .map(|p| !p.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false)
+                },
                 || async {
                     // Extract transport, check router ownership, and DROP guard before .await (Deadlock fix)
                     let (transport, physical_router_id, worker_index) = {
@@ -400,11 +408,19 @@ impl MediaUseCase for MediaService {
         .into_bytes();
 
         let metrics_ref = self.metrics.clone();
+        let state_for_valid = self.state.clone();
 
         self.consume_cache
-            .execute_or_get_with_hook(
+            .execute_or_get_validated(
                 &params.request_id,
                 &payload_bytes,
+                move |cached: &ConsumeResult| {
+                    state_for_valid
+                        .consumers
+                        .get(&cached.consumer_id)
+                        .map(|c| !c.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false)
+                },
                 || async {
                     let (
                         producer_physical_router_id,
@@ -437,7 +453,6 @@ impl MediaUseCase for MediaService {
                         )
                     };
 
-                    // Extract subscriber transport, verify router ownership, and DROP guard before .await
                     let (transport, peer_id, sub_physical_router_id, sub_worker_index) = {
                         let t_item = self
                             .state
@@ -473,7 +488,9 @@ impl MediaUseCase for MediaService {
                     };
                     tracing::Span::current().record("peer_id", peer_id.as_str());
 
-                    // Intra-Node Multi-Worker Spillover: pipe if producer and subscriber transport are on different workers
+                    // Protect pipe against premature removal by concurrent requests (Race Condition Fix)
+                    let mut in_flight_pipe_counter = None;
+
                     if producer_physical_router_id != sub_physical_router_id {
                         let singleflight_key = format!(
                             "{}:{}:{}",
@@ -492,19 +509,27 @@ impl MediaUseCase for MediaService {
                         );
                         let _guard = lock.lock().await;
 
-                        let already_piped = self
+                        let existing_counter = self
                             .state
                             .piped_producers
                             .get(&params.producer_id)
-                            .map(|entries| {
-                                entries.iter().any(|e| {
-                                    e.router_id == params.router_id
-                                        && e.target_router_id == sub_physical_router_id
-                                })
-                            })
-                            .unwrap_or(false);
+                            .and_then(|entries| {
+                                entries
+                                    .iter()
+                                    .find(|e| {
+                                        e.router_id == params.router_id
+                                            && e.target_router_id == sub_physical_router_id
+                                    })
+                                    .map(|e| {
+                                        e.in_flight_consumes
+                                            .fetch_add(1, Ordering::SeqCst);
+                                        e.in_flight_consumes.clone()
+                                    })
+                            });
 
-                        if !already_piped {
+                        if let Some(counter) = existing_counter {
+                            in_flight_pipe_counter = Some(counter);
+                        } else {
                             let (pub_router, sub_router) = {
                                 let r_item = self.state.routers.get(&params.router_id).ok_or_else(|| {
                                     SfuDomainError::NotFound(format!(
@@ -558,7 +583,6 @@ impl MediaUseCase for MediaService {
                                     ))
                                 })?;
 
-                            // Pre-check codec capability on source router before performing cross-worker pipe
                             if !pub_router.can_consume(&producer_id_obj, &params.rtp_capabilities) {
                                 return Err(SfuDomainError::IncompatibleCodec(format!(
                                     "Router cannot consume producer '{}' with given RTP capabilities",
@@ -599,6 +623,9 @@ impl MediaUseCase for MediaService {
                             self.worker_pool.add_resource_score(producer_worker_index, 1);
                             self.worker_pool.add_resource_score(sub_worker_index, 1);
 
+                            let counter = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+                            in_flight_pipe_counter = Some(counter.clone());
+
                             let entry = PipedProducerEntry {
                                 router_id: params.router_id.clone(),
                                 pipe_consumer: pipe_pair.pipe_consumer,
@@ -606,6 +633,7 @@ impl MediaUseCase for MediaService {
                                 source_worker_index: producer_worker_index,
                                 target_router_id: sub_physical_router_id.clone(),
                                 target_worker_index: sub_worker_index,
+                                in_flight_consumes: counter,
                             };
 
                             self.state
@@ -616,10 +644,16 @@ impl MediaUseCase for MediaService {
                         }
                     }
 
+                    let _in_flight_guard =
+                        crate::application::state::PipedConsumeInFlightGuard::new(
+                            in_flight_pipe_counter,
+                        );
+
                     let target_router = {
                         let r_item = match self.state.routers.get(&params.router_id) {
                             Some(r) if !r.is_closed.load(Ordering::SeqCst) => r,
                             _ => {
+                                drop(_in_flight_guard);
                                 self.rollback_unused_pipe(
                                     &params.router_id,
                                     &params.producer_id,
@@ -643,6 +677,7 @@ impl MediaUseCase for MediaService {
                                 Some(r) => r,
                                 None => {
                                     drop(r_item);
+                                    drop(_in_flight_guard);
                                     self.rollback_unused_pipe(
                                         &params.router_id,
                                         &params.producer_id,
@@ -659,6 +694,7 @@ impl MediaUseCase for MediaService {
                     let producer_id: ProducerId = match params.producer_id.parse() {
                         Ok(id) => id,
                         Err(e) => {
+                            drop(_in_flight_guard);
                             self.rollback_unused_pipe(
                                 &params.router_id,
                                 &params.producer_id,
@@ -671,6 +707,7 @@ impl MediaUseCase for MediaService {
                     };
 
                     if !target_router.can_consume(&producer_id, &params.rtp_capabilities) {
+                        drop(_in_flight_guard);
                         self.rollback_unused_pipe(
                             &params.router_id,
                             &params.producer_id,
@@ -701,6 +738,7 @@ impl MediaUseCase for MediaService {
                     let consumer = match transport.consume(options).await {
                         Ok(c) => c,
                         Err(e) => {
+                            drop(_in_flight_guard);
                             self.rollback_unused_pipe(
                                 &params.router_id,
                                 &params.producer_id,
@@ -712,28 +750,9 @@ impl MediaUseCase for MediaService {
                         }
                     };
 
-                    // Explicitly apply initial preferred layers on video consumer to unfreeze targetLayers
-                    if let Some(pref) = video_preferred_layers {
-                        if let Err(e) = consumer.set_preferred_layers(pref).await {
-                            tracing::warn!(
-                                consumer_id = %consumer.id(),
-                                error = %e,
-                                "Failed to explicitly apply preferred layers on video consumer creation"
-                            );
-                        } else {
-                            tracing::debug!(
-                                consumer_id = %consumer.id(),
-                                spatial_layer = pref.spatial_layer,
-                                temporal_layer = ?pref.temporal_layer,
-                                "Explicitly applied initial preferred layers on video consumer creation"
-                            );
-                        }
-                    }
-
                     let consumer_id = consumer.id().to_string();
                     let is_closed = Arc::new(AtomicBool::new(false));
 
-                    // Register callbacks
                     let event_publisher = self.event_publisher.clone();
                     let r_id = params.router_id.clone();
                     let c_id = consumer_id.clone();
@@ -763,7 +782,7 @@ impl MediaUseCase for MediaService {
                                 let cur_score = score.score as u32;
                                 let prev = last_score_ref.swap(cur_score, Ordering::Relaxed);
                                 if prev == cur_score {
-                                    return; // Hot-Path throttling: skip if score unchanged
+                                    return;
                                 }
 
                                 event_publisher.publish_score(
@@ -778,7 +797,8 @@ impl MediaUseCase for MediaService {
                         })
                         .detach();
 
-                    let consumer_for_closure = consumer.clone();
+                    // Issue 1.1 Fix: Use WeakConsumer to prevent Arc reference cycle and memory leak
+                    let weak_consumer = consumer.downgrade();
                     consumer
                         .on_layers_change({
                             let r_id = r_id.clone();
@@ -796,7 +816,9 @@ impl MediaUseCase for MediaService {
                                     return;
                                 }
 
-                                let pref = consumer_for_closure.preferred_layers();
+                                let pref = weak_consumer
+                                    .upgrade()
+                                    .and_then(|c| c.preferred_layers());
                                 event_publisher.publish_layer_change(
                                     crate::ports::outbound::LayerChangeEventParams {
                                         router_id: &r_id,
@@ -878,10 +900,10 @@ impl MediaUseCase for MediaService {
                         .unwrap_or(-1);
 
                     let consumer_kind: MediaKind = from_mediasoup_kind(consumer.kind());
-                    let consumer_for_kf = consumer.clone();
 
-                    if consumer_for_kf.kind() == mediasoup::prelude::MediaKind::Video {
-                        if let Err(e) = consumer_for_kf.request_key_frame().await {
+                    // Issue 3.1: Keyframe request and retry loop only for non-paused video consumer
+                    if !params.paused && consumer.kind() == mediasoup::prelude::MediaKind::Video {
+                        if let Err(e) = consumer.request_key_frame().await {
                             tracing::warn!(
                                 consumer_id = %consumer_id,
                                 error = %e,
@@ -894,10 +916,7 @@ impl MediaUseCase for MediaService {
                             );
                         }
 
-                        // Background keyframe retry routine: In synthetic/load-test environments (e.g. livekit-cli IVF looper)
-                        // or delayed ICE/DTLS subscriber bindings, the initial keyframe may precede subscriber readiness.
-                        // Retry periodically until current_layers becomes active or max retries reached.
-                        let retry_consumer = consumer_for_kf.clone();
+                        let retry_weak_consumer = consumer.downgrade();
                         let retry_consumer_id = consumer_id.clone();
                         let retry_is_closed = is_closed.clone();
                         let retry_state = self.state.clone();
@@ -910,6 +929,10 @@ impl MediaUseCase for MediaService {
                         tokio::spawn(async move {
                             for attempt in 1..=retry_attempts {
                                 tokio::time::sleep(Duration::from_millis(500)).await;
+
+                                let Some(retry_consumer) = retry_weak_consumer.upgrade() else {
+                                    break;
+                                };
 
                                 if retry_consumer.closed()
                                     || retry_is_closed.load(Ordering::SeqCst)
@@ -939,9 +962,9 @@ impl MediaUseCase for MediaService {
                         });
                     }
 
-                    // Final liveness check after all .await calls before inserting into EngineState
                     if !self.state.is_router_active(&params.router_id) {
                         drop(consumer);
+                        drop(_in_flight_guard);
                         self.rollback_unused_pipe(
                             &params.router_id,
                             &params.producer_id,
@@ -961,6 +984,7 @@ impl MediaUseCase for MediaService {
                         .unwrap_or(false);
                     if !transport_active {
                         drop(consumer);
+                        drop(_in_flight_guard);
                         self.rollback_unused_pipe(
                             &params.router_id,
                             &params.producer_id,
@@ -979,6 +1003,7 @@ impl MediaUseCase for MediaService {
                         .unwrap_or(false);
                     if !producer_active {
                         drop(consumer);
+                        drop(_in_flight_guard);
                         self.rollback_unused_pipe(
                             &params.router_id,
                             &params.producer_id,
@@ -1015,6 +1040,10 @@ impl MediaUseCase for MediaService {
                         .entry(params.producer_id.clone())
                         .or_default()
                         .insert(consumer_id.clone());
+
+                    // Drop in-flight guard safely after registration in producer_consumers
+                    drop(_in_flight_guard);
+
                     let c_weight = if consumer_kind == MediaKind::Audio { 1 } else { 2 };
                     self.worker_pool.add_resource_score(sub_worker_index, c_weight);
                     self.metrics
@@ -1305,11 +1334,6 @@ impl MediaUseCase for MediaService {
                     .sub_resource_score(entry.target_worker_index, 1);
                 // Dropping entry closes both pipe_consumer and pipe_producer via mediasoup RAII
             }
-
-            self.state.pipe_singleflight.retain(|k, _| {
-                !k.starts_with(&format!("{}:{}:", router_id, producer_id))
-                    && !k.starts_with(&format!("{}:", producer_id))
-            });
 
             self.event_publisher.publish_resource_closed(
                 router_id,

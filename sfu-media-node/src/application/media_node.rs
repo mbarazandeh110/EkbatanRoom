@@ -88,6 +88,9 @@ impl MediaNode {
         let worker_pool_dead = worker_pool.clone();
         let metrics_dead = metrics.clone();
         let event_hub_dead = event_hub.clone();
+        let config_dead = config.clone();
+        let sampler_dead = Arc::new(SystemSampler::new());
+
         worker_pool.add_on_dead_callback(Arc::new(move |w_idx| {
             state_dead.cleanup_dead_worker(
                 w_idx,
@@ -95,6 +98,27 @@ impl MediaNode {
                 metrics_dead.as_ref(),
                 event_hub_dead.as_ref(),
             );
+
+            if worker_pool_dead.alive_workers() == 0 {
+                tracing::error!(
+                    "All mediasoup workers have died! Transitioning node to draining state."
+                );
+                state_dead.is_draining.store(true, Ordering::SeqCst);
+                let info = compute_node_capacity(
+                    worker_pool_dead.as_ref(),
+                    &config_dead,
+                    &sampler_dead,
+                    &state_dead,
+                    false,
+                );
+                metrics_dead.update_node_capacity(
+                    info.total_capacity_weight,
+                    info.logical_load_percent,
+                    info.cpu_usage_percent,
+                    info.effective_load_percent,
+                );
+                event_hub_dead.publish_node_capacity(&info);
+            }
         }));
 
         let router_service = Arc::new(RouterService::new(

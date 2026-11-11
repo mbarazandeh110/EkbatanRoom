@@ -1,7 +1,7 @@
 use crate::domain::entities::MediaKind;
 use dashmap::{DashMap, DashSet};
 use mediasoup::prelude::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use mediasoup::audio_level_observer::AudioLevelObserver;
@@ -77,6 +77,32 @@ pub struct PipedProducerEntry {
     pub source_worker_index: usize,
     pub target_router_id: String,
     pub target_worker_index: usize,
+    pub in_flight_consumes: Arc<AtomicUsize>,
+}
+
+/// RAII guard to decrement in_flight_consumes counter upon completion, failure, or cancellation of Consume
+pub struct PipedConsumeInFlightGuard {
+    counter: Option<Arc<AtomicUsize>>,
+}
+
+impl PipedConsumeInFlightGuard {
+    pub fn new(counter: Option<Arc<AtomicUsize>>) -> Self {
+        Self { counter }
+    }
+}
+
+impl Drop for PipedConsumeInFlightGuard {
+    fn drop(&mut self) {
+        if let Some(ref c) = self.counter {
+            let mut cur = c.load(Ordering::SeqCst);
+            while cur > 0 {
+                match c.compare_exchange_weak(cur, cur - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                    Ok(_) => break,
+                    Err(actual) => cur = actual,
+                }
+            }
+        }
+    }
 }
 
 pub type SubRouterLockMap = DashMap<(String, usize), Arc<tokio::sync::Mutex<()>>>;
@@ -272,10 +298,7 @@ impl EngineState {
         }
         self.piped_producers
             .remove_if(producer_id, |_, entries| entries.is_empty());
-        self.pipe_singleflight.retain(|k, _| {
-            !k.starts_with(&format!("{}:{}:", router_id, producer_id))
-                && !k.starts_with(&format!("{}:", producer_id))
-        });
+        // SingleflightKeyGuard automatically cleans up keys when the last waiter drops
         removed
     }
 
@@ -325,6 +348,7 @@ impl EngineState {
             return None;
         }
 
+        // Only cleanup if no in-flight consume operations are currently running on this pipe
         let removed = self
             .piped_producers
             .get_mut(producer_id)
@@ -332,7 +356,9 @@ impl EngineState {
                 entries
                     .iter()
                     .position(|e| {
-                        e.router_id == router_id && e.target_router_id == target_router_id
+                        e.router_id == router_id
+                            && e.target_router_id == target_router_id
+                            && e.in_flight_consumes.load(Ordering::SeqCst) == 0
                     })
                     .map(|pos| entries.swap_remove(pos))
             });
@@ -341,11 +367,6 @@ impl EngineState {
             let source_worker_index = entry.source_worker_index;
             self.piped_producers
                 .remove_if(producer_id, |_, e| e.is_empty());
-
-            let sf_key_scoped = format!("{}:{}:{}", router_id, producer_id, target_router_id);
-            let sf_key_legacy = format!("{}:{}", producer_id, target_router_id);
-            self.pipe_singleflight.remove(&sf_key_scoped);
-            self.pipe_singleflight.remove(&sf_key_legacy);
 
             Some((entry, source_worker_index))
         } else {
@@ -517,11 +538,6 @@ impl EngineState {
                     if let Some(pub_item) = self.get_producer(&removed.router_id, &pid) {
                         worker_pool.sub_resource_score(pub_item.worker_index, 1);
                     }
-                    let sf_key_scoped =
-                        format!("{}:{}:{}", removed.router_id, pid, removed.target_router_id);
-                    let sf_key_legacy = format!("{}:{}", pid, removed.target_router_id);
-                    self.pipe_singleflight.remove(&sf_key_scoped);
-                    self.pipe_singleflight.remove(&sf_key_legacy);
                 } else {
                     i += 1;
                 }

@@ -727,3 +727,313 @@ async fn test_cleanup_piped_producer_when_main_producer_removed_concurrently() {
 
     let _ = node.shutdown(Duration::from_secs(1)).await;
 }
+
+/// Regression 1.1: Verify Consumer is truly dropped in C++ (no Arc cycle in on_layers_change)
+#[tokio::test]
+async fn test_consumer_has_no_arc_reference_cycle_on_close() {
+    let node = Arc::new(MediaNode::new(test_config(1)).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-leak-check".to_string(),
+            room_id: "room-leak-check".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let pub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-pub-leak-check".to_string(),
+            router_id: r.router_id.clone(),
+            peer_id: "peer-pub".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let vp8_params = r#"{
+        "mid": "0",
+        "codecs": [{
+            "mimeType": "video/VP8",
+            "payloadType": 96,
+            "clockRate": 90000,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 11223344 }],
+        "rtcp": { "cname": "leak-test", "reducedSize": true }
+    }"#;
+
+    let prod = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-prod-leak-check".to_string(),
+            router_id: r.router_id.clone(),
+            transport_id: pub_tr.transport_id.clone(),
+            peer_id: "peer-pub".to_string(),
+            kind: "video".to_string(),
+            rtp_parameters_json: vp8_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-sub-leak-check".to_string(),
+            router_id: r.router_id.clone(),
+            peer_id: "peer-sub".to_string(),
+            is_publisher: false,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let vp8_caps = r#"{
+        "codecs": [{
+            "mimeType": "video/VP8",
+            "kind": "video",
+            "preferredPayloadType": 96,
+            "clockRate": 90000,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": []
+    }"#;
+
+    let cons = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-cons-leak-check".to_string(),
+            router_id: r.router_id.clone(),
+            subscriber_transport_id: sub_tr.transport_id.clone(),
+            producer_id: prod.producer_id.clone(),
+            rtp_capabilities_json: vp8_caps.to_string(),
+            paused: true,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let weak_consumer = node
+        .state
+        .consumers
+        .get(&cons.consumer_id)
+        .unwrap()
+        .consumer
+        .downgrade();
+    assert!(weak_consumer.upgrade().is_some());
+
+    // Close consumer
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r.router_id.clone(),
+            resource_type: proto::ResourceType::Consumer as i32,
+            resource_id: cons.consumer_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+    // WeakConsumer MUST NOT be upgradeable anymore (proves zero Arc reference cycle leak!)
+    assert!(
+        weak_consumer.upgrade().is_none(),
+        "Consumer Arc leaked due to closure reference cycle!"
+    );
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}
+
+/// Regression 1.2: Verify PipedProducer is not prematurely cleaned up while concurrent in-flight consume operations are active
+#[tokio::test]
+async fn test_pipe_not_removed_while_in_flight_consume_active() {
+    use std::sync::atomic::Ordering;
+
+    let node = Arc::new(MediaNode::new(test_config(2)).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-inflight-pipe".to_string(),
+            room_id: "room-inflight-pipe".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let p1_pub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-p1-pub-inflight".to_string(),
+            router_id: r.router_id.clone(),
+            peer_id: "peer-1".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let opus_params = r#"{
+        "mid": "0",
+        "codecs": [{
+            "mimeType": "audio/opus",
+            "payloadType": 111,
+            "clockRate": 48000,
+            "channels": 2,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 12345678 }],
+        "rtcp": { "cname": "inflight-test", "reducedSize": true }
+    }"#;
+
+    let prod = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-prod-inflight".to_string(),
+            router_id: r.router_id.clone(),
+            transport_id: p1_pub.transport_id.clone(),
+            peer_id: "peer-1".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Add load to worker 0 so peer-2 spills over to worker 1
+    node.worker_pool.add_resource_score(0, 10);
+
+    let p2_sub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-p2-sub-inflight".to_string(),
+            router_id: r.router_id.clone(),
+            peer_id: "peer-2".to_string(),
+            is_publisher: false,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sub_item = node.state.transports.get(&p2_sub.transport_id).unwrap();
+    let sub_physical_router_id = sub_item.physical_router_id.clone();
+    assert_eq!(sub_item.worker_index, 1);
+    drop(sub_item);
+
+    let opus_caps = r#"{
+        "codecs": [{
+            "mimeType": "audio/opus",
+            "kind": "audio",
+            "preferredPayloadType": 111,
+            "clockRate": 48000,
+            "channels": 2,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": []
+    }"#;
+
+    let c_resp = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-c-inflight".to_string(),
+            router_id: r.router_id.clone(),
+            subscriber_transport_id: p2_sub.transport_id.clone(),
+            producer_id: prod.producer_id.clone(),
+            rtp_capabilities_json: opus_caps.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Verify pipe exists
+    let counter_opt = node
+        .state
+        .piped_producers
+        .get(&prod.producer_id)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|e| e.target_router_id == sub_physical_router_id)
+                .map(|e| e.in_flight_consumes.clone())
+        });
+    assert!(counter_opt.is_some());
+    let counter = counter_opt.unwrap();
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+    // Simulate an active in-flight parallel consume on this pipe
+    counter.fetch_add(1, Ordering::SeqCst);
+
+    // Close the completed consumer c_resp
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r.router_id.clone(),
+            resource_type: proto::ResourceType::Consumer as i32,
+            resource_id: c_resp.consumer_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+    // Despite 0 registered consumers in producer_consumers,
+    // the pipe MUST NOT be cleaned up because in_flight_consumes == 1!
+    assert!(
+        node.state.piped_producers.contains_key(&prod.producer_id),
+        "PipedProducer must NOT be removed while in_flight_consumes > 0!"
+    );
+
+    // Now decrement the in-flight counter to 0 (simulating completion or rollback of parallel consume)
+    counter.fetch_sub(1, Ordering::SeqCst);
+
+    // Trigger cleanup
+    let cleaned = node.state.cleanup_piped_producer_if_last_consumer(
+        &r.router_id,
+        &prod.producer_id,
+        &sub_physical_router_id,
+    );
+    assert!(
+        cleaned.is_some(),
+        "PipedProducer should now be cleaned up when in_flight_consumes == 0"
+    );
+    assert!(!node.state.piped_producers.contains_key(&prod.producer_id));
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}
+
+/// Regression 2.3: Verify that when all workers die, state.is_draining becomes true and subsequent requests are rejected
+#[tokio::test]
+async fn test_all_workers_dead_transitions_node_to_draining() {
+    use std::sync::atomic::Ordering;
+
+    let node = Arc::new(MediaNode::new(test_config(1)).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    assert!(!node.state.is_draining.load(Ordering::SeqCst));
+
+    // Simulate worker 0 death (all workers dead)
+    node.worker_pool.mark_dead(0);
+
+    // State must now be marked draining
+    assert!(
+        node.state.is_draining.load(Ordering::SeqCst),
+        "Node must transition to draining state when all workers die!"
+    );
+
+    // Subsequent CreateRouter request must fail with Unavailable (due to draining)
+    let err = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-dead-router".to_string(),
+            room_id: "room-dead".to_string(),
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::Unavailable);
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}
