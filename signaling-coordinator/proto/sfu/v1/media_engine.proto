@@ -19,23 +19,33 @@ service SfuMediaEngineService {
   rpc Consume(ConsumeRequest) returns (ConsumeResponse);
   rpc SetMediaPaused(SetMediaPausedRequest) returns (SetMediaPausedResponse);
   rpc SetConsumerPreferredLayers(SetConsumerPreferredLayersRequest) returns (SetConsumerPreferredLayersResponse);
+  rpc RequestKeyFrame(RequestKeyFrameRequest) returns (RequestKeyFrameResponse);
 
-  // ۴. حذف آبشاری منابع، دریافت آمار واقعی RTP و استریم رویدادهای نود
+  // ۴. مدیریت DataChannel و SCTP (ProduceData, ConsumeData, DirectTransport)
+  rpc ProduceData(ProduceDataRequest) returns (ProduceDataResponse);
+  rpc ConsumeData(ConsumeDataRequest) returns (ConsumeDataResponse);
+  rpc SendDirectData(SendDirectDataRequest) returns (SendDirectDataResponse);
+
+  // ۵. مدیریت PlainTransport برای Ingress/Egress (RTMP/WHIP و Recording)
+  rpc CreatePlainTransport(CreatePlainTransportRequest) returns (CreatePlainTransportResponse);
+  rpc ConnectPlainTransport(ConnectPlainTransportRequest) returns (ConnectPlainTransportResponse);
+
+  // ۶. حذف آبشاری منابع، دریافت آمار واقعی RTP و استریم رویدادهای نود
   rpc CloseResource(CloseResourceRequest) returns (CloseResourceResponse);
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
   rpc WatchNodeEvents(WatchNodeEventsRequest) returns (stream NodeEvent);
 
-  // ۵. استعلام ظرفیت، وزن و بار ترکیبی نود (موجود در هر دو نسخه Community و Enterprise)
+  // ۷. استعلام ظرفیت، وزن و بار ترکیبی نود (موجود در هر دو نسخه Community و Enterprise)
   rpc GetNodeCapacity(GetNodeCapacityRequest) returns (NodeCapacityMetrics);
 
-  // ۶. [ENTERPRISE EDITION ONLY] مدیریت PipeTransport بین‌نودی برای توزیع یک اتاق روی چند سرور
+  // ۸. [ENTERPRISE EDITION ONLY] مدیریت PipeTransport بین‌نودی برای توزیع یک اتاق روی چند سرور
   // در نسخه Community این متدها کد خطای UNIMPLEMENTED برمی‌گردانند.
   rpc CreatePipeTransport(CreatePipeTransportRequest) returns (CreatePipeTransportResponse);
   rpc ConnectPipeTransport(ConnectPipeTransportRequest) returns (ConnectPipeTransportResponse);
   rpc PipeProduce(PipeProduceRequest) returns (ProduceResponse);
   rpc PipeConsume(PipeConsumeRequest) returns (ConsumeResponse);
 
-  // ۷. [LICENSING] اعمال یا تمدید پویای کلید لایسنس تجاری
+  // ۹. [LICENSING] اعمال یا تمدید پویای کلید لایسنس تجاری
   rpc ApplyLicense(ApplyLicenseRequest) returns (ApplyLicenseResponse);
 }
 
@@ -45,6 +55,8 @@ enum ResourceType {
   RESOURCE_TYPE_TRANSPORT = 2;
   RESOURCE_TYPE_PRODUCER = 3;
   RESOURCE_TYPE_CONSUMER = 4;
+  RESOURCE_TYPE_DATA_PRODUCER = 5;
+  RESOURCE_TYPE_DATA_CONSUMER = 6;
 }
 
 message GetNodeCapacityRequest {}
@@ -276,6 +288,7 @@ message NodeEvent {
     LayerChangedEvent layer_changed = 5;
     ResourceClosedEvent resource_closed = 6;
     NodeCapacityMetrics node_capacity = 7; // اضافه شده برای گزارش بلادرنگ بار و وزن نود
+    DynacastLayerEvent dynacast_layer = 8;
   }
 }
 
@@ -338,3 +351,86 @@ message ApplyLicenseResponse {
   string issued_to = 5;
   string error_message = 6;
 }
+
+message DynacastLayerEvent {
+  string router_id = 1;
+  string producer_id = 2;
+  int32 spatial_layer = 3;
+  bool is_active = 4;
+  uint32 active_consumers = 5;
+}
+
+message RequestKeyFrameRequest {
+  string router_id = 1;
+  string consumer_id = 2;
+}
+
+message RequestKeyFrameResponse {}
+
+message ProduceDataRequest {
+  string request_id = 1;
+  string router_id = 2;
+  string transport_id = 3;
+  string peer_id = 4;
+  string sctp_stream_parameters_json = 5;
+  string label = 6;
+  string protocol = 7;
+}
+
+message ProduceDataResponse {
+  string data_producer_id = 1;
+  string label = 2;
+  string protocol = 3;
+  string sctp_stream_parameters_json = 4;
+}
+
+message ConsumeDataRequest {
+  string request_id = 1;
+  string router_id = 2;
+  string transport_id = 3;
+  string data_producer_id = 4;
+}
+
+message ConsumeDataResponse {
+  string data_consumer_id = 1;
+  string data_producer_id = 2;
+  string label = 3;
+  string protocol = 4;
+  string sctp_stream_parameters_json = 5;
+}
+
+message SendDirectDataRequest {
+  string router_id = 1;
+  string label = 2;
+  string protocol = 3;
+  bytes payload = 4;
+}
+
+message SendDirectDataResponse {}
+
+message CreatePlainTransportRequest {
+  string request_id = 1;
+  string router_id = 2;
+  bool rtcp_mux = 3;
+  bool comedia = 4;
+  bool enable_sctp = 5;
+  string listening_ip = 6;
+}
+
+message CreatePlainTransportResponse {
+  string transport_id = 1;
+  string ip = 2;
+  uint32 port = 3;
+  uint32 rtcp_port = 4;
+}
+
+message ConnectPlainTransportRequest {
+  string router_id = 1;
+  string transport_id = 2;
+  string remote_ip = 3;
+  uint32 remote_port = 4;
+  uint32 remote_rtcp_port = 5;
+}
+
+message ConnectPlainTransportResponse {}
+

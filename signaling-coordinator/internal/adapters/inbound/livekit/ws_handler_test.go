@@ -44,6 +44,7 @@ type mockCoordinator struct {
 	subscriberAnswerCount  int
 	lastSubscriberDTLSRole string
 	lastSubscriberFPS      []domain.DtlsFingerprintInfo
+	lastDirectData         *domain.SendDirectDataCommand
 }
 
 func (m *mockCoordinator) SetConsumerPaused(ctx context.Context, roomID, participantID, trackSID string, paused bool) error {
@@ -132,6 +133,19 @@ func (m *mockCoordinator) HandleSubscriberAnswer(ctx context.Context, roomID, pa
 	m.lastSubscriberFPS = fingerprints
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *mockCoordinator) RemoveParticipant(ctx context.Context, roomID, participantID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.leaveCalled = true
+	return nil
+}
+
+func (m *mockCoordinator) LastDirectData() *domain.SendDirectDataCommand {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastDirectData
 }
 
 func (m *mockCoordinator) IsLeaveCalled() bool {

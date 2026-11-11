@@ -984,7 +984,42 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 		},
 	}
 
-	activeMids := make([]string, 0, len(slots))
+	var dataMd *sdp.MediaDescription
+	if transport.SctpPort > 0 {
+		sctpPort := transport.SctpPort
+		dataMd = &sdp.MediaDescription{
+			MediaName: sdp.MediaName{
+				Media:   "application",
+				Port:    sdp.RangedPort{Value: 9},
+				Protos:  []string{"UDP/DTLS/SCTP"},
+				Formats: []string{"webrtc-datachannel"},
+			},
+			ConnectionInformation: &sdp.ConnectionInformation{
+				NetworkType: "IN",
+				AddressType: "IP4",
+				Address:     &sdp.Address{Address: "127.0.0.1"},
+			},
+		}
+		dataMd.Attributes = append(dataMd.Attributes,
+			sdp.Attribute{Key: "mid", Value: "datachannel"},
+			sdp.Attribute{Key: "setup", Value: "actpass"},
+			sdp.Attribute{Key: "sctp-port", Value: fmt.Sprintf("%d", sctpPort)},
+			sdp.Attribute{Key: "max-message-size", Value: "262144"},
+		)
+		for _, cand := range transport.IceCandidates {
+			if cand.SDPCandidateLine != "" {
+				dataMd.Attributes = append(dataMd.Attributes, sdp.Attribute{
+					Key:   "candidate",
+					Value: strings.TrimPrefix(cand.SDPCandidateLine, "candidate:"),
+				})
+			}
+		}
+	}
+
+	activeMids := make([]string, 0, len(slots)+1)
+	if dataMd != nil {
+		activeMids = append(activeMids, "datachannel")
+	}
 	for _, slot := range slots {
 		if slot.Active {
 			activeMids = append(activeMids, slot.MID)
@@ -1013,6 +1048,10 @@ func GenerateSubscriberOffer(transport *domain.TransportInfo, slots []*domain.SD
 			Key:   "fingerprint",
 			Value: fmt.Sprintf("%s %s", fp.Algorithm, fp.Value),
 		})
+	}
+
+	if dataMd != nil {
+		offer.MediaDescriptions = append(offer.MediaDescriptions, dataMd)
 	}
 
 	for _, slot := range slots {

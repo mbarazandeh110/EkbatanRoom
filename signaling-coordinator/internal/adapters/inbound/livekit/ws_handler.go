@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"ekbatan-room/signaling-coordinator/internal/adapters/outbound/telemetry"
+	"ekbatan-room/signaling-coordinator/internal/application"
 	"ekbatan-room/signaling-coordinator/internal/domain"
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
@@ -139,6 +141,10 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	protocolVer := q.Get("protocol")
 	sdk := q.Get("sdk")
 	previousSID := q.Get("sid")
+	targetNode := q.Get("node")
+	if targetNode == "" {
+		targetNode = q.Get("node_id")
+	}
 
 	tracer := otel.Tracer("livekit.gateway")
 	ctx, span := tracer.Start(r.Context(), "LiveKitWS.Session",
@@ -149,6 +155,13 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		),
 	)
 	defer span.End()
+
+	if targetNode != "" {
+		ctx = application.WithTargetNode(ctx, targetNode)
+	}
+	if previousSID != "" {
+		ctx = application.WithPreviousSID(ctx, previousSID)
+	}
 
 	telemetry.DefaultMetrics().IncActiveParticipants("livekit")
 	defer telemetry.DefaultMetrics().DecActiveParticipants("livekit")
@@ -168,6 +181,7 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"protocol", protocolVer,
 		"sdk", sdk,
 		"previous_sid", previousSID,
+		"target_node", targetNode,
 	)
 
 	// 1. Perform Join Handshake
@@ -180,6 +194,10 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"error", err,
 		)
 		telemetry.DefaultMetrics().RecordError("join_failed")
+		if errors.Is(err, domain.ErrParticipantEvicted) {
+			_ = responder.SendLeave(false, domain.DisconnectReasonUserRejected)
+			time.Sleep(10 * time.Millisecond)
+		}
 		return
 	}
 	slog.InfoContext(ctx, "livekit participant joined",

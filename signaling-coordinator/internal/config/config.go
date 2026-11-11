@@ -39,10 +39,55 @@ type ServerConfig struct {
 	ShutdownTimeout time.Duration `json:"shutdown_timeout" yaml:"shutdown_timeout"`
 }
 
+// SFUNodeConfig defines an individual SFU media node target in cluster.
+type SFUNodeConfig struct {
+	ID       string `json:"id" yaml:"id"`
+	GRPCAddr string `json:"grpc_addr" yaml:"grpc_addr"`
+}
+
 // SFUConfig defines client parameters for communicating with sfu-media-node over gRPC.
 type SFUConfig struct {
-	GRPCAddr       string        `json:"grpc_addr" yaml:"grpc_addr"`
-	RequestTimeout time.Duration `json:"request_timeout" yaml:"request_timeout"`
+	GRPCAddr       string          `json:"grpc_addr" yaml:"grpc_addr"`
+	Nodes          []SFUNodeConfig `json:"nodes" yaml:"nodes"`
+	RequestTimeout time.Duration   `json:"request_timeout" yaml:"request_timeout"`
+}
+
+// GetNodes returns the resolved list of media nodes in the cluster.
+func (c *SFUConfig) GetNodes() []SFUNodeConfig {
+	if len(c.Nodes) > 0 {
+		return c.Nodes
+	}
+
+	addrStr := strings.TrimSpace(c.GRPCAddr)
+	if addrStr == "" {
+		return nil
+	}
+
+	parts := strings.Split(addrStr, ",")
+	nodes := make([]SFUNodeConfig, 0, len(parts))
+	for i, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "=") {
+			kv := strings.SplitN(part, "=", 2)
+			nodes = append(nodes, SFUNodeConfig{
+				ID:       strings.TrimSpace(kv[0]),
+				GRPCAddr: strings.TrimSpace(kv[1]),
+			})
+		} else {
+			id := "sfu-primary"
+			if i > 0 {
+				id = fmt.Sprintf("sfu-node-%d", i+1)
+			}
+			nodes = append(nodes, SFUNodeConfig{
+				ID:       id,
+				GRPCAddr: part,
+			})
+		}
+	}
+	return nodes
 }
 
 // LiveKitConfig defines protocol parameters for the LiveKit signaling gateway.
@@ -157,8 +202,12 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 
-	// SFU gRPC
-	if v := os.Getenv("SFU_GRPC_ADDR"); v != "" {
+	// SFU gRPC & Multi-Node Cluster
+	if v := os.Getenv("SFU_NODES"); v != "" {
+		cfg.SFU.GRPCAddr = strings.TrimSpace(v)
+	} else if v := os.Getenv("SFU_GRPC_ADDRS"); v != "" {
+		cfg.SFU.GRPCAddr = strings.TrimSpace(v)
+	} else if v := os.Getenv("SFU_GRPC_ADDR"); v != "" {
 		cfg.SFU.GRPCAddr = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("SFU_REQUEST_TIMEOUT"); v != "" {
@@ -254,8 +303,14 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Server.Port) == "" {
 		return errors.New("server.port must not be empty")
 	}
-	if strings.TrimSpace(c.SFU.GRPCAddr) == "" {
-		return errors.New("sfu.grpc_addr must not be empty")
+	nodes := c.SFU.GetNodes()
+	if len(nodes) == 0 {
+		return errors.New("sfu.grpc_addr or sfu.nodes must not be empty")
+	}
+	for i, n := range nodes {
+		if strings.TrimSpace(n.GRPCAddr) == "" {
+			return fmt.Errorf("sfu.nodes[%d] grpc_addr must not be empty", i)
+		}
 	}
 	if c.LiveKit.PingInterval == 0 {
 		return errors.New("livekit.ping_interval must be greater than 0")

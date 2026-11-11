@@ -14,6 +14,9 @@ type RoomCoordinatorPort interface {
 	// Leave handles participant departure, tearing down transports and notifying peers.
 	Leave(ctx context.Context, roomID, participantID string) error
 
+	// RemoveParticipant evicts a participant from the room, notifying them with LeaveRequest before teardown.
+	RemoveParticipant(ctx context.Context, roomID, participantID string) error
+
 	// PublishTracks processes published tracks, connects publisher transport, calls Produce on engine, and broadcasts to peers.
 	PublishTracks(ctx context.Context, roomID, participantID string, dtlsRole string, fingerprints []domain.DtlsFingerprintInfo, tracks []domain.TrackPublishCommand) (*domain.TransportInfo, error)
 
@@ -52,5 +55,6 @@ type PeerResponderPort interface {
 	SendActiveSpeakers(speakers []*domain.ActiveSpeakerInfo) error
 	SendConnectionQuality(updates []*domain.ConnectionQualityUpdate) error
 	SendReconnect(iceServers []domain.IceServer) error
+	SendLeave(canReconnect bool, reason domain.DisconnectReason) error
 	Close() error
 }

@@ -146,6 +146,27 @@ func (m *mockOutboundEngine) CloseResource(ctx context.Context, routerID string,
 	return nil
 }
 
+func (m *mockOutboundEngine) ProduceData(ctx context.Context, cmd *domain.ProduceDataCommand) (*domain.ProduceDataResult, error) {
+	return &domain.ProduceDataResult{
+		DataProducerID:           "dp-" + cmd.Label,
+		Label:                    cmd.Label,
+		Protocol:                 cmd.Protocol,
+		SctpStreamParametersJSON: cmd.SctpStreamParametersJSON,
+	}, nil
+}
+
+func (m *mockOutboundEngine) ConsumeData(ctx context.Context, cmd *domain.ConsumeDataCommand) (*domain.ConsumeDataResult, error) {
+	return &domain.ConsumeDataResult{
+		DataConsumerID: "dc-" + cmd.DataProducerID,
+		DataProducerID: cmd.DataProducerID,
+		Label:          "_reliable",
+	}, nil
+}
+
+func (m *mockOutboundEngine) SendDirectData(ctx context.Context, cmd *domain.SendDirectDataCommand) error {
+	return nil
+}
+
 var (
 	_ ports.RouterEnginePort    = (*mockOutboundEngine)(nil)
 	_ ports.TransportEnginePort = (*mockOutboundEngine)(nil)

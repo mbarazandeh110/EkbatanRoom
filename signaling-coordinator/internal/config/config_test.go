@@ -136,3 +136,39 @@ func TestConfig_EnvOverrides(t *testing.T) {
 		t.Fatalf("unexpected telemetry env values: %+v", cfg.Telemetry)
 	}
 }
+
+func TestConfig_MultiNodeParsing_REQ029(t *testing.T) {
+	// 1. Comma-separated addresses without names
+	t.Setenv("SFU_GRPC_ADDR", "127.0.0.1:50051,127.0.0.1:50052")
+	cfg1, err := config.Load("")
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	nodes1 := cfg1.SFU.GetNodes()
+	if len(nodes1) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(nodes1))
+	}
+	if nodes1[0].ID != "sfu-primary" || nodes1[0].GRPCAddr != "127.0.0.1:50051" {
+		t.Errorf("unexpected node 0: %+v", nodes1[0])
+	}
+	if nodes1[1].ID != "sfu-node-2" || nodes1[1].GRPCAddr != "127.0.0.1:50052" {
+		t.Errorf("unexpected node 1: %+v", nodes1[1])
+	}
+
+	// 2. Comma-separated with explicit node IDs via SFU_NODES
+	t.Setenv("SFU_NODES", "node-a=10.0.0.1:50051,node-b=10.0.0.2:50051")
+	cfg2, err := config.Load("")
+	if err != nil {
+		t.Fatalf("failed to load config with SFU_NODES: %v", err)
+	}
+	nodes2 := cfg2.SFU.GetNodes()
+	if len(nodes2) != 2 {
+		t.Fatalf("expected 2 nodes from SFU_NODES, got %d", len(nodes2))
+	}
+	if nodes2[0].ID != "node-a" || nodes2[0].GRPCAddr != "10.0.0.1:50051" {
+		t.Errorf("unexpected node-a: %+v", nodes2[0])
+	}
+	if nodes2[1].ID != "node-b" || nodes2[1].GRPCAddr != "10.0.0.2:50051" {
+		t.Errorf("unexpected node-b: %+v", nodes2[1])
+	}
+}

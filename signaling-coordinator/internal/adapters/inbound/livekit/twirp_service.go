@@ -6,6 +6,7 @@ import (
 
 	livekitproto "github.com/livekit/protocol/livekit"
 	"github.com/twitchtv/twirp"
+	"google.golang.org/protobuf/proto"
 
 	"ekbatan-room/signaling-coordinator/internal/application"
 	"ekbatan-room/signaling-coordinator/internal/domain"
@@ -115,7 +116,7 @@ func (s *RoomServiceServer) RemoveParticipant(ctx context.Context, req *livekitp
 		return nil, twirp.RequiredArgumentError("identity")
 	}
 
-	err := s.roomMgr.Leave(ctx, req.GetRoom(), req.GetIdentity())
+	err := s.roomMgr.RemoveParticipant(ctx, req.GetRoom(), req.GetIdentity())
 	if err != nil && !errors.Is(err, domain.ErrParticipantNotFound) && !errors.Is(err, domain.ErrRoomNotFound) {
 		return nil, twirp.InternalErrorWith(err)
 	}
@@ -166,10 +167,11 @@ func (s *RoomServiceServer) UpdateParticipant(ctx context.Context, req *livekitp
 		return nil, twirp.RequiredArgumentError("identity")
 	}
 
-	if req.GetMetadata() != "" {
-		if err := s.roomMgr.UpdateParticipantMetadata(req.GetRoom(), req.GetIdentity(), req.GetMetadata()); err != nil {
-			return nil, twirp.InternalErrorWith(err)
+	if err := s.roomMgr.UpdateParticipant(ctx, req.GetRoom(), req.GetIdentity(), req.GetMetadata(), req.GetName()); err != nil {
+		if errors.Is(err, domain.ErrParticipantNotFound) || errors.Is(err, domain.ErrRoomNotFound) {
+			return nil, twirp.NotFoundError("participant not found")
 		}
+		return nil, twirp.InternalErrorWith(err)
 	}
 
 	p, err := s.roomMgr.GetParticipant(req.GetRoom(), req.GetIdentity())
@@ -204,6 +206,29 @@ func (s *RoomServiceServer) SendData(ctx context.Context, req *livekitproto.Send
 	if req.GetRoom() == "" {
 		return nil, twirp.RequiredArgumentError("room")
 	}
+
+	dp := &livekitproto.DataPacket{
+		Kind: req.GetKind(),
+		Value: &livekitproto.DataPacket_User{
+			User: &livekitproto.UserPacket{
+				Payload:               req.GetData(),
+				Topic:                 proto.String(req.GetTopic()),
+				DestinationIdentities: req.GetDestinationIdentities(),
+			},
+		},
+	}
+	dataBytes, err := proto.Marshal(dp)
+	if err != nil {
+		return nil, twirp.InternalErrorWith(err)
+	}
+
+	if err := s.roomMgr.SendData(ctx, req.GetRoom(), dataBytes, req.GetTopic(), req.GetDestinationIdentities()); err != nil {
+		if errors.Is(err, domain.ErrRoomNotFound) || errors.Is(err, domain.ErrRoomClosed) {
+			return nil, twirp.NotFoundError("room not found or closed")
+		}
+		return nil, twirp.InternalErrorWith(err)
+	}
+
 	return &livekitproto.SendDataResponse{}, nil
 }
 

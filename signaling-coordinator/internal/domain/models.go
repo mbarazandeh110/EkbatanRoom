@@ -292,4 +292,62 @@ type ActiveSpeakerInfo struct {
 	Active         bool
 }
 
+type DisconnectReason int
+
+const (
+	DisconnectReasonUnknown            DisconnectReason = 0
+	DisconnectReasonClientInitiated    DisconnectReason = 1
+	DisconnectReasonDuplicateIdentity  DisconnectReason = 2
+	DisconnectReasonServerShutdown     DisconnectReason = 3
+	DisconnectReasonParticipantRemoved DisconnectReason = 4
+	DisconnectReasonRoomDeleted        DisconnectReason = 5
+	DisconnectReasonStateMismatch      DisconnectReason = 6
+	DisconnectReasonJoinFailure        DisconnectReason = 7
+	DisconnectReasonMigration          DisconnectReason = 8
+	DisconnectReasonSignalClose        DisconnectReason = 9
+	DisconnectReasonRoomClosed         DisconnectReason = 10
+	DisconnectReasonUserUnavailable    DisconnectReason = 11
+	DisconnectReasonUserRejected       DisconnectReason = 12
+	DisconnectReasonSipTrunkFailure    DisconnectReason = 13
+)
+
+type ProduceDataCommand struct {
+	RequestID                string
+	RouterID                 string
+	TransportID              string
+	PeerID                   string
+	SctpStreamParametersJSON string
+	Label                    string
+	Protocol                 string
+}
+
+type ProduceDataResult struct {
+	DataProducerID           string
+	Label                    string
+	Protocol                 string
+	SctpStreamParametersJSON string
+}
+
+type ConsumeDataCommand struct {
+	RequestID      string
+	RouterID       string
+	TransportID    string
+	DataProducerID string
+}
+
+type ConsumeDataResult struct {
+	DataConsumerID           string
+	DataProducerID           string
+	Label                    string
+	Protocol                 string
+	SctpStreamParametersJSON string
+}
+
+type SendDirectDataCommand struct {
+	RouterID string
+	Label    string
+	Protocol string
+	Payload  []byte
+}
+
 

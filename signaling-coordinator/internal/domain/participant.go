@@ -83,6 +83,18 @@ func (p *Participant) GetMetadata() string {
 	return p.Metadata
 }
 
+func (p *Participant) SetName(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Name = name
+}
+
+func (p *Participant) GetName() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.Name
+}
+
 func NewParticipant(id, sid, name string) *Participant {
 	return &Participant{
 		ID:                    id,

@@ -170,6 +170,17 @@ func (r *OrtcResponder) SendReconnect(iceServers []domain.IceServer) error {
 	})
 }
 
+func (r *OrtcResponder) SendLeave(canReconnect bool, reason domain.DisconnectReason) error {
+	return r.send(OrtcResponse{
+		Notification: true,
+		Method:       "leave",
+		Data: map[string]interface{}{
+			"canReconnect": canReconnect,
+			"reason":       int(reason),
+		},
+	})
+}
+
 func (r *OrtcResponder) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

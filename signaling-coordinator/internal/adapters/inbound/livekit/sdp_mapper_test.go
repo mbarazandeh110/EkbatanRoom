@@ -1919,3 +1919,87 @@ func TestSDPMapper_GenerateSubscriberOffer_MediaLevelSetupActpass_REQ006(t *test
 	}
 }
 
+func TestSDPMapper_GenerateSubscriberOffer_IncludesDataChannel_REQ028(t *testing.T) {
+	transportWithSctp := &domain.TransportInfo{
+		TransportID: "sub-sctp-transport",
+		IceUfrag:    "ufrag-sub",
+		IcePwd:      "pwd-sub",
+		SctpPort:    5000,
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00"},
+		},
+		IceCandidates: []domain.IceCandidateInfo{
+			{SDPCandidateLine: "candidate:udpcand 1 udp 2130706431 127.0.0.1 50001 typ host"},
+		},
+	}
+
+	slots := []*domain.SDPSlot{
+		{
+			Index:        0,
+			MID:          "0",
+			Kind:         domain.TrackKindAudio,
+			Active:       true,
+			PayloadType:  111,
+			MimeType:     "audio/opus",
+			ClockRate:    48000,
+			TrackSID:     "TR_audio_1",
+			PublisherSID: "PA_pub_1",
+		},
+	}
+
+	// 1. With audio slot and SCTP port: should contain datachannel and audio m-line bundled together
+	offer, err := livekit.GenerateSubscriberOffer(transportWithSctp, slots, "PA_sub_1")
+	if err != nil {
+		t.Fatalf("GenerateSubscriberOffer failed: %v", err)
+	}
+
+	if !strings.Contains(offer, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel") {
+		t.Fatalf("expected m=application in subscriber offer, got:\n%s", offer)
+	}
+	if !strings.Contains(offer, "a=mid:datachannel") {
+		t.Fatalf("expected a=mid:datachannel, got:\n%s", offer)
+	}
+	if !strings.Contains(offer, "a=sctp-port:5000") {
+		t.Fatalf("expected a=sctp-port:5000, got:\n%s", offer)
+	}
+	if !strings.Contains(offer, "a=max-message-size:262144") {
+		t.Fatalf("expected a=max-message-size:262144, got:\n%s", offer)
+	}
+	if !strings.Contains(offer, "a=group:BUNDLE datachannel 0") {
+		t.Fatalf("expected BUNDLE datachannel 0, got:\n%s", offer)
+	}
+
+	// 2. Empty slots (DataChannel only offer)
+	emptyOffer, err := livekit.GenerateSubscriberOffer(transportWithSctp, nil, "PA_sub_1")
+	if err != nil {
+		t.Fatalf("GenerateSubscriberOffer with nil slots failed: %v", err)
+	}
+	if !strings.Contains(emptyOffer, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel") {
+		t.Fatalf("expected m=application in empty slot offer, got:\n%s", emptyOffer)
+	}
+	if !strings.Contains(emptyOffer, "a=group:BUNDLE datachannel") {
+		t.Fatalf("expected a=group:BUNDLE datachannel, got:\n%s", emptyOffer)
+	}
+
+	// 3. Transport without SCTP (SctpPort == 0)
+	transportNoSctp := &domain.TransportInfo{
+		TransportID: "sub-no-sctp",
+		IceUfrag:    "ufrag-sub",
+		IcePwd:      "pwd-sub",
+		SctpPort:    0,
+		DtlsFingerprints: []domain.DtlsFingerprintInfo{
+			{Algorithm: "sha-256", Value: "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00"},
+		},
+	}
+	noSctpOffer, err := livekit.GenerateSubscriberOffer(transportNoSctp, slots, "PA_sub_1")
+	if err != nil {
+		t.Fatalf("GenerateSubscriberOffer failed: %v", err)
+	}
+	if strings.Contains(noSctpOffer, "m=application") {
+		t.Fatalf("expected no m=application when SctpPort == 0, got:\n%s", noSctpOffer)
+	}
+	if strings.Contains(noSctpOffer, "datachannel") {
+		t.Fatalf("expected no datachannel MID when SctpPort == 0, got:\n%s", noSctpOffer)
+	}
+}
+

@@ -443,6 +443,94 @@ func (c *MediaNodeClient) CloseResource(ctx context.Context, routerID string, re
 	return nil
 }
 
+func (c *MediaNodeClient) ProduceData(ctx context.Context, cmd *domain.ProduceDataCommand) (*domain.ProduceDataResult, error) {
+	start := time.Now()
+	reqID := cmd.RequestID
+	if reqID == "" {
+		reqID = uuid.NewString()
+	}
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
+	defer cancel()
+
+	res, err := c.client.ProduceData(callCtx, &sfuv1.ProduceDataRequest{
+		RequestId:                reqID,
+		RouterId:                 cmd.RouterID,
+		TransportId:              cmd.TransportID,
+		PeerId:                   cmd.PeerID,
+		SctpStreamParametersJson: cmd.SctpStreamParametersJSON,
+		Label:                    cmd.Label,
+		Protocol:                 cmd.Protocol,
+	})
+	status := "ok"
+	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("ProduceData", status, time.Since(start).Seconds())
+		return nil, fmt.Errorf("grpc produce data failed (request_id=%s): %w", reqID, err)
+	}
+	telemetry.DefaultMetrics().RecordGRPC("ProduceData", status, time.Since(start).Seconds())
+
+	return &domain.ProduceDataResult{
+		DataProducerID:           res.GetDataProducerId(),
+		Label:                    res.GetLabel(),
+		Protocol:                 res.GetProtocol(),
+		SctpStreamParametersJSON: res.GetSctpStreamParametersJson(),
+	}, nil
+}
+
+func (c *MediaNodeClient) ConsumeData(ctx context.Context, cmd *domain.ConsumeDataCommand) (*domain.ConsumeDataResult, error) {
+	start := time.Now()
+	reqID := cmd.RequestID
+	if reqID == "" {
+		reqID = uuid.NewString()
+	}
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
+	defer cancel()
+
+	res, err := c.client.ConsumeData(callCtx, &sfuv1.ConsumeDataRequest{
+		RequestId:      reqID,
+		RouterId:       cmd.RouterID,
+		TransportId:    cmd.TransportID,
+		DataProducerId: cmd.DataProducerID,
+	})
+	status := "ok"
+	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("ConsumeData", status, time.Since(start).Seconds())
+		return nil, fmt.Errorf("grpc consume data failed (request_id=%s): %w", reqID, err)
+	}
+	telemetry.DefaultMetrics().RecordGRPC("ConsumeData", status, time.Since(start).Seconds())
+
+	return &domain.ConsumeDataResult{
+		DataConsumerID:           res.GetDataConsumerId(),
+		DataProducerID:           res.GetDataProducerId(),
+		Label:                    res.GetLabel(),
+		Protocol:                 res.GetProtocol(),
+		SctpStreamParametersJSON: res.GetSctpStreamParametersJson(),
+	}, nil
+}
+
+func (c *MediaNodeClient) SendDirectData(ctx context.Context, cmd *domain.SendDirectDataCommand) error {
+	start := time.Now()
+	reqID := uuid.NewString()
+	callCtx, cancel := c.withTimeoutAndReqID(ctx, reqID)
+	defer cancel()
+
+	_, err := c.client.SendDirectData(callCtx, &sfuv1.SendDirectDataRequest{
+		RouterId: cmd.RouterID,
+		Label:    cmd.Label,
+		Protocol: cmd.Protocol,
+		Payload:  cmd.Payload,
+	})
+	status := "ok"
+	if err != nil {
+		status = "error"
+		telemetry.DefaultMetrics().RecordGRPC("SendDirectData", status, time.Since(start).Seconds())
+		return fmt.Errorf("grpc send direct data failed (router_id=%s): %w", cmd.RouterID, err)
+	}
+	telemetry.DefaultMetrics().RecordGRPC("SendDirectData", status, time.Since(start).Seconds())
+	return nil
+}
+
 // NodeLifecyclePort implementation
 
 func (c *MediaNodeClient) ApplyLicense(ctx context.Context, licenseToken string) (*domain.ApplyLicenseResult, error) {

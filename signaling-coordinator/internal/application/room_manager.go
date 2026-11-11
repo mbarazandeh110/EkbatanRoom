@@ -286,6 +286,14 @@ func (m *RoomManager) UpdateParticipantMetadata(roomID, participantID, metadata 
 	return actor.UpdateParticipantMetadata(participantID, metadata)
 }
 
+func (m *RoomManager) UpdateParticipant(ctx context.Context, roomID, participantID, metadata, name string) error {
+	actor, err := m.getRoomActor(roomID)
+	if err != nil {
+		return err
+	}
+	return actor.UpdateParticipant(participantID, metadata, name)
+}
+
 func (m *RoomManager) UpdateRoomMetadata(roomID, metadata string) error {
 	actor, err := m.getRoomActor(roomID)
 	if err != nil {
@@ -322,7 +330,9 @@ func (m *RoomManager) Join(
 
 	// 2. Room placement check
 	var selectedNodeID string
-	if isNewRoom && m.placementStrategy != nil {
+	if targetNode := TargetNodeFromContext(ctx); targetNode != "" {
+		selectedNodeID = targetNode
+	} else if isNewRoom && m.placementStrategy != nil {
 		nodeID, err := m.placementStrategy.SelectNodeForNewRoom(ctx, roomID)
 		if err != nil {
 			m.mu.Unlock()
@@ -435,6 +445,44 @@ func (m *RoomManager) Leave(ctx context.Context, roomID, participantID string) e
 	m.mu.Unlock()
 
 	return leaveErr
+}
+
+func (m *RoomManager) RemoveParticipant(ctx context.Context, roomID, participantID string) error {
+	actor, err := m.getRoomActor(roomID)
+	if err != nil {
+		return err
+	}
+	removeErr := actor.RemoveParticipant(ctx, participantID)
+
+	// Clean up empty room so room quota is immediately reclaimed
+	m.mu.Lock()
+	if actor.IsEmptyAndIdle() {
+		delete(m.rooms, roomID)
+		m.cleanupRoomPlacementLocked(roomID)
+		m.metricsPort.DecActiveRooms()
+		_ = actor.Close(ctx)
+	}
+	m.mu.Unlock()
+
+	return removeErr
+}
+
+func (m *RoomManager) IsParticipantEvicted(roomID, participantID, sid string) bool {
+	m.mu.RLock()
+	actor, exists := m.rooms[roomID]
+	m.mu.RUnlock()
+	if !exists {
+		return false
+	}
+	return actor.IsEvicted(participantID, sid)
+}
+
+func (m *RoomManager) SendData(ctx context.Context, roomID string, data []byte, topic string, destinationIdentities []string) error {
+	actor, err := m.getRoomActor(roomID)
+	if err != nil {
+		return err
+	}
+	return actor.SendData(ctx, data, topic, destinationIdentities)
 }
 
 // Close gracefully closes all active rooms and releases all media router and transport resources on SFU nodes.

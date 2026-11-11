@@ -107,20 +107,13 @@ func main() {
 		"metrics_enabled", cfg.Telemetry.MetricsEnabled,
 	)
 
-	// 3. Establish gRPC connection to SFU Media Node with OpenTelemetry propagation
-	conn, err := grpc.NewClient(
-		cfg.SFU.GRPCAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
-	)
-	if err != nil {
-		slog.Error("failed to dial SFU media node", "error", err, "sfu_addr", cfg.SFU.GRPCAddr)
-		os.Exit(1)
+	// 3. Establish gRPC connection to SFU Media Node(s) with OpenTelemetry propagation
+	sfuNodeConfigs := cfg.SFU.GetNodes()
+	if len(sfuNodeConfigs) == 0 {
+		sfuNodeConfigs = []config.SFUNodeConfig{
+			{ID: "sfu-primary", GRPCAddr: cfg.SFU.GRPCAddr},
+		}
 	}
-	defer conn.Close()
-
-	sfuClient := sfuv1.NewSfuMediaEngineServiceClient(conn)
-	mediaNodeAdapter := media_node_grpc.NewMediaNodeClient(sfuClient, cfg.SFU.RequestTimeout)
 
 	// 4. Initialize License Manager & Node Registry
 	licenseMgr, err := application.NewLicenseManager(cfg.License.Key, cfg.License.PublicKey)
@@ -130,15 +123,38 @@ func main() {
 	}
 
 	nodeRegistry := application.NewNodeRegistry("coordinator-main", licenseMgr)
-	if _, err := nodeRegistry.RegisterNode(context.Background(), "sfu-primary", mediaNodeAdapter); err != nil {
-		slog.Warn("could not establish event stream with SFU media node at startup", "error", err)
+
+	var primaryMediaAdapter *media_node_grpc.MediaNodeClient
+	for _, ncfg := range sfuNodeConfigs {
+		conn, err := grpc.NewClient(
+			ncfg.GRPCAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		)
+		if err != nil {
+			slog.Error("failed to dial SFU media node", "error", err, "node_id", ncfg.ID, "sfu_addr", ncfg.GRPCAddr)
+			os.Exit(1)
+		}
+		defer conn.Close()
+
+		sfuClient := sfuv1.NewSfuMediaEngineServiceClient(conn)
+		adapter := media_node_grpc.NewMediaNodeClient(sfuClient, cfg.SFU.RequestTimeout)
+		if primaryMediaAdapter == nil {
+			primaryMediaAdapter = adapter
+		}
+
+		if _, err := nodeRegistry.RegisterNode(context.Background(), ncfg.ID, adapter); err != nil {
+			slog.Warn("could not establish event stream with SFU media node at startup", "node_id", ncfg.ID, "error", err)
+		} else {
+			slog.Info("registered SFU media node in cluster", "node_id", ncfg.ID, "sfu_addr", ncfg.GRPCAddr)
+		}
 	}
 
 	// 5. Assemble Application layer with Constructor DI
 	roomManager := application.NewRoomManager(
-		mediaNodeAdapter,
-		mediaNodeAdapter,
-		mediaNodeAdapter,
+		primaryMediaAdapter,
+		primaryMediaAdapter,
+		primaryMediaAdapter,
 		cfg.RTC.IceServers,
 		licenseMgr,
 	)

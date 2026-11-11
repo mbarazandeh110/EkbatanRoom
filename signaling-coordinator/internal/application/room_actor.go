@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
@@ -109,6 +110,10 @@ type RoomActor struct {
 	pipeTransports  map[string]string // nodeID -> primaryPipeTransportID
 	pipePairs       map[string]*nodePipePair // secondaryNodeID -> pipePair
 	licenseVerifier ports.LicenseVerifierPort
+
+	evictedParticipants map[string]time.Time
+	dataProducers       map[string][]string // label -> []dataProducerID
+	dataConsumers       map[string][]string // participantID -> []dataConsumerID
 }
 
 type nodePipePair struct {
@@ -190,8 +195,11 @@ func NewRoomActor(
 		metricsPort:     mp,
 		iceServers:      iceServers,
 		nodeRouters:     make(map[string]string),
-		pipeTransports:  make(map[string]string),
-		pipePairs:       make(map[string]*nodePipePair),
+		pipeTransports:      make(map[string]string),
+		pipePairs:           make(map[string]*nodePipePair),
+		evictedParticipants: make(map[string]time.Time),
+		dataProducers:       make(map[string][]string),
+		dataConsumers:       make(map[string][]string),
 	}
 }
 
@@ -279,6 +287,35 @@ func dispatchOffers(offers []pendingOffer) {
 	}
 }
 
+type roomContextKey string
+
+const (
+	targetNodeKey  roomContextKey = "targetNodeID"
+	previousSIDKey roomContextKey = "previousSID"
+)
+
+func WithTargetNode(ctx context.Context, nodeID string) context.Context {
+	return context.WithValue(ctx, targetNodeKey, nodeID)
+}
+
+func TargetNodeFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(targetNodeKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+func WithPreviousSID(ctx context.Context, sid string) context.Context {
+	return context.WithValue(ctx, previousSIDKey, sid)
+}
+
+func PreviousSIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(previousSIDKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
 func (a *RoomActor) Join(
 	ctx context.Context,
 	participantID string,
@@ -296,6 +333,21 @@ func (a *RoomActor) Join(
 		span.RecordError(domain.ErrRoomClosed)
 		span.SetStatus(codes.Error, domain.ErrRoomClosed.Error())
 		return nil, domain.ErrRoomClosed
+	}
+
+	if _, evicted := a.evictedParticipants[participantID]; evicted {
+		a.mu.Unlock()
+		span.RecordError(domain.ErrParticipantEvicted)
+		span.SetStatus(codes.Error, domain.ErrParticipantEvicted.Error())
+		return nil, domain.ErrParticipantEvicted
+	}
+	if prevSID := PreviousSIDFromContext(ctx); prevSID != "" {
+		if _, evicted := a.evictedParticipants[prevSID]; evicted {
+			a.mu.Unlock()
+			span.RecordError(domain.ErrParticipantEvicted)
+			span.SetStatus(codes.Error, domain.ErrParticipantEvicted.Error())
+			return nil, domain.ErrParticipantEvicted
+		}
 	}
 
 	// Early check if participant already exists before provisioning transports
@@ -518,7 +570,100 @@ func (a *RoomActor) Join(
 		IceServers:          a.iceServers,
 	}
 
-	// 5. Subscribe the newly joined participant to all already-published tracks in the room (Late Joiner support)
+	// 5. Establish SCTP DataChannels (REQ-028)
+	if pubTransport.SctpPort > 0 {
+		relRes, err := activeMediaStreamPort.ProduceData(ctx, &domain.ProduceDataCommand{
+			RequestID:                uuid.NewString(),
+			RouterID:                 activeRouterID,
+			TransportID:              pubTransport.TransportID,
+			PeerID:                   participantID,
+			SctpStreamParametersJSON: `{"streamId":0,"ordered":true}`,
+			Label:                    "_reliable",
+		})
+		if err == nil && relRes != nil {
+			a.dataProducers["_reliable"] = append(a.dataProducers["_reliable"], relRes.DataProducerID)
+			for otherID, otherSession := range a.sessions {
+				if otherID == participantID {
+					continue
+				}
+				otherSub := otherSession.SubTransport()
+				if otherSub != nil && otherSub.SctpPort > 0 {
+					otherMP := otherSession.MediaStreamPort()
+					if otherMP == nil {
+						otherMP = a.mediaStreamPort
+					}
+					otherRouter := otherSession.RouterID()
+					if otherRouter == "" {
+						otherRouter = a.room.RouterID
+					}
+					cRes, cErr := otherMP.ConsumeData(ctx, &domain.ConsumeDataCommand{
+						RequestID:      uuid.NewString(),
+						RouterID:       otherRouter,
+						TransportID:    otherSub.TransportID,
+						DataProducerID: relRes.DataProducerID,
+					})
+					if cErr == nil && cRes != nil {
+						a.dataConsumers[otherID] = append(a.dataConsumers[otherID], cRes.DataConsumerID)
+					}
+				}
+			}
+		}
+
+		lossRes, err := activeMediaStreamPort.ProduceData(ctx, &domain.ProduceDataCommand{
+			RequestID:                uuid.NewString(),
+			RouterID:                 activeRouterID,
+			TransportID:              pubTransport.TransportID,
+			PeerID:                   participantID,
+			SctpStreamParametersJSON: `{"streamId":1,"ordered":false,"maxPacketLifeTime":0}`,
+			Label:                    "_lossy",
+		})
+		if err == nil && lossRes != nil {
+			a.dataProducers["_lossy"] = append(a.dataProducers["_lossy"], lossRes.DataProducerID)
+			for otherID, otherSession := range a.sessions {
+				if otherID == participantID {
+					continue
+				}
+				otherSub := otherSession.SubTransport()
+				if otherSub != nil && otherSub.SctpPort > 0 {
+					otherMP := otherSession.MediaStreamPort()
+					if otherMP == nil {
+						otherMP = a.mediaStreamPort
+					}
+					otherRouter := otherSession.RouterID()
+					if otherRouter == "" {
+						otherRouter = a.room.RouterID
+					}
+					cRes, cErr := otherMP.ConsumeData(ctx, &domain.ConsumeDataCommand{
+						RequestID:      uuid.NewString(),
+						RouterID:       otherRouter,
+						TransportID:    otherSub.TransportID,
+						DataProducerID: lossRes.DataProducerID,
+					})
+					if cErr == nil && cRes != nil {
+						a.dataConsumers[otherID] = append(a.dataConsumers[otherID], cRes.DataConsumerID)
+					}
+				}
+			}
+		}
+	}
+
+	if subTransport.SctpPort > 0 {
+		for _, dpIDs := range a.dataProducers {
+			for _, dpID := range dpIDs {
+				consRes, err := activeMediaStreamPort.ConsumeData(ctx, &domain.ConsumeDataCommand{
+					RequestID:      uuid.NewString(),
+					RouterID:       activeRouterID,
+					TransportID:    subTransport.TransportID,
+					DataProducerID: dpID,
+				})
+				if err == nil && consRes != nil {
+					a.dataConsumers[participantID] = append(a.dataConsumers[participantID], consRes.DataConsumerID)
+				}
+			}
+		}
+	}
+
+	// 6. Subscribe the newly joined participant to all already-published tracks in the room (Late Joiner support)
 	consumedExistingCount := 0
 	var qualityUpdatesToSend []pendingQualityUpdate
 	var trackSubscribedToSend []pendingTrackSubscribed
@@ -584,7 +729,8 @@ func (a *RoomActor) Join(
 	}
 
 	var offerToSend *pendingOffer
-	if consumedExistingCount > 0 && session.State() == domain.NegotiationStateStable {
+	hasSubscriberOffer := (consumedExistingCount > 0) || (subTransport.SctpPort > 0)
+	if hasSubscriberOffer && session.State() == domain.NegotiationStateStable {
 		if err := session.StartOfferTransition(); err == nil {
 			if session.Responder() != nil {
 				offerToSend = &pendingOffer{
@@ -623,18 +769,10 @@ func (a *RoomActor) Join(
 	return joinRes, nil
 }
 
-func (a *RoomActor) Leave(ctx context.Context, participantID string) error {
-	a.mu.Lock()
-
-	if a.closed {
-		a.mu.Unlock()
-		return nil // Ignore late leave after close
-	}
-
+func (a *RoomActor) leaveLocked(ctx context.Context, participantID string) (*ParticipantSession, *domain.Participant, []pendingOffer, []ports.PeerResponderPort, []*domain.Participant, error) {
 	session, exists := a.sessions[participantID]
 	if !exists {
-		a.mu.Unlock()
-		return domain.ErrParticipantNotFound
+		return nil, nil, nil, nil, nil, domain.ErrParticipantNotFound
 	}
 
 	p := session.Participant()
@@ -642,7 +780,7 @@ func (a *RoomActor) Leave(ctx context.Context, participantID string) error {
 	delete(a.sessions, participantID)
 	a.participantCount.Add(-1)
 	_, _ = a.room.RemoveParticipant(participantID)
-	_ = session.Close()
+	delete(a.dataConsumers, participantID)
 
 	// Inactivate all slots for this participant's tracks on remaining participants in a single batch (REQ-018)
 	var offersToSend []pendingOffer
@@ -685,12 +823,88 @@ func (a *RoomActor) Leave(ctx context.Context, participantID string) error {
 	// Include the disconnected participant so remaining clients drop their UI tile (LiveKit contract)
 	broadcastParts = append(broadcastParts, p)
 
+	return session, p, offersToSend, broadcastResponders, broadcastParts, nil
+}
+
+func (a *RoomActor) Leave(ctx context.Context, participantID string) error {
+	a.mu.Lock()
+
+	if a.closed {
+		a.mu.Unlock()
+		return nil // Ignore late leave after close
+	}
+
+	session, _, offersToSend, broadcastResponders, broadcastParts, err := a.leaveLocked(ctx, participantID)
+	if err != nil {
+		a.mu.Unlock()
+		return err
+	}
+	_ = session.Close()
+
 	a.mu.Unlock()
 
 	dispatchBroadcast(broadcastResponders, broadcastParts)
 	dispatchOffers(offersToSend)
 
 	return nil
+}
+
+func (a *RoomActor) RemoveParticipant(ctx context.Context, participantID string) error {
+	a.mu.Lock()
+
+	if a.closed {
+		a.mu.Unlock()
+		return nil
+	}
+
+	session, exists := a.sessions[participantID]
+	if !exists {
+		a.mu.Unlock()
+		return domain.ErrParticipantNotFound
+	}
+
+	p := session.Participant()
+	a.evictedParticipants[participantID] = time.Now()
+	if p.SID != "" {
+		a.evictedParticipants[p.SID] = time.Now()
+	}
+
+	responder := session.Responder()
+	if responder != nil {
+		_ = responder.SendLeave(false, domain.DisconnectReasonUserRejected)
+	}
+
+	_, _, offersToSend, broadcastResponders, broadcastParts, err := a.leaveLocked(ctx, participantID)
+	if err != nil {
+		a.mu.Unlock()
+		return err
+	}
+
+	a.mu.Unlock()
+
+	// Wait brief moment so the LeaveRequest packet is flushed over TCP before terminating the websocket
+	time.Sleep(10 * time.Millisecond)
+	_ = session.Close()
+
+	dispatchBroadcast(broadcastResponders, broadcastParts)
+	dispatchOffers(offersToSend)
+
+	return nil
+}
+
+func (a *RoomActor) IsEvicted(participantID, sid string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if _, ok := a.evictedParticipants[participantID]; ok {
+		return true
+	}
+	if sid != "" {
+		if _, ok := a.evictedParticipants[sid]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *RoomActor) ParticipantCount() int {
@@ -722,16 +936,83 @@ func (a *RoomActor) Room() *domain.Room {
 
 func (a *RoomActor) UpdateParticipantMetadata(participantID, metadata string) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	session, ok := a.sessions[participantID]
 	if !ok {
+		a.mu.Unlock()
 		return domain.ErrParticipantNotFound
 	}
 	session.Participant().SetMetadata(metadata)
 
 	broadcastResponders, broadcastParts := a.collectBroadcastLocked()
-	go dispatchBroadcast(broadcastResponders, broadcastParts)
+	a.mu.Unlock()
+
+	dispatchBroadcast(broadcastResponders, broadcastParts)
+	return nil
+}
+
+func (a *RoomActor) UpdateParticipant(participantID, metadata, name string) error {
+	a.mu.Lock()
+
+	session, ok := a.sessions[participantID]
+	if !ok {
+		a.mu.Unlock()
+		return domain.ErrParticipantNotFound
+	}
+	if name != "" {
+		session.Participant().SetName(name)
+	}
+	if metadata != "" {
+		session.Participant().SetMetadata(metadata)
+	}
+
+	broadcastResponders, broadcastParts := a.collectBroadcastLocked()
+	a.mu.Unlock()
+
+	dispatchBroadcast(broadcastResponders, broadcastParts)
+	return nil
+}
+
+func (a *RoomActor) SendData(ctx context.Context, data []byte, topic string, destinationIdentities []string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.closed || !a.room.IsActive() {
+		return domain.ErrRoomClosed
+	}
+
+	if a.room.RouterID == "" && a.routerPort != nil {
+		routerInfo, err := a.routerPort.CreateRouter(ctx, a.room.ID)
+		if err == nil && routerInfo != nil {
+			a.room.RouterID = routerInfo.RouterID
+			a.room.SetRtpCapabilitiesJSON(routerInfo.RtpCapabilitiesJSON)
+		}
+	}
+
+	if a.mediaStreamPort != nil && a.room.RouterID != "" {
+		_ = a.mediaStreamPort.SendDirectData(ctx, &domain.SendDirectDataCommand{
+			RouterID: a.room.RouterID,
+			Label:    "_reliable",
+			Protocol: "",
+			Payload:  data,
+		})
+	}
+
+	if a.nodeRegistry != nil {
+		for secNodeID, secRouterID := range a.nodeRouters {
+			if secNode, err := a.nodeRegistry.GetNode(secNodeID); err == nil && secNode != nil {
+				if mp, ok := secNode.Client().(ports.MediaStreamPort); ok && mp != nil {
+					_ = mp.SendDirectData(ctx, &domain.SendDirectDataCommand{
+						RouterID: secRouterID,
+						Label:    "_reliable",
+						Protocol: "",
+						Payload:  data,
+					})
+				}
+			}
+		}
+	}
+
 	return nil
 }
 

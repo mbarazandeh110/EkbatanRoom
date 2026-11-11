@@ -1302,7 +1302,7 @@ STATUS: IMPLEMENTED
 RFC / REQUIREMENT ID: REQ-026
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -1325,7 +1325,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-027
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -1361,7 +1361,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-028
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -1393,7 +1393,7 @@ STATUS: OPEN
 RFC / REQUIREMENT ID: REQ-029
 SOURCE SERVICE: rtc-compatibility-suite
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -1415,3 +1415,43 @@ STATUS: OPEN
      - When cascading across nodes (or when a query parameter/node selector directs participants to different nodes):
      - Establish PipeTransports between the nodes for the room.
      - Pipe audio and video producers across the pipe transport so subscribers on Node 2 receive RTP packets (`bytesReceived > 0`) published by Node 1.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. [REQ-026]: In `internal/application/room_actor.go` and `internal/application/room_manager.go`, implemented `UpdateParticipant` and modified `UpdateParticipantMetadata` to synchronously dispatch `SignalResponse_Update` (`ParticipantUpdate`) outside mutex locks before the Twirp HTTP response returns. Fully populated `Metadata: p.GetMetadata()`, `Name: p.GetName()`, `JoinedAt: p.JoinedAt.Unix()`, `State`, and `Tracks` in `LiveKitResponder.SendParticipantUpdate` and `SendJoinResponse`, ensuring `RoomEvent.ParticipantMetadataChanged` fires on remote clients.
+     2. [REQ-027]: In `internal/ports/inbound.go`, added `RemoveParticipant` to `RoomCoordinatorPort` and `SendLeave` to `PeerResponderPort`. In `RoomActor.RemoveParticipant`, prior to teardown and closing the WebSocket session, sent `SignalResponse_Leave` (`LeaveRequest{ CanReconnect: false, Reason: DisconnectReasonUserRejected, Action: LeaveRequest_DISCONNECT }`) to the evicted participant and registered their identity and SID in `evictedParticipants`. Rejection guards were added in `RoomActor.Join` and `ws_handler.go` to reject reconnect requests (`reconnect=1` or matching evicted identity/SID) with `domain.ErrParticipantEvicted` and immediately terminate subsequent reconnect attempts.
+     3. [REQ-028]: Synchronized `proto/sfu/v1/media_engine.proto` with `sfu-media-node` and regenerated Go stubs. Implemented `ProduceData`, `ConsumeData`, and `SendDirectData` in `MediaStreamPort` and `MediaNodeClient`. In `internal/adapters/inbound/livekit/sdp_mapper.go` (`GenerateSubscriberOffer`), synthesized `m=application <sctpPort> UDP/DTLS/SCTP webrtc-datachannel` with `a=mid:datachannel`, `a=sctp-port:<port>`, `a=max-message-size:262144`, and grouped `"datachannel"` into `a=group:BUNDLE`. In `RoomActor.Join`, registered DataProducers (`_reliable`, `_lossy`) and connected subscriber DataConsumers. In `twirp_service.go`, implemented `SendData` by marshaling `livekitproto.DataPacket` with `UserPacket` and dispatching it via `MediaStreamPort.SendDirectData` across primary and cascaded routers.
+     4. [REQ-029]: In `internal/config/config.go`, extended `SFUConfig` to parse multiple nodes from `SFU_NODES`, `SFU_GRPC_ADDRS`, comma-separated `SFU_GRPC_ADDR`, or YAML list `sfu.nodes`. In `cmd/coordinator/main.go`, dialed each node and registered all nodes in `NodeRegistry` (`cluster_total_nodes > 1`). Connected query parameters `node` and `node_id` in `ws_handler.go` via context (`WithTargetNode`) to route participants across nodes, triggering `RoomActor`'s PipeTransport cascading between SFU nodes.
+   - Modified Files:
+     - `proto/sfu/v1/media_engine.proto`
+     - `gen/proto/sfu/v1/media_engine.pb.go`
+     - `gen/proto/sfu/v1/media_engine_grpc.pb.go`
+     - `internal/domain/errors.go`
+     - `internal/domain/models.go`
+     - `internal/domain/participant.go`
+     - `internal/ports/inbound.go`
+     - `internal/ports/outbound.go`
+     - `internal/adapters/outbound/media_node_grpc/client.go`
+     - `internal/adapters/inbound/native_ortc/ortc_handler.go`
+     - `internal/adapters/inbound/livekit/responder.go`
+     - `internal/adapters/inbound/livekit/sdp_mapper.go`
+     - `internal/adapters/inbound/livekit/sdp_mapper_test.go`
+     - `internal/adapters/inbound/livekit/twirp_service.go`
+     - `internal/adapters/inbound/livekit/twirp_service_test.go`
+     - `internal/adapters/inbound/livekit/ws_handler.go`
+     - `internal/adapters/inbound/livekit/ws_handler_test.go`
+     - `internal/application/room_actor.go`
+     - `internal/application/room_actor_test.go`
+     - `internal/application/room_manager.go`
+     - `internal/config/config.go`
+     - `internal/config/config_test.go`
+     - `cmd/coordinator/main.go`
+   - Added Tests:
+     - `TestTwirpService_UpdateParticipant_BroadcastsParticipantUpdate_REQ026` in `twirp_service_test.go`
+     - `TestTwirpService_RemoveParticipant_SendsLeaveRequestAndRejectsReconnect_REQ027` in `twirp_service_test.go`
+     - `TestTwirpService_SendData_EncodesDataPacket_REQ028` in `twirp_service_test.go`
+     - `TestSDPMapper_GenerateSubscriberOffer_IncludesDataChannel_REQ028` in `sdp_mapper_test.go`
+     - `TestConfig_MultiNodeParsing_REQ029` in `config_test.go`
+   - Verification: All tests pass cleanly with race detection enabled (`go test -v -race -count=1 ./...` and `go test -v -race -tags enterprise -count=1 ./...`).
+===================================================================

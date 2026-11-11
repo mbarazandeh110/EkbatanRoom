@@ -27,6 +27,9 @@ type MediaStreamPort interface {
 	SetMediaPaused(ctx context.Context, cmd *domain.SetMediaPausedCommand) error
 	SetConsumerPreferredLayers(ctx context.Context, cmd *domain.SetPreferredLayersCommand) error
 	CloseResource(ctx context.Context, routerID string, resourceType domain.ResourceType, resourceID string) error
+	ProduceData(ctx context.Context, cmd *domain.ProduceDataCommand) (*domain.ProduceDataResult, error)
+	ConsumeData(ctx context.Context, cmd *domain.ConsumeDataCommand) (*domain.ConsumeDataResult, error)
+	SendDirectData(ctx context.Context, cmd *domain.SendDirectDataCommand) error
 }
 
 // SFUMediaPort is an alias for MediaStreamPort for backward and cross-service architectural consistency.

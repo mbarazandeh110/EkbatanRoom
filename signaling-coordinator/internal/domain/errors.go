@@ -41,4 +41,5 @@ var (
 	ErrFeatureNotLicensed              = errors.New("license does not authorize this feature")
 	ErrUnauthorized                    = errors.New("unauthorized")
 	ErrNoNodesAvailable                = errors.New("no SFU media nodes available in cluster")
+	ErrParticipantEvicted              = errors.New("participant was removed from room and cannot reconnect")
 )

@@ -240,6 +240,8 @@ func (r *LiveKitResponder) SendJoinResponse(res *domain.JoinResult) error {
 			Name:       p.Name,
 			State:      mapDomainParticipantStateToProto(p.GetState()),
 			Tracks:     mapDomainTracksToProto(p.ListTracks()),
+			JoinedAt:   p.JoinedAt.Unix(),
+			Metadata:   p.GetMetadata(),
 			Permission: defaultParticipantPermission(),
 		})
 	}
@@ -266,6 +268,8 @@ func (r *LiveKitResponder) SendJoinResponse(res *domain.JoinResult) error {
 					Name:       res.Participant.Name,
 					State:      livekitproto.ParticipantInfo_JOINED,
 					Tracks:     mapDomainTracksToProto(res.Participant.ListTracks()),
+					JoinedAt:   res.Participant.JoinedAt.Unix(),
+					Metadata:   res.Participant.GetMetadata(),
 					Permission: defaultParticipantPermission(),
 				},
 				OtherParticipants: otherParticipants,
@@ -343,6 +347,8 @@ func (r *LiveKitResponder) SendParticipantUpdate(participants []*domain.Particip
 			Name:       p.Name,
 			State:      mapDomainParticipantStateToProto(p.GetState()),
 			Tracks:     mapDomainTracksToProto(p.ListTracks()),
+			JoinedAt:   p.JoinedAt.Unix(),
+			Metadata:   p.GetMetadata(),
 			Permission: defaultParticipantPermission(),
 		})
 	}
@@ -473,6 +479,52 @@ func (r *LiveKitResponder) SendReconnect(iceServers []domain.IceServer) error {
 				ServerInfo: &livekitproto.ServerInfo{
 					Version: r.cfg.ServerVersion,
 				},
+			},
+		},
+	}
+	return r.send(msg)
+}
+
+func mapDomainDisconnectReasonToProto(r domain.DisconnectReason) livekitproto.DisconnectReason {
+	switch r {
+	case domain.DisconnectReasonClientInitiated:
+		return livekitproto.DisconnectReason_CLIENT_INITIATED
+	case domain.DisconnectReasonDuplicateIdentity:
+		return livekitproto.DisconnectReason_DUPLICATE_IDENTITY
+	case domain.DisconnectReasonServerShutdown:
+		return livekitproto.DisconnectReason_SERVER_SHUTDOWN
+	case domain.DisconnectReasonParticipantRemoved:
+		return livekitproto.DisconnectReason_PARTICIPANT_REMOVED
+	case domain.DisconnectReasonRoomDeleted:
+		return livekitproto.DisconnectReason_ROOM_DELETED
+	case domain.DisconnectReasonStateMismatch:
+		return livekitproto.DisconnectReason_STATE_MISMATCH
+	case domain.DisconnectReasonJoinFailure:
+		return livekitproto.DisconnectReason_JOIN_FAILURE
+	case domain.DisconnectReasonMigration:
+		return livekitproto.DisconnectReason_MIGRATION
+	case domain.DisconnectReasonSignalClose:
+		return livekitproto.DisconnectReason_SIGNAL_CLOSE
+	case domain.DisconnectReasonRoomClosed:
+		return livekitproto.DisconnectReason_ROOM_CLOSED
+	case domain.DisconnectReasonUserUnavailable:
+		return livekitproto.DisconnectReason_USER_UNAVAILABLE
+	case domain.DisconnectReasonUserRejected:
+		return livekitproto.DisconnectReason_USER_REJECTED
+	case domain.DisconnectReasonSipTrunkFailure:
+		return livekitproto.DisconnectReason_SIP_TRUNK_FAILURE
+	default:
+		return livekitproto.DisconnectReason_UNKNOWN_REASON
+	}
+}
+
+func (r *LiveKitResponder) SendLeave(canReconnect bool, reason domain.DisconnectReason) error {
+	msg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_Leave{
+			Leave: &livekitproto.LeaveRequest{
+				CanReconnect: canReconnect,
+				Reason:       mapDomainDisconnectReasonToProto(reason),
+				Action:       livekitproto.LeaveRequest_DISCONNECT,
 			},
 		},
 	}
