@@ -42,4 +42,6 @@ var (
 	ErrUnauthorized                    = errors.New("unauthorized")
 	ErrNoNodesAvailable                = errors.New("no SFU media nodes available in cluster")
 	ErrParticipantEvicted              = errors.New("participant was removed from room and cannot reconnect")
+	ErrRoomPlacementNotFound           = errors.New("room placement not found")
+	ErrRoomLockAcquisitionFailed       = errors.New("failed to acquire room creation lock")
 )

@@ -27,6 +27,8 @@ type RoomManager struct {
 	nodeRegistry      *NodeRegistry
 	placementStrategy ports.RoomPlacementStrategy
 	metricsPort       ports.TelemetryMetricsPort
+	placementRegistry ports.RoomPlacementRegistryPort
+	scheduler         *LocalityScheduler
 }
 
 // NewRoomManager creates a new RoomManager with constructor-injected ports.
@@ -77,6 +79,28 @@ func (m *RoomManager) SetPlacementStrategy(ps ports.RoomPlacementStrategy) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.placementStrategy = ps
+	if m.placementRegistry != nil {
+		m.scheduler = NewLocalityScheduler(m.placementRegistry, m.nodeRegistry, ps)
+	}
+}
+
+// SetPlacementRegistry wires the distributed RoomPlacementRegistryPort and initializes the LocalityScheduler.
+func (m *RoomManager) SetPlacementRegistry(reg ports.RoomPlacementRegistryPort) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.placementRegistry = reg
+	if reg != nil {
+		m.scheduler = NewLocalityScheduler(reg, m.nodeRegistry, m.placementStrategy)
+	} else {
+		m.scheduler = nil
+	}
+}
+
+// Scheduler returns the LocalityScheduler, if configured.
+func (m *RoomManager) Scheduler() *LocalityScheduler {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.scheduler
 }
 
 // SetNodeRegistry associates a NodeRegistry with the RoomManager, wires default placement, and registers event handler.
@@ -85,6 +109,9 @@ func (m *RoomManager) SetNodeRegistry(nr *NodeRegistry) {
 	m.nodeRegistry = nr
 	if m.placementStrategy == nil && nr != nil {
 		m.placementStrategy = NewDefaultPlacementStrategy(nr)
+	}
+	if m.placementRegistry != nil {
+		m.scheduler = NewLocalityScheduler(m.placementRegistry, nr, m.placementStrategy)
 	}
 	m.mu.Unlock()
 
@@ -165,7 +192,15 @@ func (m *RoomManager) CreateRoom(ctx context.Context, roomID, metadata string, e
 	}
 
 	var selectedNodeID string
-	if m.placementStrategy != nil {
+	var topo *domain.RoomPlacementTopology
+	if m.scheduler != nil {
+		var err error
+		topo, err = m.scheduler.AllocateNodeForParticipant(ctx, roomID, "")
+		if err != nil {
+			return nil, err
+		}
+		selectedNodeID = topo.PrimaryNodeID
+	} else if m.placementStrategy != nil {
 		nodeID, err := m.placementStrategy.SelectNodeForNewRoom(ctx, roomID)
 		if err != nil {
 			return nil, err
@@ -202,6 +237,9 @@ func (m *RoomManager) CreateRoom(ctx context.Context, roomID, metadata string, e
 	)
 	actor.SetNodeRegistry(m.nodeRegistry)
 	actor.SetPrimaryNodeID(selectedNodeID)
+	if topo != nil && topo.PrimaryRouterID != "" {
+		actor.Room().RouterID = topo.PrimaryRouterID
+	}
 	actor.SetLicenseVerifier(m.licenseVerifier)
 
 	room := actor.Room()
@@ -306,6 +344,9 @@ func (m *RoomManager) cleanupRoomPlacementLocked(roomID string) {
 	if cleaner, ok := m.placementStrategy.(roomPlacementCleaner); ok {
 		cleaner.RemoveRoom(roomID)
 	}
+	if m.placementRegistry != nil {
+		_ = m.placementRegistry.RemoveRoomPlacement(context.Background(), roomID)
+	}
 }
 
 func (m *RoomManager) Join(
@@ -330,8 +371,17 @@ func (m *RoomManager) Join(
 
 	// 2. Room placement check
 	var selectedNodeID string
+	var topo *domain.RoomPlacementTopology
 	if targetNode := TargetNodeFromContext(ctx); targetNode != "" {
 		selectedNodeID = targetNode
+	} else if isNewRoom && m.scheduler != nil {
+		var err error
+		topo, err = m.scheduler.AllocateNodeForParticipant(ctx, roomID, participantID)
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		selectedNodeID = topo.PrimaryNodeID
 	} else if isNewRoom && m.placementStrategy != nil {
 		nodeID, err := m.placementStrategy.SelectNodeForNewRoom(ctx, roomID)
 		if err != nil {
@@ -403,6 +453,9 @@ func (m *RoomManager) Join(
 		)
 		actor.SetNodeRegistry(m.nodeRegistry)
 		actor.SetPrimaryNodeID(selectedNodeID)
+		if topo != nil && topo.PrimaryRouterID != "" {
+			actor.Room().RouterID = topo.PrimaryRouterID
+		}
 		actor.SetLicenseVerifier(m.licenseVerifier)
 		m.rooms[roomID] = actor
 		m.metricsPort.IncActiveRooms()

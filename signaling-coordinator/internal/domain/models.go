@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 type ResourceType int
 
 const (
@@ -349,5 +351,33 @@ type SendDirectDataCommand struct {
 	Protocol string
 	Payload  []byte
 }
+
+// RouterPlacementRole defines the functional role of a router in a room topology.
+const (
+	RouterRolePrimary        = "primary"
+	RouterRoleIntraNodePipe  = "intra_node_pipe"
+	RouterRoleInterNodePipe  = "inter_node_pipe"
+)
+
+// RouterPlacementEntry represents an active router assigned to a room on an SFU node.
+type RouterPlacementEntry struct {
+	NodeID          string `json:"node_id"`
+	RouterID        string `json:"router_id"`
+	WorkerIndex     uint32 `json:"worker_index"`
+	Role            string `json:"role"` // "primary", "intra_node_pipe", "inter_node_pipe"
+	ActiveConsumers uint32 `json:"active_consumers"`
+}
+
+// RoomPlacementTopology represents the distributed placement and routing topology of a room.
+type RoomPlacementTopology struct {
+	RoomID           string                 `json:"room_id"`
+	PrimaryNodeID    string                 `json:"primary_node_id"`
+	PrimaryRouterID  string                 `json:"primary_router_id"`
+	PrimaryWorkerIdx uint32                 `json:"primary_worker_idx"`
+	Routers          []RouterPlacementEntry `json:"routers"`
+	CreatedAt        time.Time              `json:"created_at"`
+	UpdatedAt        time.Time              `json:"updated_at"`
+}
+
 
 

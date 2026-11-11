@@ -2,9 +2,20 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"ekbatan-room/signaling-coordinator/internal/domain"
 )
+
+// RoomPlacementRegistryPort defines the outbound operations for distributed room placement storage, locking, and topology tracking.
+type RoomPlacementRegistryPort interface {
+	AcquireRoomCreationLock(ctx context.Context, roomID string, ttl time.Duration) (unlockFunc func(), err error)
+	GetRoomPlacement(ctx context.Context, roomID string) (*domain.RoomPlacementTopology, error)
+	SavePrimaryPlacement(ctx context.Context, roomID, primaryNodeID, primaryRouterID string, workerIdx uint32) error
+	AddCascadedRouter(ctx context.Context, roomID, nodeID string, workerIdx uint32, routerID, pipeRole string) error
+	UpdateRouterConsumerCount(ctx context.Context, roomID, nodeID, routerID string, activeConsumers uint32) error
+	RemoveRoomPlacement(ctx context.Context, roomID string) error
+}
 
 // RouterEnginePort defines the outbound operations for media router lifecycle.
 type RouterEnginePort interface {
