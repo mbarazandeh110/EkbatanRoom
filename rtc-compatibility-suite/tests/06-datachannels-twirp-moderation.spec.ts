@@ -72,28 +72,30 @@ test.describe('Gate 6: SCTP DataChannels & Twirp Moderation (06-datachannels-twi
           }
         };
 
-        // Attempt to wait for Bob to receive DataChannel message (pending REQ-028 subscriber offer)
+        // Bob receives DataChannel message (verified via REQ-028 subscriber offer)
+        console.log('[Gate 6] Waiting for Bob to receive SCTP DataChannel message...');
         const receivedOnB = await clientB.waitForDataMessage(msg => msg.topic === 'chat', 3000).catch(e => ({ error: e.message }));
         if ((receivedOnB as any).error) {
           checks.sctp_datachannel_receive = {
             name: 'sctp_datachannel_receive',
             status: 'BLOCKED',
-            description: 'Subscriber SCTP DataChannel message reception pending coordinator subscriber offer m=application section (REQ-028)',
+            description: 'Subscriber SCTP DataChannel reception requires DCEP DATA_CHANNEL_OPEN chunk from SFU to trigger browser ondatachannel (REQ-028)',
             details: { rfc: 'REQ-028', error: (receivedOnB as any).error }
           };
         } else {
+          expect((receivedOnB as any).payload).toContain('Hello Bob over SCTP Reliable');
           checks.sctp_datachannel_receive = {
             name: 'sctp_datachannel_receive',
             status: 'PASSED',
-            description: 'Bob successfully received Alice SCTP DataChannel packet',
+            description: 'Bob successfully received Alice SCTP DataChannel packet over WebRTC',
             details: { receivedOnB }
           };
         }
       } catch (dcErr: any) {
-        checks.sctp_datachannel_publish = {
-          name: 'sctp_datachannel_publish',
+        checks.sctp_datachannel_receive = {
+          name: 'sctp_datachannel_receive',
           status: 'FAILED',
-          description: `Failed to publish SCTP data: ${dcErr.message}`,
+          description: `Failed to receive SCTP data: ${dcErr.message}`,
           error: dcErr.message
         };
       }
@@ -125,29 +127,19 @@ test.describe('Gate 6: SCTP DataChannels & Twirp Moderation (06-datachannels-twi
       const updateRes = await twirpClient.updateParticipant(roomId, clientAId, { metadata: newMetadata });
       expect(updateRes.metadata).toBe(newMetadata);
 
-      const metaChangeOnB = await clientB.waitForMetadataChange(clientAId, 3000).catch(e => ({ error: e.message }));
-      if ((metaChangeOnB as any).error) {
-        checks.twirp_update_participant = {
-          name: 'twirp_update_participant',
-          status: 'BLOCKED',
-          description: "Twirp UpdateParticipant updated server state, but WebSocket ParticipantUpdate broadcast is pending coordinator implementation (REQ-026)",
-          details: {
-            targetParticipant: clientAId,
-            newMetadata,
-            rfc: 'REQ-026'
-          }
-        };
-      } else {
-        checks.twirp_update_participant = {
-          name: 'twirp_update_participant',
-          status: 'PASSED',
-          description: "Twirp UpdateParticipant successfully updated Alice's metadata and synced event to Bob",
-          details: {
-            targetParticipant: clientAId,
-            newMetadata
-          }
-        };
-      }
+      // Verify real-time ParticipantUpdate broadcast delivery to Bob (REQ-026)
+      const metaChangeOnB = await clientB.waitForMetadataChange(clientAId, 5000, newMetadata);
+      expect(metaChangeOnB.metadata).toBe(newMetadata);
+
+      checks.twirp_update_participant = {
+        name: 'twirp_update_participant',
+        status: 'PASSED',
+        description: "Twirp UpdateParticipant successfully updated Alice's metadata and synced event to Bob via ParticipantUpdate",
+        details: {
+          targetParticipant: clientAId,
+          newMetadata
+        }
+      };
 
       // ---------------------------------------------------------
       // Check 4: Twirp RoomService: MutePublishedTrack
@@ -190,6 +182,7 @@ test.describe('Gate 6: SCTP DataChannels & Twirp Moderation (06-datachannels-twi
         console.log('[Gate 6] Calling Twirp sendData...');
         const sendRes = await twirpClient.sendData(roomId, serverMessage, 'RELIABLE', { topic: 'system-alert' });
 
+        // Verify DataPacket delivery to Bob over WebRTC subscriber DataChannel (REQ-028)
         const serverMsgOnB = await clientB.waitForDataMessage(
           msg => msg.topic === 'system-alert',
           3000
@@ -199,14 +192,15 @@ test.describe('Gate 6: SCTP DataChannels & Twirp Moderation (06-datachannels-twi
           checks.twirp_send_data = {
             name: 'twirp_send_data',
             status: 'BLOCKED',
-            description: 'Twirp SendData accepted by server, but DataChannel delivery to subscribers pending subscriber DataChannel negotiation (REQ-028)',
+            description: 'Twirp SendData accepted by server, but DataChannel delivery requires DCEP DATA_CHANNEL_OPEN chunk on subscriber PC (REQ-028)',
             details: { rfc: 'REQ-028', error: (serverMsgOnB as any).error }
           };
         } else {
+          expect((serverMsgOnB as any).payload).toContain('System maintenance scheduled in 10 minutes');
           checks.twirp_send_data = {
             name: 'twirp_send_data',
             status: 'PASSED',
-            description: 'Twirp SendData delivered payload to subscriber client',
+            description: 'Twirp SendData delivered payload to subscriber client over DataChannel',
             details: { sendRes }
           };
         }
@@ -226,9 +220,9 @@ test.describe('Gate 6: SCTP DataChannels & Twirp Moderation (06-datachannels-twi
         console.log('[Gate 6] Calling Twirp removeParticipant...');
         const removeRes = await twirpClient.removeParticipant(roomId, clientBId);
 
-        // Disconnect Bob's client immediately to cease auto-reconnection loops
-        await clientB.leave().catch(() => {});
-        console.log('[Gate 6] Bob evicted and disconnected');
+        // Verify Bob receives SignalResponse_Leave (LeaveRequest) and cleanly disconnects without reconnect loop (REQ-027)
+        await clientB.waitForDisconnected(5000);
+        console.log('[Gate 6] Bob received LeaveRequest and disconnected cleanly');
 
         // Verify Alice observes Bob's departure
         await clientA.waitForRemoteParticipantCount(0, 10000);
@@ -236,7 +230,7 @@ test.describe('Gate 6: SCTP DataChannels & Twirp Moderation (06-datachannels-twi
         checks.twirp_remove_participant = {
           name: 'twirp_remove_participant',
           status: 'PASSED',
-          description: 'Twirp RemoveParticipant evicted participant Bob; verified peer disconnect and remote participant count reached 0 on Alice',
+          description: 'Twirp RemoveParticipant sent LeaveRequest, cleanly disconnected Bob, and Alice verified 0 remote participants',
           details: { evictedParticipant: clientBId, removeRes }
         };
       } catch (err: any) {
@@ -246,6 +240,7 @@ test.describe('Gate 6: SCTP DataChannels & Twirp Moderation (06-datachannels-twi
           description: `Twirp removeParticipant failed: ${err.message}`,
           error: err.message
         };
+        throw err;
       }
 
       gateRegistry.setStatus(gateId, 'PASSED');

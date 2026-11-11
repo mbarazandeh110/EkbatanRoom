@@ -240,12 +240,15 @@ export class ParticipantClientController implements IParticipantController {
 
   public async waitForMetadataChange(
     participantIdentity: string,
-    timeoutMs = 15000
+    timeoutMs = 15000,
+    expectedMetadata?: string
   ): Promise<MetadataChangeEvent> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       const changes = await this.getMetadataChanges();
-      const match = changes.find(c => c.participantIdentity === participantIdentity);
+      const match = changes.slice().reverse().find(
+        c => c.participantIdentity === participantIdentity && (expectedMetadata === undefined ? c.metadata !== '' : c.metadata === expectedMetadata)
+      );
       if (match) {
         return match;
       }
@@ -275,6 +278,17 @@ export class ParticipantClientController implements IParticipantController {
     await this.page.evaluate(async () => {
       await window.testHarness.disconnect();
     });
+  }
+
+  public async waitForDisconnected(timeoutMs = 10000): Promise<void> {
+    await this.page.waitForFunction(
+      () => {
+        const state = window.testHarness.getState();
+        return state.connectionState === 'disconnected' || state.status === 'DISCONNECTED';
+      },
+      undefined,
+      { timeout: timeoutMs }
+    );
   }
 
   public attachWebSocketListener(

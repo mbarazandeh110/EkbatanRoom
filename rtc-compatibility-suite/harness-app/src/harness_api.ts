@@ -209,13 +209,14 @@ export class HarnessController {
       this.updateDom();
     });
 
-    room.on(RoomEvent.ParticipantMetadataChanged, (metadata, participant) => {
+    room.on(RoomEvent.ParticipantMetadataChanged, (prevMetadata, participant) => {
+      const currentMetadata = participant?.metadata ?? prevMetadata ?? '';
       this.metadataChanges.push({
         participantIdentity: participant.identity,
-        metadata: metadata || '',
+        metadata: currentMetadata,
         timestamp: new Date().toISOString()
       });
-      console.log(`[HarnessApp] ParticipantMetadataChanged for ${participant.identity}: ${metadata}`);
+      console.log(`[HarnessApp] ParticipantMetadataChanged for ${participant.identity}: ${currentMetadata} (prev: ${prevMetadata})`);
       this.updateDom();
     });
 

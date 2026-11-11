@@ -68,7 +68,7 @@ export class LicenseTestManager {
   public async startLicensedCoordinator(
     port: number,
     license: GeneratedLicense,
-    sfuGrpcAddr = '127.0.0.1:50051'
+    sfuGrpcAddr = '127.0.0.1:50051,127.0.0.1:50052'
   ): Promise<LicensedCoordinatorProcess> {
     const logs: string[] = [];
 
@@ -76,6 +76,7 @@ export class LicenseTestManager {
       env: {
         ...process.env,
         PORT: String(port),
+        SFU_NODES: sfuGrpcAddr,
         SFU_GRPC_ADDR: sfuGrpcAddr,
         RTC_ICE_SERVERS: '',
         EKBATAN_LICENSE_PUBLIC_KEY: license.publicKeyHex,

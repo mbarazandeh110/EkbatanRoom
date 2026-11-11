@@ -178,24 +178,74 @@ test.describe('Gate 7: Multi-Node Cascading & Licensing (07-multinode-cascading-
         }
       };
 
+      // Clean up Part 1 participants before starting Part 2
+      await clientA.leave().catch(() => {});
+      await clientC.leave().catch(() => {});
+      await new Promise(r => setTimeout(r, 500));
+
       // -----------------------------------------------------------------
       // Part 2: Multi-Node Cascading Verification (PipeTransport)
       // -----------------------------------------------------------------
-      const hasMultiNodeClustering = false; // Pending REQ-029 for multi-node coordinator support
-      if (hasMultiNodeClustering) {
+      console.log('[Gate 7] Testing Multi-Node Cascading across Node 1 (sfu-primary) and Node 2 (sfu-node-2)...');
+      const cascadeRoomId = `cascade-room-${Date.now()}`;
+      const pubId = 'peer-pub-node1';
+      const subId = 'peer-sub-node2';
+
+      const pubClient = await createParticipant(pubId, cascadeRoomId, gateId);
+      const subClient = await createParticipant(subId, cascadeRoomId, gateId);
+
+      try {
+        const pubToken = await tokenFactory.createToken(cascadeRoomId, pubId, { name: 'Publisher' });
+        const subToken = await tokenFactory.createToken(cascadeRoomId, subId, { name: 'Subscriber' });
+
+        // Connect Publisher to Node 1 (sfu-primary)
+        const node1Url = `${signalingUrl}?node=sfu-primary`;
+        console.log('[Gate 7] Connecting Publisher to Node 1:', node1Url);
+        await pubClient.join(node1Url, pubToken);
+        await pubClient.publishTracks({ audio: true });
+
+        // Connect Subscriber to Node 2 (sfu-node-2)
+        const node2Url = `${signalingUrl}?node=sfu-node-2`;
+        console.log('[Gate 7] Connecting Subscriber to Node 2:', node2Url);
+        await subClient.join(node2Url, subToken);
+
+        // Verify mutual discovery across cascaded nodes
+        await pubClient.waitForRemoteParticipant(subId, 15000);
+        await subClient.waitForRemoteParticipant(pubId, 15000);
+
+        // Verify subscriber receives audio across PipeTransport
+        console.log('[Gate 7] Waiting for remote audio track across cascaded nodes...');
+        await subClient.waitForRemoteTrack('audio', 15000);
+
+        const subStats = await subClient.getStats();
+        const pubStats = await pubClient.getStats();
+
+        expect(pubStats.rawCounters.totalBytesSent).toBeGreaterThan(0);
+        expect(subStats.rawCounters.totalBytesReceived).toBeGreaterThan(0);
+
         checks.multinode_cascading = {
           name: 'multinode_cascading',
           status: 'PASSED',
-          description: 'Media forwarded across cascaded SFU nodes via Mediasoup PipeTransport',
-          details: { cascadedNodes: 2 }
+          description: 'Media RTP packets forwarded seamlessly across cascaded SFU nodes (sfu-primary -> sfu-node-2) via Mediasoup PipeTransport',
+          details: {
+            cascadedNodes: 2,
+            primaryNode: 'sfu-primary',
+            secondaryNode: 'sfu-node-2',
+            bytesSentOnNode1: pubStats.rawCounters.totalBytesSent,
+            bytesReceivedOnNode2: subStats.rawCounters.totalBytesReceived
+          }
         };
-      } else {
+      } catch (cascadeErr: any) {
         checks.multinode_cascading = {
           name: 'multinode_cascading',
-          status: 'BLOCKED',
-          description: 'Multi-node clustering pending coordinator multi-node address support (REQ-029)',
-          details: { rfc: 'REQ-029' }
+          status: 'FAILED',
+          description: `Multi-node cascading failed: ${cascadeErr.message}`,
+          error: cascadeErr.message
         };
+        throw cascadeErr;
+      } finally {
+        await pubClient.leave().catch(() => {});
+        await subClient.leave().catch(() => {});
       }
 
       gateRegistry.setStatus(gateId, 'PASSED');
