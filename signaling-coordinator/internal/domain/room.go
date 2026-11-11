@@ -21,7 +21,22 @@ type Room struct {
 	Status              RoomStatus
 	CreatedAt           time.Time
 	ClosedAt            time.Time
+	Metadata            string
+	MaxParticipants     uint32
+	EmptyTimeout        uint32
 	Participants        map[string]*Participant
+}
+
+func (r *Room) SetMetadata(m string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Metadata = m
+}
+
+func (r *Room) GetMetadata() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.Metadata
 }
 
 func NewRoom(id, routerID string) *Room {

@@ -49,5 +49,8 @@ type PeerResponderPort interface {
 	SendTrackMuted(trackSID string, muted bool) error
 	SendSubscribedQualityUpdate(trackSID string, codec string, qualities []domain.SubscribedQuality) error
 	SendTrackSubscribed(trackSID string) error
+	SendActiveSpeakers(speakers []*domain.ActiveSpeakerInfo) error
+	SendConnectionQuality(updates []*domain.ConnectionQualityUpdate) error
+	SendReconnect(iceServers []domain.IceServer) error
 	Close() error
 }

@@ -2,6 +2,8 @@ package livekit
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,17 +12,53 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/livekit/protocol/auth"
+	livekitproto "github.com/livekit/protocol/livekit"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 
-	livekitproto "github.com/livekit/protocol/livekit"
-
 	"ekbatan-room/signaling-coordinator/internal/adapters/outbound/telemetry"
 	"ekbatan-room/signaling-coordinator/internal/domain"
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
+
+func parseTokenClaims(tokenStr, secret string) (identity, name, roomID, metadata string) {
+	if tokenStr == "" {
+		return "", "", "", ""
+	}
+	if secret != "" {
+		if verifier, err := auth.ParseAPIToken(tokenStr); err == nil && verifier != nil {
+			if _, grants, vErr := verifier.Verify([]byte(secret)); vErr == nil && grants != nil {
+				room := ""
+				if grants.Video != nil {
+					room = grants.Video.Room
+				}
+				return grants.Identity, grants.Name, room, grants.Metadata
+			}
+		}
+	}
+	// Fallback unverified token decode for development / load testing
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) >= 2 {
+		payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err == nil {
+			var raw struct {
+				Sub      string `json:"sub"`
+				Name     string `json:"name"`
+				Metadata string `json:"metadata"`
+				Video    struct {
+					Room string `json:"room"`
+				} `json:"video"`
+			}
+			if err := json.Unmarshal(payloadBytes, &raw); err == nil {
+				return raw.Sub, raw.Name, raw.Video.Room, raw.Metadata
+			}
+		}
+	}
+	return "", "", "", ""
+}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -55,11 +93,27 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Extract room and identity from query parameters
+	// Extract room, identity, token and query parameters
 	q := r.URL.Query()
+	tokenStr := q.Get("access_token")
+	if tokenStr == "" {
+		tokenStr = q.Get("token")
+	}
+	if tokenStr == "" {
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+			tokenStr = strings.TrimSpace(authHeader[7:])
+		}
+	}
+
+	tokenIdentity, tokenName, tokenRoom, _ := parseTokenClaims(tokenStr, h.cfg.ApiSecret)
+
 	roomID := q.Get("room")
 	if roomID == "" {
 		roomID = q.Get("room_name")
+	}
+	if roomID == "" {
+		roomID = tokenRoom
 	}
 	if roomID == "" {
 		roomID = "default-room"
@@ -67,19 +121,31 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	identity := q.Get("identity")
 	if identity == "" {
+		identity = tokenIdentity
+	}
+	if identity == "" {
 		identity = "user-" + uuid.NewString()[:8]
 	}
 
 	name := q.Get("name")
 	if name == "" {
+		name = tokenName
+	}
+	if name == "" {
 		name = identity
 	}
+
+	isReconnect := q.Get("reconnect") == "1" || strings.EqualFold(q.Get("reconnect"), "true")
+	protocolVer := q.Get("protocol")
+	sdk := q.Get("sdk")
+	previousSID := q.Get("sid")
 
 	tracer := otel.Tracer("livekit.gateway")
 	ctx, span := tracer.Start(r.Context(), "LiveKitWS.Session",
 		trace.WithAttributes(
 			attribute.String("room_id", roomID),
 			attribute.String("identity", identity),
+			attribute.Bool("reconnect", isReconnect),
 		),
 	)
 	defer span.End()
@@ -98,6 +164,10 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"peer_id", identity,
 		"identity", identity,
 		"name", name,
+		"reconnect", isReconnect,
+		"protocol", protocolVer,
+		"sdk", sdk,
+		"previous_sid", previousSID,
 	)
 
 	// 1. Perform Join Handshake
@@ -557,6 +627,55 @@ func (h *LiveKitWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				},
 			}
 			_ = responder.send(pongMsg)
+
+		case *livekitproto.SignalRequest_Subscription:
+			subReq := msg.Subscription
+			for _, sid := range subReq.GetTrackSids() {
+				if sid != "" {
+					_ = h.coordinator.SetConsumerPaused(ctx, roomID, identity, sid, !subReq.GetSubscribe())
+				}
+			}
+			for _, pt := range subReq.GetParticipantTracks() {
+				for _, sid := range pt.GetTrackSids() {
+					if sid != "" {
+						_ = h.coordinator.SetConsumerPaused(ctx, roomID, identity, sid, !subReq.GetSubscribe())
+					}
+				}
+			}
+			subResp := &livekitproto.SignalResponse{
+				Message: &livekitproto.SignalResponse_SubscriptionResponse{
+					SubscriptionResponse: &livekitproto.SubscriptionResponse{},
+				},
+			}
+			_ = responder.send(subResp)
+
+		case *livekitproto.SignalRequest_SyncState:
+			syncReq := msg.SyncState
+			for _, disabledSID := range syncReq.GetTrackSidsDisabled() {
+				_ = h.coordinator.SetConsumerPaused(ctx, roomID, identity, disabledSID, true)
+			}
+			if syncReq.GetSubscription() != nil {
+				for _, sid := range syncReq.GetSubscription().GetTrackSids() {
+					_ = h.coordinator.SetConsumerPaused(ctx, roomID, identity, sid, !syncReq.GetSubscription().GetSubscribe())
+				}
+			}
+
+		case *livekitproto.SignalRequest_PingReq:
+			pongMsg := &livekitproto.SignalResponse{
+				Message: &livekitproto.SignalResponse_PongResp{
+					PongResp: &livekitproto.Pong{
+						LastPingTimestamp: msg.PingReq.GetTimestamp(),
+						Timestamp:         time.Now().UnixMilli(),
+					},
+				},
+			}
+			_ = responder.send(pongMsg)
+
+		case *livekitproto.SignalRequest_UpdateMetadata:
+			slog.DebugContext(ctx, "livekit update metadata request", "identity", identity, "metadata", msg.UpdateMetadata.GetMetadata())
+
+		case *livekitproto.SignalRequest_Simulate:
+			slog.InfoContext(ctx, "livekit simulate scenario", "identity", identity, "scenario", msg.Simulate.String())
 
 		case *livekitproto.SignalRequest_Leave:
 			slog.InfoContext(ctx, "livekit participant leaving",

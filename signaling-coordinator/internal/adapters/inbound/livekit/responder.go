@@ -22,6 +22,8 @@ type ResponderConfig struct {
 	PingInterval  uint32
 	PingTimeout   uint32
 	ServerVersion string
+	ApiKey        string
+	ApiSecret     string
 }
 
 // DefaultResponderConfig returns recommended default settings matching the LiveKit protocol.
@@ -411,6 +413,66 @@ func (r *LiveKitResponder) SendTrackSubscribed(trackSID string) error {
 		Message: &livekitproto.SignalResponse_TrackSubscribed{
 			TrackSubscribed: &livekitproto.TrackSubscribed{
 				TrackSid: trackSID,
+			},
+		},
+	}
+	return r.send(msg)
+}
+
+func (r *LiveKitResponder) SendActiveSpeakers(speakers []*domain.ActiveSpeakerInfo) error {
+	protoSpeakers := make([]*livekitproto.SpeakerInfo, 0, len(speakers))
+	for _, s := range speakers {
+		protoSpeakers = append(protoSpeakers, &livekitproto.SpeakerInfo{
+			Sid:    s.ParticipantSID,
+			Level:  s.Level,
+			Active: s.Active,
+		})
+	}
+	msg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_SpeakersChanged{
+			SpeakersChanged: &livekitproto.SpeakersChanged{
+				Speakers: protoSpeakers,
+			},
+		},
+	}
+	return r.send(msg)
+}
+
+func (r *LiveKitResponder) SendConnectionQuality(updates []*domain.ConnectionQualityUpdate) error {
+	protoUpdates := make([]*livekitproto.ConnectionQualityInfo, 0, len(updates))
+	for _, u := range updates {
+		protoUpdates = append(protoUpdates, &livekitproto.ConnectionQualityInfo{
+			ParticipantSid: u.ParticipantSID,
+			Quality:        livekitproto.ConnectionQuality(u.Quality),
+			Score:          u.Score,
+		})
+	}
+	msg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_ConnectionQuality{
+			ConnectionQuality: &livekitproto.ConnectionQualityUpdate{
+				Updates: protoUpdates,
+			},
+		},
+	}
+	return r.send(msg)
+}
+
+func (r *LiveKitResponder) SendReconnect(iceServers []domain.IceServer) error {
+	var protoIce []*livekitproto.ICEServer
+	for _, s := range iceServers {
+		protoIce = append(protoIce, &livekitproto.ICEServer{
+			Urls:       s.URLs,
+			Username:   s.Username,
+			Credential: s.Credential,
+		})
+	}
+	msg := &livekitproto.SignalResponse{
+		Message: &livekitproto.SignalResponse_Reconnect{
+			Reconnect: &livekitproto.ReconnectResponse{
+				IceServers: protoIce,
+				ServerInfo: &livekitproto.ServerInfo{
+					Version: r.cfg.ServerVersion,
+				},
 			},
 		},
 	}

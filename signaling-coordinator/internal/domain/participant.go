@@ -59,12 +59,28 @@ type Participant struct {
 	PublisherTransportID  string
 	SubscriberTransportID string
 	JoinedAt              time.Time
+	Metadata              string
+	CanPublish            bool
+	CanSubscribe          bool
+	CanPublishData        bool
 
 	// PublishedTracks maps track SID (or ID) to Track
 	PublishedTracks map[string]*Track
 
 	// SubscribedConsumerIDs maps consumerID to producerID
 	SubscribedConsumerIDs map[string]string
+}
+
+func (p *Participant) SetMetadata(m string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Metadata = m
+}
+
+func (p *Participant) GetMetadata() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.Metadata
 }
 
 func NewParticipant(id, sid, name string) *Participant {

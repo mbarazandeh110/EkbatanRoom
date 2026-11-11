@@ -182,3 +182,66 @@ func TestRoomManager_LicenseExpiredBlocksNewJoins(t *testing.T) {
 		t.Fatalf("expected ErrLicenseExpired for expired license, got: %v", err)
 	}
 }
+
+func TestRoomManager_LicenseMaxParticipantsPerRoomEnforcement(t *testing.T) {
+	now := time.Now().Unix()
+	claims := domain.LicenseClaims{
+		LicenseID:  "lic-max-parts-room",
+		CustomerID: "test-parts",
+		Tier:       "enterprise",
+		ClusterLimits: domain.ClusterLimits{
+			MaxConcurrentRooms:     10,
+			MaxConcurrentPeers:     100,
+			MaxParticipantsPerRoom: 2,
+		},
+		IssuedAt:  now,
+		ExpiresAt: now + 86400,
+	}
+	token := createTestToken(claims)
+	licenseMgr, err := application.NewLicenseManager(token)
+	if err != nil {
+		t.Fatalf("failed to create license manager: %v", err)
+	}
+
+	engine := newMockOutboundEngine()
+	roomMgr := application.NewRoomManager(
+		engine,
+		engine,
+		engine,
+		nil,
+		licenseMgr,
+	)
+
+	ctx := context.Background()
+
+	// 1. Join user-1 -> should succeed
+	res1, err := roomMgr.Join(ctx, "room-part-limit", "user-1", "User One", newMockResponder())
+	if err != nil || res1 == nil {
+		t.Fatalf("expected user-1 to join, got: %v", err)
+	}
+
+	// 2. Join user-2 -> should succeed (count reaches 2)
+	res2, err := roomMgr.Join(ctx, "room-part-limit", "user-2", "User Two", newMockResponder())
+	if err != nil || res2 == nil {
+		t.Fatalf("expected user-2 to join, got: %v", err)
+	}
+
+	// 3. Join user-3 -> should fail with ErrMaxParticipantsPerRoomExceeded
+	_, err = roomMgr.Join(ctx, "room-part-limit", "user-3", "User Three", newMockResponder())
+	if !errors.Is(err, domain.ErrMaxParticipantsPerRoomExceeded) {
+		t.Fatalf("expected ErrMaxParticipantsPerRoomExceeded for user-3, got: %v", err)
+	}
+
+	// 4. User-1 leaves room -> room now has 1 participant
+	err = roomMgr.Leave(ctx, "room-part-limit", "user-1")
+	if err != nil {
+		t.Fatalf("expected leave to succeed: %v", err)
+	}
+
+	// 5. User-3 now joins successfully
+	res3, err := roomMgr.Join(ctx, "room-part-limit", "user-3", "User Three", newMockResponder())
+	if err != nil || res3 == nil {
+		t.Fatalf("expected user-3 to join after slot freed, got: %v", err)
+	}
+}
+

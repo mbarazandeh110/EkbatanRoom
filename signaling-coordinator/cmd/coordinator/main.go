@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	sfuv1 "ekbatan-room/signaling-coordinator/gen/proto/sfu/v1"
+	livekitproto "github.com/livekit/protocol/livekit"
 	"ekbatan-room/signaling-coordinator/internal/adapters/inbound/livekit"
 	"ekbatan-room/signaling-coordinator/internal/adapters/inbound/native_ortc"
 	"ekbatan-room/signaling-coordinator/internal/adapters/outbound/media_node_grpc"
@@ -156,7 +157,16 @@ func main() {
 	mux.Handle("/rtc", liveKitHandler)
 	// NOTE (REQ-008): /rtc/ is intentionally NOT registered so that /rtc/v1 returns HTTP 404,
 	// triggering official livekit-client protocol fallback to standard /rtc WebSocket signaling.
+	valHandler := livekit.NewValidateHandler()
+	mux.Handle("/rtc/validate", valHandler)
+	mux.Handle("/rtc/v1/validate", valHandler)
 	mux.Handle("/ws/ortc", ortcHandler)
+
+	// LiveKit Twirp RoomService API (/twirp/livekit.RoomService/*)
+	twirpRoomSvc := livekit.NewRoomServiceServer(roomManager)
+	twirpHandler := livekitproto.NewRoomServiceServer(twirpRoomSvc)
+	mux.Handle(twirpHandler.PathPrefix(), twirpHandler)
+	mux.Handle("/twirp/", twirpHandler)
 
 	var metricsSrv *http.Server
 	if cfg.Telemetry.MetricsEnabled {
@@ -165,7 +175,7 @@ func main() {
 			metricsMux.Handle("/metrics", telemetry.DefaultMetrics().Handler())
 			metricsSrv = &http.Server{
 				Addr:    cfg.Telemetry.MetricsAddr,
-				Handler: metricsMux,
+				Handler: livekit.WithCORS(metricsMux),
 			}
 			go func() {
 				slog.Info("dedicated metrics server listening", "addr", cfg.Telemetry.MetricsAddr)
@@ -184,7 +194,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%s", cfg.Server.Port),
-		Handler:           mux,
+		Handler:           livekit.WithCORS(mux),
 		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 	}
 

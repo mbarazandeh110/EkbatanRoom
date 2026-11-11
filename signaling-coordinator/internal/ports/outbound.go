@@ -53,9 +53,40 @@ type RoomPlacementStrategy interface {
 	ResolveNodeForPeerJoin(ctx context.Context, roomID string, peerID string) (string, string, error)
 }
 
+// LicenseVerifierPort defines the operations for license verification and quota checking.
+type LicenseVerifierPort interface {
+	GetTier() domain.LicenseTier
+	GetLimits() domain.ClusterLimits
+	GetClaims() domain.LicenseClaims
+	GetToken() string
+	Status() string
+	InGracePeriod() bool
+	HasFeature(feature string) bool
+	CheckCanCreateRoom(currentRooms int) error
+	CheckCanJoinPeer(currentPeers int) error
+	CheckCanAddNode(currentNodes int) error
+	CheckCanJoinParticipantToRoom(currentRoomParticipants int) error
+	CheckFeatureAllowed(feature string) error
+}
+
 // TelemetryMetricsPort decouples application logic from concrete Prometheus/VictoriaMetrics adapters.
 type TelemetryMetricsPort interface {
 	IncActiveRooms()
 	DecActiveRooms()
 	IncGlareQueued()
+	IncCascadedRooms()
+	DecCascadedRooms()
+	IncLicenseQuotaRejection(reason string)
 }
+
+// WebhookEventNotifierPort defines the port for dispatching signed lifecycle webhook events.
+type WebhookEventNotifierPort interface {
+	NotifyRoomStarted(ctx context.Context, room *domain.Room)
+	NotifyRoomFinished(ctx context.Context, room *domain.Room)
+	NotifyParticipantJoined(ctx context.Context, room *domain.Room, p *domain.Participant)
+	NotifyParticipantLeft(ctx context.Context, room *domain.Room, p *domain.Participant)
+	NotifyTrackPublished(ctx context.Context, room *domain.Room, p *domain.Participant, tr *domain.Track)
+	NotifyTrackUnpublished(ctx context.Context, room *domain.Room, p *domain.Participant, tr *domain.Track)
+	Close()
+}
+

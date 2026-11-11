@@ -23,7 +23,7 @@ type RoomManager struct {
 	transportPort     ports.TransportEnginePort
 	mediaStreamPort   ports.MediaStreamPort
 	iceServers        []domain.IceServer
-	licenseMgr        *LicenseManager
+	licenseVerifier   ports.LicenseVerifierPort
 	nodeRegistry      *NodeRegistry
 	placementStrategy ports.RoomPlacementStrategy
 	metricsPort       ports.TelemetryMetricsPort
@@ -35,13 +35,13 @@ func NewRoomManager(
 	transportPort ports.TransportEnginePort,
 	mediaStreamPort ports.MediaStreamPort,
 	iceServers []domain.IceServer,
-	licenseMgr ...*LicenseManager,
+	licenseVerifier ...ports.LicenseVerifierPort,
 ) *RoomManager {
-	var lm *LicenseManager
-	if len(licenseMgr) > 0 && licenseMgr[0] != nil {
-		lm = licenseMgr[0]
+	var lv ports.LicenseVerifierPort
+	if len(licenseVerifier) > 0 && licenseVerifier[0] != nil {
+		lv = licenseVerifier[0]
 	} else {
-		lm, _ = NewLicenseManager("")
+		lv, _ = NewLicenseManager("")
 	}
 	return &RoomManager{
 		rooms:           make(map[string]*RoomActor),
@@ -49,9 +49,16 @@ func NewRoomManager(
 		transportPort:   transportPort,
 		mediaStreamPort: mediaStreamPort,
 		iceServers:      iceServers,
-		licenseMgr:      lm,
+		licenseVerifier: lv,
 		metricsPort:     noopTelemetryMetrics{},
 	}
+}
+
+// LicenseVerifier returns the associated LicenseVerifierPort.
+func (m *RoomManager) LicenseVerifier() ports.LicenseVerifierPort {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.licenseVerifier
 }
 
 // SetMetricsPort sets the TelemetryMetricsPort for metric reporting.
@@ -135,6 +142,158 @@ func (m *RoomManager) ActivePeersCount() int {
 	return total
 }
 
+func (m *RoomManager) CreateRoom(ctx context.Context, roomID, metadata string, emptyTimeout, maxParticipants uint32) (*domain.Room, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	actor, exists := m.rooms[roomID]
+	if exists {
+		room := actor.Room()
+		if metadata != "" {
+			room.SetMetadata(metadata)
+		}
+		return room, nil
+	}
+
+	if m.licenseVerifier != nil {
+		if err := m.licenseVerifier.CheckCanCreateRoom(len(m.rooms)); err != nil {
+			if m.metricsPort != nil {
+				m.metricsPort.IncLicenseQuotaRejection("max_rooms")
+			}
+			return nil, err
+		}
+	}
+
+	var selectedNodeID string
+	if m.placementStrategy != nil {
+		nodeID, err := m.placementStrategy.SelectNodeForNewRoom(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		selectedNodeID = nodeID
+	}
+
+	routerPort := m.routerPort
+	transportPort := m.transportPort
+	mediaStreamPort := m.mediaStreamPort
+
+	if selectedNodeID != "" && m.nodeRegistry != nil {
+		if node, err := m.nodeRegistry.GetNode(selectedNodeID); err == nil && node != nil {
+			client := node.Client()
+			if rp, ok := client.(ports.RouterEnginePort); ok {
+				routerPort = rp
+			}
+			if tp, ok := client.(ports.TransportEnginePort); ok {
+				transportPort = tp
+			}
+			if mp, ok := client.(ports.MediaStreamPort); ok {
+				mediaStreamPort = mp
+			}
+		}
+	}
+
+	actor = NewRoomActor(
+		roomID,
+		routerPort,
+		transportPort,
+		mediaStreamPort,
+		m.iceServers,
+		m.metricsPort,
+	)
+	actor.SetNodeRegistry(m.nodeRegistry)
+	actor.SetPrimaryNodeID(selectedNodeID)
+	actor.SetLicenseVerifier(m.licenseVerifier)
+
+	room := actor.Room()
+	room.Metadata = metadata
+	room.EmptyTimeout = emptyTimeout
+	room.MaxParticipants = maxParticipants
+
+	m.rooms[roomID] = actor
+	m.metricsPort.IncActiveRooms()
+	return room, nil
+}
+
+func (m *RoomManager) ListRooms(names []string) []*domain.Room {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	filterMap := make(map[string]bool)
+	for _, n := range names {
+		if n != "" {
+			filterMap[n] = true
+		}
+	}
+
+	var result []*domain.Room
+	for roomID, actor := range m.rooms {
+		if len(filterMap) > 0 && !filterMap[roomID] {
+			continue
+		}
+		result = append(result, actor.Room())
+	}
+	return result
+}
+
+func (m *RoomManager) GetRoom(roomID string) (*domain.Room, error) {
+	actor, err := m.getRoomActor(roomID)
+	if err != nil {
+		return nil, err
+	}
+	return actor.Room(), nil
+}
+
+func (m *RoomManager) DeleteRoom(ctx context.Context, roomID string) error {
+	m.mu.Lock()
+	actor, exists := m.rooms[roomID]
+	if !exists {
+		m.mu.Unlock()
+		return domain.ErrRoomNotFound
+	}
+	delete(m.rooms, roomID)
+	m.cleanupRoomPlacementLocked(roomID)
+	m.metricsPort.DecActiveRooms()
+	m.mu.Unlock()
+
+	return actor.Close(ctx)
+}
+
+func (m *RoomManager) ListParticipants(roomID string) ([]*domain.Participant, error) {
+	actor, err := m.getRoomActor(roomID)
+	if err != nil {
+		return nil, err
+	}
+	return actor.Room().ListParticipants(), nil
+}
+
+func (m *RoomManager) GetParticipant(roomID, participantID string) (*domain.Participant, error) {
+	actor, err := m.getRoomActor(roomID)
+	if err != nil {
+		return nil, err
+	}
+	p, ok := actor.Room().GetParticipant(participantID)
+	if !ok {
+		return nil, domain.ErrParticipantNotFound
+	}
+	return p, nil
+}
+
+func (m *RoomManager) UpdateParticipantMetadata(roomID, participantID, metadata string) error {
+	actor, err := m.getRoomActor(roomID)
+	if err != nil {
+		return err
+	}
+	return actor.UpdateParticipantMetadata(participantID, metadata)
+}
+
+func (m *RoomManager) UpdateRoomMetadata(roomID, metadata string) error {
+	actor, err := m.getRoomActor(roomID)
+	if err != nil {
+		return err
+	}
+	return actor.UpdateRoomMetadata(metadata)
+}
+
 func (m *RoomManager) cleanupRoomPlacementLocked(roomID string) {
 	if cleaner, ok := m.placementStrategy.(roomPlacementCleaner); ok {
 		cleaner.RemoveRoom(roomID)
@@ -151,8 +310,11 @@ func (m *RoomManager) Join(
 	isNewRoom := !exists
 
 	// 1. Enforce max_concurrent_rooms if creating a new room
-	if isNewRoom && m.licenseMgr != nil {
-		if err := m.licenseMgr.CheckCanCreateRoom(len(m.rooms)); err != nil {
+	if isNewRoom && m.licenseVerifier != nil {
+		if err := m.licenseVerifier.CheckCanCreateRoom(len(m.rooms)); err != nil {
+			if m.metricsPort != nil {
+				m.metricsPort.IncLicenseQuotaRejection("max_rooms")
+			}
 			m.mu.Unlock()
 			return nil, err
 		}
@@ -182,7 +344,7 @@ func (m *RoomManager) Join(
 		totalPeers += a.ParticipantCount() + int(a.InFlightJoins())
 	}
 
-	if m.licenseMgr != nil {
+	if m.licenseVerifier != nil {
 		isNewPeer := true
 		if !isNewRoom {
 			if _, ok := actor.GetSession(participantID); ok {
@@ -191,7 +353,10 @@ func (m *RoomManager) Join(
 		}
 
 		if isNewPeer {
-			if err := m.licenseMgr.CheckCanJoinPeer(totalPeers); err != nil {
+			if err := m.licenseVerifier.CheckCanJoinPeer(totalPeers); err != nil {
+				if m.metricsPort != nil {
+					m.metricsPort.IncLicenseQuotaRejection("max_peers")
+				}
 				m.mu.Unlock()
 				return nil, err
 			}
@@ -228,6 +393,7 @@ func (m *RoomManager) Join(
 		)
 		actor.SetNodeRegistry(m.nodeRegistry)
 		actor.SetPrimaryNodeID(selectedNodeID)
+		actor.SetLicenseVerifier(m.licenseVerifier)
 		m.rooms[roomID] = actor
 		m.metricsPort.IncActiveRooms()
 	}

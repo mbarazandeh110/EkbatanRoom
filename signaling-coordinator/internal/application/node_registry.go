@@ -61,13 +61,13 @@ func (f NodeEventHandlerFunc) HandleNodeEvent(ctx context.Context, nodeID string
 type NodeRegistry struct {
 	mu            sync.RWMutex
 	coordinatorID string
-	licenseMgr    *LicenseManager
+	licenseMgr    ports.LicenseVerifierPort
 	nodes         map[string]*RegisteredNode
 	eventHandler  NodeEventHandler
 }
 
 // NewNodeRegistry initializes a new NodeRegistry.
-func NewNodeRegistry(coordinatorID string, licenseMgr *LicenseManager) *NodeRegistry {
+func NewNodeRegistry(coordinatorID string, licenseMgr ports.LicenseVerifierPort) *NodeRegistry {
 	if coordinatorID == "" {
 		coordinatorID = "coordinator-default"
 	}

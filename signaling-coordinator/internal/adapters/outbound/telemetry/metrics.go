@@ -10,13 +10,15 @@ import (
 // Metrics holds Prometheus collectors with strict low-cardinality label guards.
 // NEVER include high-cardinality keys (room_id, peer_id, transport_id, request_id) in labels.
 type Metrics struct {
-	ActiveRooms            prometheus.Gauge
-	ActiveParticipants     *prometheus.GaugeVec
-	WSMessagesTotal        *prometheus.CounterVec
-	SDPNegotiationDuration *prometheus.HistogramVec
-	SDPGlareQueuedTotal    prometheus.Counter
-	GRPCClientDuration     *prometheus.HistogramVec
-	ErrorsTotal            *prometheus.CounterVec
+	ActiveRooms                 prometheus.Gauge
+	ActiveParticipants          *prometheus.GaugeVec
+	CascadedRooms               prometheus.Gauge
+	LicenseQuotaRejectionsTotal *prometheus.CounterVec
+	WSMessagesTotal             *prometheus.CounterVec
+	SDPNegotiationDuration      *prometheus.HistogramVec
+	SDPGlareQueuedTotal         prometheus.Counter
+	GRPCClientDuration          *prometheus.HistogramVec
+	ErrorsTotal                 *prometheus.CounterVec
 
 	registry *prometheus.Registry
 }
@@ -44,6 +46,14 @@ func NewMetrics() *Metrics {
 			Name: "signaling_active_participants",
 			Help: "Current number of active participants partitioned by protocol.",
 		}, []string{"protocol"}),
+		CascadedRooms: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "signaling_cascaded_rooms_total",
+			Help: "Current number of cascaded multi-node rooms.",
+		}),
+		LicenseQuotaRejectionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "signaling_license_quota_rejections_total",
+			Help: "Total number of connection or creation requests rejected due to license limits.",
+		}, []string{"reason"}),
 		WSMessagesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "signaling_ws_messages_total",
 			Help: "Total count of WebSocket signaling messages processed.",
@@ -71,6 +81,8 @@ func NewMetrics() *Metrics {
 	reg.MustRegister(
 		m.ActiveRooms,
 		m.ActiveParticipants,
+		m.CascadedRooms,
+		m.LicenseQuotaRejectionsTotal,
 		m.WSMessagesTotal,
 		m.SDPNegotiationDuration,
 		m.SDPGlareQueuedTotal,
@@ -93,6 +105,18 @@ func (m *Metrics) IncActiveRooms() {
 
 func (m *Metrics) DecActiveRooms() {
 	m.ActiveRooms.Dec()
+}
+
+func (m *Metrics) IncCascadedRooms() {
+	m.CascadedRooms.Inc()
+}
+
+func (m *Metrics) DecCascadedRooms() {
+	m.CascadedRooms.Dec()
+}
+
+func (m *Metrics) IncLicenseQuotaRejection(reason string) {
+	m.LicenseQuotaRejectionsTotal.WithLabelValues(reason).Inc()
 }
 
 func (m *Metrics) IncActiveParticipants(protocol string) {

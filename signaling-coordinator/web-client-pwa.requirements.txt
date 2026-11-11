@@ -2,7 +2,7 @@
 RFC / REQUIREMENT ID: REQ-001
 SOURCE SERVICE: web-client-pwa
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -21,11 +21,23 @@ STATUS: OPEN
      * `Access-Control-Allow-Headers: *`
    - Handle HTTP `OPTIONS` requests on these paths with HTTP `204 No Content` or `200 OK`.
 
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. Adheres to Hexagonal Architecture: Added `WithCORS` middleware and `ValidateHandler` in `internal/adapters/inbound/livekit/http_handler.go`.
+     2. Handles preflight HTTP `OPTIONS` with `204 No Content` and standard CORS headers (`Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS`, `Access-Control-Allow-Headers: *`, `Access-Control-Max-Age: 86400`).
+     3. Provides HTTP `200 OK` JSON response on `/rtc/validate` and `/rtc/v1/validate` for browser SDK connection validation.
+   - Modified Files:
+     - `internal/adapters/inbound/livekit/http_handler.go`: Created with `WithCORS` middleware and `ValidateHandler`.
+     - `internal/adapters/inbound/livekit/http_handler_test.go`: Added tests `TestWithCORS_PreflightOptions` and `TestValidateHandler_GET`.
+     - `cmd/coordinator/main.go`: Registered routes and wrapped HTTP server with `WithCORS`.
+   - Verification: Tests pass cleanly under `go test -v -race ./...`.
+
 ===================================================================
 RFC / REQUIREMENT ID: REQ-002
 SOURCE SERVICE: web-client-pwa
 TARGET SERVICE: signaling-coordinator
-STATUS: OPEN
+STATUS: IMPLEMENTED
 ===================================================================
 
 1. SUMMARY & TYPE:
@@ -38,3 +50,11 @@ STATUS: OPEN
 
 3. EXPECTED BOUNDARY BEHAVIOR:
    - Configure `config.yaml` with a valid STUN server (e.g. `stun:stun.l.google.com:19302`) or allow empty `ice_servers` when running in pure LAN/direct host candidate environments.
+
+4. RESOLUTION & ARCHITECTURAL TRIAGE:
+   - Decision: ACCEPTED & IMPLEMENTED
+   - Architectural Justification:
+     1. Updated `config.yaml` default ICE server to `stun:stun.l.google.com:19302` matching `config.example.yaml`.
+   - Modified Files:
+     - `config.yaml`: Updated `ice_servers` entry.
+   - Verification: All config tests pass cleanly under `go test -v -race ./internal/config/...`.

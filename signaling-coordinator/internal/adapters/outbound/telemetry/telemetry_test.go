@@ -143,6 +143,8 @@ func TestMetrics_LowCardinalityAndExport(t *testing.T) {
 	metrics.RecordWSMessage("livekit", "offer", "ok")
 	metrics.RecordSDPNegotiation("publisher", 0.025)
 	metrics.IncGlareQueued()
+	metrics.IncCascadedRooms()
+	metrics.IncLicenseQuotaRejection("max_peers")
 	metrics.RecordGRPC("CreateRouter", "ok", 0.005)
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -160,6 +162,12 @@ func TestMetrics_LowCardinalityAndExport(t *testing.T) {
 	}
 	if !strings.Contains(respBody, `signaling_active_participants{protocol="livekit"} 1`) {
 		t.Fatalf("expected signaling_active_participants with protocol label, got:\n%s", respBody)
+	}
+	if !strings.Contains(respBody, "signaling_cascaded_rooms_total 1") {
+		t.Fatalf("expected signaling_cascaded_rooms_total 1, got:\n%s", respBody)
+	}
+	if !strings.Contains(respBody, `signaling_license_quota_rejections_total{reason="max_peers"} 1`) {
+		t.Fatalf("expected signaling_license_quota_rejections_total with reason label, got:\n%s", respBody)
 	}
 
 	// Verify strict cardinality guard: NO room_id, peer_id, or transport_id anywhere in metrics!

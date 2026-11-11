@@ -271,3 +271,25 @@ type SubscribedQuality struct {
 	Enabled bool
 }
 
+type ConnectionQuality int32
+
+const (
+	ConnectionQualityPoor      ConnectionQuality = 0
+	ConnectionQualityGood      ConnectionQuality = 1
+	ConnectionQualityExcellent ConnectionQuality = 2
+	ConnectionQualityLost      ConnectionQuality = 3
+)
+
+type ConnectionQualityUpdate struct {
+	ParticipantSID string
+	Quality        ConnectionQuality
+	Score          float32
+}
+
+type ActiveSpeakerInfo struct {
+	ParticipantSID string
+	Level          float32
+	Active         bool
+}
+
+

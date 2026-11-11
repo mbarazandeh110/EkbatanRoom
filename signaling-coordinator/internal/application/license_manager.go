@@ -13,18 +13,21 @@ import (
 	"time"
 
 	"ekbatan-room/signaling-coordinator/internal/domain"
+	"ekbatan-room/signaling-coordinator/internal/ports"
 )
 
 // DefaultLicensePublicKeyHex is the official EkbatanRoom Ed25519 master public key.
 const DefaultLicensePublicKeyHex = "23a1aa3536a3863f3bd6b468d2537192d9ec9cdcb127486738e145fe64eb5436"
 
-type LicenseStatus string
+type LicenseStatus = string
 
 const (
 	LicenseStatusValid       LicenseStatus = "valid"
 	LicenseStatusGracePeriod LicenseStatus = "grace_period"
 	LicenseStatusExpired     LicenseStatus = "expired"
 )
+
+var _ ports.LicenseVerifierPort = (*LicenseManager)(nil)
 
 // LicenseManager manages Ed25519 license validation and cluster quota enforcement.
 type LicenseManager struct {
@@ -323,4 +326,52 @@ func (m *LicenseManager) CheckCanAddNode(currentNodes int) error {
 		return domain.ErrMaxNodesExceeded
 	}
 	return nil
+}
+
+// CheckCanJoinParticipantToRoom checks whether adding another participant to this room exceeds max_participants_per_room.
+func (m *LicenseManager) CheckCanJoinParticipantToRoom(currentRoomParticipants int) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if err := m.checkExpiredRLocked(); err != nil {
+		return err
+	}
+
+	if m.limits.MaxParticipantsPerRoom > 0 && currentRoomParticipants >= m.limits.MaxParticipantsPerRoom {
+		slog.Warn("room participant limit reached",
+			"current_participants", currentRoomParticipants,
+			"max_allowed", m.limits.MaxParticipantsPerRoom,
+		)
+		return domain.ErrMaxParticipantsPerRoomExceeded
+	}
+	return nil
+}
+
+// CheckFeatureAllowed verifies whether a specific feature is permitted by the license.
+func (m *LicenseManager) CheckFeatureAllowed(feature string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if err := m.checkExpiredRLocked(); err != nil {
+		return err
+	}
+
+	if m.tier == domain.LicenseTierCommunity {
+		if strings.EqualFold(feature, domain.FeatureCascading) || strings.EqualFold(feature, domain.FeatureRecording) {
+			return domain.ErrFeatureNotLicensed
+		}
+	}
+
+	for _, f := range m.claims.Features {
+		if f == "*" || strings.EqualFold(f, feature) {
+			return nil
+		}
+	}
+
+	if len(m.claims.Features) == 0 && m.tier == domain.LicenseTierEnterprise {
+		// Enterprise defaults allow cascading & recording unless explicitly restricted
+		return nil
+	}
+
+	return domain.ErrFeatureNotLicensed
 }

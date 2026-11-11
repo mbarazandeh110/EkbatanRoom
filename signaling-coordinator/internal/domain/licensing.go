@@ -7,11 +7,18 @@ const (
 	LicenseTierEnterprise LicenseTier = "enterprise"
 )
 
+const (
+	FeatureCascading = "cascading"
+	FeatureRecording = "recording"
+	FeatureE2EE      = "e2ee"
+)
+
 // ClusterLimits defines resource limits authorized by a license.
 type ClusterLimits struct {
-	MaxSfuNodes        int `json:"max_sfu_nodes"`
-	MaxConcurrentPeers int `json:"max_concurrent_peers"`
-	MaxConcurrentRooms int `json:"max_concurrent_rooms"`
+	MaxSfuNodes            int `json:"max_sfu_nodes"`
+	MaxConcurrentPeers     int `json:"max_concurrent_peers"`
+	MaxConcurrentRooms     int `json:"max_concurrent_rooms"`
+	MaxParticipantsPerRoom int `json:"max_participants_per_room,omitempty"`
 }
 
 // LicenseClaims represents the cryptographically signed claims payload.

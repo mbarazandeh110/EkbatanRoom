@@ -24,6 +24,9 @@ type noopTelemetryMetrics struct{}
 func (noopTelemetryMetrics) IncActiveRooms() {}
 func (noopTelemetryMetrics) DecActiveRooms() {}
 func (noopTelemetryMetrics) IncGlareQueued() {}
+func (noopTelemetryMetrics) IncCascadedRooms() {}
+func (noopTelemetryMetrics) DecCascadedRooms() {}
+func (noopTelemetryMetrics) IncLicenseQuotaRejection(reason string) {}
 
 // defaultWebRTCRtpCapabilitiesJSON provides fallback standard WebRTC codecs (Opus, VP8, H264)
 // with standard RTCP feedback (PLI/FIR/NACK) so mediasoup router.can_consume() validation succeeds
@@ -100,10 +103,19 @@ type RoomActor struct {
 	closed           bool
 
 	// Multi-node cascading support (Enterprise)
-	primaryNodeID  string
-	nodeRegistry   *NodeRegistry
-	nodeRouters    map[string]string // nodeID -> routerID
-	pipeTransports map[string]string // nodeID -> primaryPipeTransportID
+	primaryNodeID   string
+	nodeRegistry    *NodeRegistry
+	nodeRouters     map[string]string // nodeID -> routerID
+	pipeTransports  map[string]string // nodeID -> primaryPipeTransportID
+	pipePairs       map[string]*nodePipePair // secondaryNodeID -> pipePair
+	licenseVerifier ports.LicenseVerifierPort
+}
+
+type nodePipePair struct {
+	PrimaryPipeTransportID   string
+	SecondaryPipeTransportID string
+	SecondaryNodeID          string
+	SecondaryRouterID        string
 }
 
 func (a *RoomActor) getRtpCapabilitiesJSON() string {
@@ -177,7 +189,16 @@ func NewRoomActor(
 		mediaStreamPort: mediaStreamPort,
 		metricsPort:     mp,
 		iceServers:      iceServers,
+		nodeRouters:     make(map[string]string),
+		pipeTransports:  make(map[string]string),
+		pipePairs:       make(map[string]*nodePipePair),
 	}
+}
+
+func (a *RoomActor) SetLicenseVerifier(lv ports.LicenseVerifierPort) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.licenseVerifier = lv
 }
 
 func (a *RoomActor) startSpan(ctx context.Context, name string, participantID string, state domain.NegotiationState) (context.Context, trace.Span) {
@@ -285,6 +306,18 @@ func (a *RoomActor) Join(
 		return nil, domain.ErrParticipantAlreadyExists
 	}
 
+	if a.licenseVerifier != nil {
+		if err := a.licenseVerifier.CheckCanJoinParticipantToRoom(len(a.sessions)); err != nil {
+			a.mu.Unlock()
+			if a.metricsPort != nil {
+				a.metricsPort.IncLicenseQuotaRejection("max_participants_per_room")
+			}
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return nil, err
+		}
+	}
+
 	var assignedNodeID string
 	if len(targetNodeID) > 0 && targetNodeID[0] != "" {
 		assignedNodeID = targetNodeID[0]
@@ -293,7 +326,22 @@ func (a *RoomActor) Join(
 		a.primaryNodeID = assignedNodeID
 	}
 
+	// Validate cascading license feature before assigning to secondary node
+	if assignedNodeID != "" && a.primaryNodeID != "" && assignedNodeID != a.primaryNodeID {
+		if a.licenseVerifier != nil {
+			if err := a.licenseVerifier.CheckFeatureAllowed(domain.FeatureCascading); err != nil {
+				slog.Warn("multi-node cascading not authorized by license, falling back to primary node",
+					"room_id", a.room.ID,
+					"assigned_node", assignedNodeID,
+					"primary_node", a.primaryNodeID,
+				)
+				assignedNodeID = a.primaryNodeID
+			}
+		}
+	}
+
 	transportPort := a.transportPort
+	activeMediaStreamPort := a.mediaStreamPort
 	activeRouterID := a.room.RouterID
 
 	// 1. Lazy initialize media router on the SFU node if not yet created
@@ -319,6 +367,9 @@ func (a *RoomActor) Join(
 		if a.pipeTransports == nil {
 			a.pipeTransports = make(map[string]string)
 		}
+		if a.pipePairs == nil {
+			a.pipePairs = make(map[string]*nodePipePair)
+		}
 
 		secNode, err := a.nodeRegistry.GetNode(assignedNodeID)
 		if err == nil && secNode != nil {
@@ -339,8 +390,11 @@ func (a *RoomActor) Join(
 				if tp, ok := secClient.(ports.TransportEnginePort); ok {
 					transportPort = tp
 				}
+				if mp, ok := secClient.(ports.MediaStreamPort); ok {
+					activeMediaStreamPort = mp
+				}
 
-				if _, hasPipe := a.pipeTransports[assignedNodeID]; !hasPipe {
+				if _, hasPipe := a.pipePairs[assignedNodeID]; !hasPipe {
 					primNode, pErr := a.nodeRegistry.GetNode(a.primaryNodeID)
 					if pErr == nil && primNode != nil {
 						primPipePort, ok1 := primNode.Client().(ports.PipeTransportPort)
@@ -371,7 +425,17 @@ func (a *RoomActor) Join(
 									RemotePort:               primPipe.Port,
 									RemoteSrtpParametersJSON: primPipe.SrtpParametersJSON,
 								})
+								pair := &nodePipePair{
+									PrimaryPipeTransportID:   primPipe.PipeTransportID,
+									SecondaryPipeTransportID: secPipe.PipeTransportID,
+									SecondaryNodeID:          assignedNodeID,
+									SecondaryRouterID:        secRouterID,
+								}
+								a.pipePairs[assignedNodeID] = pair
 								a.pipeTransports[assignedNodeID] = primPipe.PipeTransportID
+								if a.metricsPort != nil {
+									a.metricsPort.IncCascadedRooms()
+								}
 
 								for _, sess := range a.sessions {
 									for _, tr := range sess.Participant().ListTracks() {
@@ -442,6 +506,7 @@ func (a *RoomActor) Join(
 	}
 
 	session := NewParticipantSession(p, pubTransport, subTransport, responder)
+	session.SetNodeRouting(assignedNodeID, activeRouterID, transportPort, activeMediaStreamPort)
 	a.sessions[participantID] = session
 	a.participantCount.Add(1)
 
@@ -463,9 +528,9 @@ func (a *RoomActor) Join(
 		}
 		otherParticipant := otherSession.Participant()
 		for _, t := range otherParticipant.ListTracks() {
-			consRes, err := a.mediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
+			consRes, err := activeMediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
 				RequestID:             uuid.NewString(),
-				RouterID:              a.room.RouterID,
+				RouterID:              activeRouterID,
 				SubscriberTransportID: p.SubscriberTransportID,
 				ProducerID:            t.ID,
 				RtpCapabilitiesJSON:   a.getRtpCapabilitiesJSON(),
@@ -651,6 +716,33 @@ func (a *RoomActor) ListSessions() []*ParticipantSession {
 	return sessions
 }
 
+func (a *RoomActor) Room() *domain.Room {
+	return a.room
+}
+
+func (a *RoomActor) UpdateParticipantMetadata(participantID, metadata string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	session, ok := a.sessions[participantID]
+	if !ok {
+		return domain.ErrParticipantNotFound
+	}
+	session.Participant().SetMetadata(metadata)
+
+	broadcastResponders, broadcastParts := a.collectBroadcastLocked()
+	go dispatchBroadcast(broadcastResponders, broadcastParts)
+	return nil
+}
+
+func (a *RoomActor) UpdateRoomMetadata(metadata string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.room.SetMetadata(metadata)
+	return nil
+}
+
 func (a *RoomActor) PublishTracks(
 	ctx context.Context,
 	participantID string,
@@ -779,18 +871,57 @@ func (a *RoomActor) PublishTracks(
 		_ = p.AddTrack(domainTrack)
 		publishedTracks = append(publishedTracks, domainTrack)
 
-		// Forward track to secondary cascading nodes if active
-		if len(a.pipeTransports) > 0 && a.nodeRegistry != nil {
-			if primNode, err := a.nodeRegistry.GetNode(a.primaryNodeID); err == nil && primNode != nil {
-				if pipePort, ok := primNode.Client().(ports.PipeTransportPort); ok {
-					for _, pipeID := range a.pipeTransports {
-						_, _ = pipePort.PipeProduce(ctx, &domain.PipeProduceCommand{
-							RouterID:         a.room.RouterID,
-							PipeTransportID:  pipeID,
-							SourceProducerID: prodRes.ProducerID,
-							Kind:             tc.Kind,
-							Paused:           false,
-						})
+		// Bi-directional multi-node cascading track forwarding
+		if len(a.pipePairs) > 0 && a.nodeRegistry != nil {
+			pubNodeID := a.primaryNodeID
+			if pubSess, ok := a.sessions[participantID]; ok && pubSess.NodeID() != "" {
+				pubNodeID = pubSess.NodeID()
+			}
+
+			if pubNodeID == a.primaryNodeID || pubNodeID == "" {
+				// Published on Primary Node -> Forward to all Secondary Nodes
+				if primNode, err := a.nodeRegistry.GetNode(a.primaryNodeID); err == nil && primNode != nil {
+					if pipePort, ok := primNode.Client().(ports.PipeTransportPort); ok {
+						for _, pair := range a.pipePairs {
+							_, _ = pipePort.PipeProduce(ctx, &domain.PipeProduceCommand{
+								RouterID:         a.room.RouterID,
+								PipeTransportID:  pair.PrimaryPipeTransportID,
+								SourceProducerID: prodRes.ProducerID,
+								Kind:             tc.Kind,
+								Paused:           false,
+							})
+						}
+					}
+				}
+			} else {
+				// Published on Secondary Node -> Forward to Primary Node
+				if pair, ok := a.pipePairs[pubNodeID]; ok {
+					if secNode, err := a.nodeRegistry.GetNode(pubNodeID); err == nil && secNode != nil {
+						if secPipePort, ok := secNode.Client().(ports.PipeTransportPort); ok {
+							_, _ = secPipePort.PipeProduce(ctx, &domain.PipeProduceCommand{
+								RouterID:         pair.SecondaryRouterID,
+								PipeTransportID:  pair.SecondaryPipeTransportID,
+								SourceProducerID: prodRes.ProducerID,
+								Kind:             tc.Kind,
+								Paused:           false,
+							})
+						}
+					}
+					// Forward from Primary Node to any other Secondary Nodes in the room
+					if primNode, err := a.nodeRegistry.GetNode(a.primaryNodeID); err == nil && primNode != nil {
+						if primPipePort, ok := primNode.Client().(ports.PipeTransportPort); ok {
+							for secID, otherPair := range a.pipePairs {
+								if secID != pubNodeID {
+									_, _ = primPipePort.PipeProduce(ctx, &domain.PipeProduceCommand{
+										RouterID:         a.room.RouterID,
+										PipeTransportID:  otherPair.PrimaryPipeTransportID,
+										SourceProducerID: prodRes.ProducerID,
+										Kind:             tc.Kind,
+										Paused:           false,
+									})
+								}
+							}
+						}
 					}
 				}
 			}
@@ -817,11 +948,20 @@ func (a *RoomActor) PublishTracks(
 				continue
 			}
 
+			subRouterID := otherSession.RouterID()
+			if subRouterID == "" {
+				subRouterID = a.room.RouterID
+			}
+			subMediaPort := otherSession.MediaStreamPort()
+			if subMediaPort == nil {
+				subMediaPort = a.mediaStreamPort
+			}
+
 			// Other session is Stable -> consume immediately
 			for _, t := range publishedTracks {
-				consRes, err := a.mediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
+				consRes, err := subMediaPort.Consume(ctx, &domain.ConsumeCommand{
 					RequestID:             uuid.NewString(),
-					RouterID:              a.room.RouterID,
+					RouterID:              subRouterID,
 					SubscriberTransportID: otherSession.Participant().SubscriberTransportID,
 					ProducerID:            t.ID,
 					RtpCapabilitiesJSON:   a.getRtpCapabilitiesJSON(),
@@ -852,10 +992,10 @@ func (a *RoomActor) PublishTracks(
 				)
 				otherSession.Participant().AddSubscription(consRes.ConsumerID, t.ID)
 
-				if t.Kind == domain.TrackKindVideo && otherSession.SubTransportConnected() && a.mediaStreamPort != nil {
+				if t.Kind == domain.TrackKindVideo && otherSession.SubTransportConnected() && subMediaPort != nil {
 					spatial, temporal := a.preferredLayersForTrack(t.SID)
-					_ = a.mediaStreamPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{
-						RouterID:      a.room.RouterID,
+					_ = subMediaPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{
+						RouterID:      subRouterID,
 						ConsumerID:    consRes.ConsumerID,
 						SpatialLayer:  spatial,
 						TemporalLayer: temporal,
@@ -917,14 +1057,27 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 
 	p := session.Participant()
 
+	subRouterID := session.RouterID()
+	if subRouterID == "" {
+		subRouterID = a.room.RouterID
+	}
+	subTransportPort := session.TransportPort()
+	if subTransportPort == nil {
+		subTransportPort = a.transportPort
+	}
+	subMediaPort := session.MediaStreamPort()
+	if subMediaPort == nil {
+		subMediaPort = a.mediaStreamPort
+	}
+
 	// Connect Subscriber Transport on the SFU (once per transport lifecycle)
 	if len(fingerprints) > 0 && !session.SubTransportConnected() {
 		role := dtlsRole
 		if role == "" {
 			role = "client"
 		}
-		err := a.transportPort.ConnectTransport(ctx, &domain.ConnectTransportCommand{
-			RouterID:           a.room.RouterID,
+		err := subTransportPort.ConnectTransport(ctx, &domain.ConnectTransportCommand{
+			RouterID:           subRouterID,
 			TransportID:        p.SubscriberTransportID,
 			DtlsRole:           role,
 			RemoteFingerprints: fingerprints,
@@ -948,9 +1101,9 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 
 	if len(pending) > 0 {
 		for _, t := range pending {
-			consRes, err := a.mediaStreamPort.Consume(ctx, &domain.ConsumeCommand{
+			consRes, err := subMediaPort.Consume(ctx, &domain.ConsumeCommand{
 				RequestID:             uuid.NewString(),
-				RouterID:              a.room.RouterID,
+				RouterID:              subRouterID,
 				SubscriberTransportID: p.SubscriberTransportID,
 				ProducerID:            t.ID,
 				RtpCapabilitiesJSON:   a.getRtpCapabilitiesJSON(),
@@ -1002,9 +1155,9 @@ func (a *RoomActor) HandleSubscriberAnswer(ctx context.Context, participantID st
 
 		// REQ-004: Activate optimal preferred spatial and temporal layers on SFU consumer to unlock media flow
 		spatial, temporal := a.preferredLayersForTrack(slot.TrackSID)
-		if a.mediaStreamPort != nil {
-			if err := a.mediaStreamPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{
-				RouterID:      a.room.RouterID,
+		if subMediaPort != nil {
+			if err := subMediaPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{
+				RouterID:      subRouterID,
 				ConsumerID:    slot.ConsumerID,
 				SpatialLayer:  spatial,
 				TemporalLayer: temporal,
@@ -1094,9 +1247,20 @@ func (a *RoomActor) SetTrackMuted(ctx context.Context, participantID, trackSID s
 	}
 
 	track, ok := p.GetTrack(trackSID)
-	if ok && track.ID != "" {
-		_ = a.mediaStreamPort.SetMediaPaused(ctx, &domain.SetMediaPausedCommand{
-			RouterID:     a.room.RouterID,
+	routerID := a.room.RouterID
+	mediaPort := a.mediaStreamPort
+	if session != nil {
+		if rID := session.RouterID(); rID != "" {
+			routerID = rID
+		}
+		if mp := session.MediaStreamPort(); mp != nil {
+			mediaPort = mp
+		}
+	}
+
+	if ok && track.ID != "" && mediaPort != nil {
+		_ = mediaPort.SetMediaPaused(ctx, &domain.SetMediaPausedCommand{
+			RouterID:     routerID,
 			ResourceType: domain.ResourceTypeProducer,
 			ResourceID:   track.ID,
 			Paused:       muted,
@@ -1149,8 +1313,17 @@ func (a *RoomActor) SetConsumerPaused(ctx context.Context, participantID, trackS
 		return domain.ErrTrackNotFound
 	}
 
-	return a.mediaStreamPort.SetMediaPaused(ctx, &domain.SetMediaPausedCommand{
-		RouterID:     a.room.RouterID,
+	routerID := session.RouterID()
+	if routerID == "" {
+		routerID = a.room.RouterID
+	}
+	mediaPort := session.MediaStreamPort()
+	if mediaPort == nil {
+		mediaPort = a.mediaStreamPort
+	}
+
+	return mediaPort.SetMediaPaused(ctx, &domain.SetMediaPausedCommand{
+		RouterID:     routerID,
 		ResourceType: domain.ResourceTypeConsumer,
 		ResourceID:   actualConsumerID,
 		Paused:       paused,
@@ -1176,8 +1349,17 @@ func (a *RoomActor) SetConsumerLayers(ctx context.Context, participantID, consum
 		actualTemporal = 2
 	}
 
-	return a.mediaStreamPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{
-		RouterID:      a.room.RouterID,
+	routerID := session.RouterID()
+	if routerID == "" {
+		routerID = a.room.RouterID
+	}
+	mediaPort := session.MediaStreamPort()
+	if mediaPort == nil {
+		mediaPort = a.mediaStreamPort
+	}
+
+	return mediaPort.SetConsumerPreferredLayers(ctx, &domain.SetPreferredLayersCommand{
+		RouterID:      routerID,
 		ConsumerID:    actualConsumerID,
 		SpatialLayer:  spatial,
 		TemporalLayer: actualTemporal,
@@ -1200,7 +1382,17 @@ func (a *RoomActor) RestartPublisherIce(ctx context.Context, participantID strin
 
 	p := session.Participant()
 	pubTransport := session.PubTransport()
-	iceInfo, err := a.transportPort.RestartIce(ctx, a.room.RouterID, p.PublisherTransportID)
+
+	routerID := session.RouterID()
+	if routerID == "" {
+		routerID = a.room.RouterID
+	}
+	transportPort := session.TransportPort()
+	if transportPort == nil {
+		transportPort = a.transportPort
+	}
+
+	iceInfo, err := transportPort.RestartIce(ctx, routerID, p.PublisherTransportID)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -1228,7 +1420,17 @@ func (a *RoomActor) RestartSubscriberIce(ctx context.Context, participantID stri
 	}
 
 	p := session.Participant()
-	iceInfo, err := a.transportPort.RestartIce(ctx, a.room.RouterID, p.SubscriberTransportID)
+
+	routerID := session.RouterID()
+	if routerID == "" {
+		routerID = a.room.RouterID
+	}
+	transportPort := session.TransportPort()
+	if transportPort == nil {
+		transportPort = a.transportPort
+	}
+
+	iceInfo, err := transportPort.RestartIce(ctx, routerID, p.SubscriberTransportID)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -1268,16 +1470,43 @@ func (a *RoomActor) Close(ctx context.Context) error {
 	for pid, session := range a.sessions {
 		p := session.Participant()
 		_ = session.Close()
-		if a.room.RouterID != "" {
+
+		routerID := session.RouterID()
+		if routerID == "" {
+			routerID = a.room.RouterID
+		}
+		transportPort := session.TransportPort()
+		if transportPort == nil {
+			transportPort = a.transportPort
+		}
+
+		if routerID != "" {
 			if p.PublisherTransportID != "" {
-				_ = a.transportPort.CloseTransport(ctx, a.room.RouterID, p.PublisherTransportID)
+				_ = transportPort.CloseTransport(ctx, routerID, p.PublisherTransportID)
 			}
 			if p.SubscriberTransportID != "" {
-				_ = a.transportPort.CloseTransport(ctx, a.room.RouterID, p.SubscriberTransportID)
+				_ = transportPort.CloseTransport(ctx, routerID, p.SubscriberTransportID)
 			}
 		}
 		delete(a.sessions, pid)
 	}
+
+	// Close secondary routers if cascaded
+	if a.nodeRegistry != nil {
+		for secNodeID, secRouterID := range a.nodeRouters {
+			if secNode, err := a.nodeRegistry.GetNode(secNodeID); err == nil && secNode != nil {
+				if rp, ok := secNode.Client().(ports.RouterEnginePort); ok {
+					_ = rp.CloseRouter(ctx, secRouterID)
+				}
+			}
+		}
+	}
+	if a.metricsPort != nil && len(a.pipePairs) > 0 {
+		a.metricsPort.DecCascadedRooms()
+	}
+	a.nodeRouters = make(map[string]string)
+	a.pipeTransports = make(map[string]string)
+	a.pipePairs = make(map[string]*nodePipePair)
 
 	_ = a.room.Close()
 	if a.room.RouterID != "" {
@@ -1302,6 +1531,24 @@ func (a *RoomActor) HandleNodeEvent(ctx context.Context, evt *domain.NodeEvent) 
 			"producer_id", evt.ActiveSpeaker.ProducerID,
 			"volume_dbfs", evt.ActiveSpeaker.VolumeDBFS,
 		)
+		var activeSpeakers []*domain.ActiveSpeakerInfo
+		for _, sess := range a.sessions {
+			if sess.Participant().ID == evt.ActiveSpeaker.PeerID {
+				activeSpeakers = append(activeSpeakers, &domain.ActiveSpeakerInfo{
+					ParticipantSID: sess.Participant().SID,
+					Level:          evt.ActiveSpeaker.VolumeDBFS,
+					Active:         true,
+				})
+				break
+			}
+		}
+		if len(activeSpeakers) > 0 {
+			for _, sess := range a.sessions {
+				if sess.Responder() != nil {
+					_ = sess.Responder().SendActiveSpeakers(activeSpeakers)
+				}
+			}
+		}
 	}
 
 	if evt.MediaScore != nil {
@@ -1311,6 +1558,30 @@ func (a *RoomActor) HandleNodeEvent(ctx context.Context, evt *domain.NodeEvent) 
 			"resource_id", evt.MediaScore.ResourceID,
 			"score", evt.MediaScore.Score,
 		)
+		quality := domain.ConnectionQualityGood
+		if evt.MediaScore.Score >= 8 {
+			quality = domain.ConnectionQualityExcellent
+		} else if evt.MediaScore.Score <= 3 {
+			quality = domain.ConnectionQualityPoor
+		}
+		var updates []*domain.ConnectionQualityUpdate
+		for _, sess := range a.sessions {
+			if sess.Participant().ID == evt.MediaScore.PeerID {
+				updates = append(updates, &domain.ConnectionQualityUpdate{
+					ParticipantSID: sess.Participant().SID,
+					Quality:        quality,
+					Score:          float32(evt.MediaScore.Score),
+				})
+				break
+			}
+		}
+		if len(updates) > 0 {
+			for _, sess := range a.sessions {
+				if sess.Responder() != nil {
+					_ = sess.Responder().SendConnectionQuality(updates)
+				}
+			}
+		}
 	}
 
 	if evt.LayerChanged != nil {
@@ -1321,6 +1592,21 @@ func (a *RoomActor) HandleNodeEvent(ctx context.Context, evt *domain.NodeEvent) 
 			"spatial_layer", evt.LayerChanged.CurrentSpatialLayer,
 			"temporal_layer", evt.LayerChanged.CurrentTemporalLayer,
 		)
+		for _, sess := range a.sessions {
+			for _, tr := range sess.Participant().ListTracks() {
+				if tr.ID == evt.LayerChanged.ProducerID {
+					qualities := []domain.SubscribedQuality{
+						{Quality: domain.VideoQualityLow, Enabled: evt.LayerChanged.CurrentSpatialLayer >= 0},
+						{Quality: domain.VideoQualityMedium, Enabled: evt.LayerChanged.CurrentSpatialLayer >= 1},
+						{Quality: domain.VideoQualityHigh, Enabled: evt.LayerChanged.CurrentSpatialLayer >= 2},
+					}
+					if sess.Responder() != nil {
+						_ = sess.Responder().SendSubscribedQualityUpdate(tr.SID, tr.MimeType, qualities)
+					}
+					break
+				}
+			}
+		}
 	}
 
 	var offersToSend []pendingOffer

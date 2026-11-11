@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc/metadata"
 
 	sfuv1 "ekbatan-room/signaling-coordinator/gen/proto/sfu/v1"
@@ -41,15 +42,48 @@ func NewMediaNodeClient(client sfuv1.SfuMediaEngineServiceClient, defaultTimeout
 	}
 }
 
+type metadataSupplier struct {
+	md metadata.MD
+}
+
+func (s *metadataSupplier) Get(key string) string {
+	values := s.md.Get(key)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func (s *metadataSupplier) Set(key, value string) {
+	s.md.Set(key, value)
+}
+
+func (s *metadataSupplier) Keys() []string {
+	keys := make([]string, 0, len(s.md))
+	for k := range s.md {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func (c *MediaNodeClient) withTimeoutAndReqID(ctx context.Context, reqID string) (context.Context, context.CancelFunc) {
 	callCtx := ctx
 	var cancel context.CancelFunc = func() {}
 	if _, ok := ctx.Deadline(); !ok {
 		callCtx, cancel = context.WithTimeout(ctx, c.defaultTimeout)
 	}
-	if reqID != "" {
-		callCtx = metadata.AppendToOutgoingContext(callCtx, "x-request-id", reqID)
+	md, ok := metadata.FromOutgoingContext(callCtx)
+	if !ok {
+		md = metadata.New(nil)
+	} else {
+		md = md.Copy()
 	}
+	if reqID != "" {
+		md.Set("x-request-id", reqID)
+	}
+	supplier := &metadataSupplier{md: md}
+	otel.GetTextMapPropagator().Inject(callCtx, supplier)
+	callCtx = metadata.NewOutgoingContext(callCtx, md)
 	return callCtx, cancel
 }
 

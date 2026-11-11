@@ -2,9 +2,12 @@ package livekit_test
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,8 +18,6 @@ import (
 
 	"ekbatan-room/signaling-coordinator/internal/adapters/inbound/livekit"
 	"ekbatan-room/signaling-coordinator/internal/domain"
-	"sync"
-
 	"ekbatan-room/signaling-coordinator/internal/ports"
 )
 
@@ -28,6 +29,7 @@ type mockCoordinator struct {
 	leaveCalled         bool
 	lastRoom            string
 	lastPeer            string
+	lastPeerName        string
 	lastResp            ports.PeerResponderPort
 	lastPublishedTracks []domain.TrackPublishCommand
 	lastMutedTrackSID   string
@@ -68,6 +70,7 @@ func (m *mockCoordinator) Join(ctx context.Context, roomID, participantID, parti
 	m.joinCalled = true
 	m.lastRoom = roomID
 	m.lastPeer = participantID
+	m.lastPeerName = participantName
 	m.lastResp = responder
 	m.mu.Unlock()
 
@@ -1136,4 +1139,134 @@ a=rtpmap:96 VP8/90000
 
 	t.Fatalf("timed out waiting for HandleSubscriberAnswer to be called")
 }
+
+func TestLiveKitWSHandler_TokenQueryAndAuthParsing(t *testing.T) {
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	// Construct test JWT payload: {"sub":"token-alice","name":"Alice T","video":{"room":"token-room-42"}}
+	headerJSON := `{"alg":"HS256","typ":"JWT"}`
+	payloadJSON := `{"sub":"token-alice","name":"Alice T","video":{"room":"token-room-42"}}`
+	encHeader := base64.RawURLEncoding.EncodeToString([]byte(headerJSON))
+	encPayload := base64.RawURLEncoding.EncodeToString([]byte(payloadJSON))
+	token := fmt.Sprintf("%s.%s.fakesig", encHeader, encPayload)
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc?access_token=" + token + "&auto_subscribe=1&protocol=8&sdk=js"
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial /rtc with token: %v", err)
+	}
+	defer conn.Close()
+
+	// Wait briefly for join call
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		coord.mu.Lock()
+		joinedRoom := coord.lastRoom
+		joinedID := coord.lastPeer
+		joinedName := coord.lastPeerName
+		coord.mu.Unlock()
+
+		if joinedRoom == "token-room-42" && joinedID == "token-alice" && joinedName == "Alice T" {
+			return // Success!
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for join with token claims, got room=%s id=%s name=%s",
+		coord.lastRoom, coord.lastPeer, coord.lastPeerName)
+}
+
+func TestLiveKitWSHandler_SubscriptionAndPingReq(t *testing.T) {
+	coord := &mockCoordinator{}
+	handler := livekit.NewLiveKitWSHandler(coord)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/rtc?room=conf-sub&identity=alice"
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial /rtc: %v", err)
+	}
+	defer conn.Close()
+
+	// 1. Consume initial Join response
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read join response: %v", err)
+	}
+
+	// 2. Send Subscription request
+	subReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_Subscription{
+			Subscription: &livekitproto.UpdateSubscription{
+				TrackSids: []string{"TR_123"},
+				Subscribe: true,
+			},
+		},
+	}
+	subBytes, _ := proto.Marshal(subReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, subBytes); err != nil {
+		t.Fatalf("failed to write subscription request: %v", err)
+	}
+
+	// Read SubscriptionResponse
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, respData, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read subscription response: %v", err)
+	}
+	var sigResp livekitproto.SignalResponse
+	if err := proto.Unmarshal(respData, &sigResp); err != nil {
+		t.Fatalf("failed to unmarshal subscription response: %v", err)
+	}
+	if sigResp.GetSubscriptionResponse() == nil {
+		t.Fatalf("expected SubscriptionResponse, got %+v", &sigResp)
+	}
+
+	// 3. Send PingReq and verify PongResp
+	pingReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_PingReq{
+			PingReq: &livekitproto.Ping{
+				Timestamp: 123456789,
+			},
+		},
+	}
+	pingBytes, _ := proto.Marshal(pingReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, pingBytes); err != nil {
+		t.Fatalf("failed to write ping req: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, respData, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read ping response: %v", err)
+	}
+	if err := proto.Unmarshal(respData, &sigResp); err != nil {
+		t.Fatalf("failed to unmarshal ping response: %v", err)
+	}
+	pongResp := sigResp.GetPongResp()
+	if pongResp == nil || pongResp.LastPingTimestamp != 123456789 {
+		t.Fatalf("expected PongResp with last_ping_timestamp 123456789, got %+v", pongResp)
+	}
+
+	// 4. Send SyncState (should be handled cleanly without error)
+	syncReq := &livekitproto.SignalRequest{
+		Message: &livekitproto.SignalRequest_SyncState{
+			SyncState: &livekitproto.SyncState{
+				TrackSidsDisabled: []string{"TR_123"},
+			},
+		},
+	}
+	syncBytes, _ := proto.Marshal(syncReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, syncBytes); err != nil {
+		t.Fatalf("failed to write sync state: %v", err)
+	}
+}
+
 

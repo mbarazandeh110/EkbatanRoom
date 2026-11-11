@@ -17,7 +17,7 @@ livekit:
 rtc:
   ice_servers:
     - urls:
-        - "stun:127.0.0.1:3478"
+        - "stun:stun.l.google.com:19302"
 
 telemetry:
   log_level: "debug"

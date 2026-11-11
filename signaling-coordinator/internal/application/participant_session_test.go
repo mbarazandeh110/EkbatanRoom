@@ -77,6 +77,18 @@ func (m *mockResponder) SendTrackSubscribed(trackSID string) error {
 	return nil
 }
 
+func (m *mockResponder) SendActiveSpeakers(speakers []*domain.ActiveSpeakerInfo) error {
+	return nil
+}
+
+func (m *mockResponder) SendConnectionQuality(updates []*domain.ConnectionQualityUpdate) error {
+	return nil
+}
+
+func (m *mockResponder) SendReconnect(iceServers []domain.IceServer) error {
+	return nil
+}
+
 func (m *mockResponder) Close() error {
 	m.closed = true
 	return nil

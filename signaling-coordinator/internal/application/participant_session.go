@@ -21,9 +21,15 @@ type ParticipantSession struct {
 	pendingTracks          []*domain.Track
 	pendingIceRestartOffer bool
 	pendingRenegotiation   bool
-	closed                 bool
 	pubTransportConnected  bool
 	subTransportConnected  bool
+	closed                 bool
+
+	// Node locality and multi-node routing
+	nodeID          string
+	routerID        string
+	transportPort   ports.TransportEnginePort
+	mediaStreamPort ports.MediaStreamPort
 }
 
 func NewParticipantSession(
@@ -212,3 +218,37 @@ func (s *ParticipantSession) Close() error {
 	}
 	return nil
 }
+
+func (s *ParticipantSession) SetNodeRouting(nodeID, routerID string, tp ports.TransportEnginePort, mp ports.MediaStreamPort) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodeID = nodeID
+	s.routerID = routerID
+	s.transportPort = tp
+	s.mediaStreamPort = mp
+}
+
+func (s *ParticipantSession) NodeID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nodeID
+}
+
+func (s *ParticipantSession) RouterID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.routerID
+}
+
+func (s *ParticipantSession) TransportPort() ports.TransportEnginePort {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transportPort
+}
+
+func (s *ParticipantSession) MediaStreamPort() ports.MediaStreamPort {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mediaStreamPort
+}
+
