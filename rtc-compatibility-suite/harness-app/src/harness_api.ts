@@ -13,6 +13,34 @@ import {
 
 setLogLevel('trace');
 
+export interface ReceivedDataMessage {
+  payload: string;
+  binaryPayload: number[];
+  participantIdentity?: string;
+  kind: 'RELIABLE' | 'LOSSY';
+  topic?: string;
+  receivedAt: string;
+}
+
+export interface MetadataChangeEvent {
+  participantIdentity: string;
+  metadata: string;
+  timestamp: string;
+}
+
+export interface MutedTrackEvent {
+  trackSid: string;
+  participantIdentity: string;
+  muted: boolean;
+  timestamp: string;
+}
+
+export interface PermissionChangeEvent {
+  participantIdentity: string;
+  permissions?: unknown;
+  timestamp: string;
+}
+
 export interface HarnessState {
   status: 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
   connectionState: string;
@@ -25,6 +53,10 @@ export interface HarnessState {
 
 export class HarnessController {
   private room: Room | null = null;
+  private receivedDataMessages: ReceivedDataMessage[] = [];
+  private metadataChanges: MetadataChangeEvent[] = [];
+  private mutedTrackEvents: MutedTrackEvent[] = [];
+  private permissionChanges: PermissionChangeEvent[] = [];
   private state: HarnessState = {
     status: 'IDLE',
     connectionState: 'disconnected',
@@ -46,6 +78,7 @@ export class HarnessController {
     this.room = new Room({
       adaptiveStream: false,
       dynacast: false,
+      singlePeerConnection: false,
       ...options
     });
 
@@ -156,6 +189,67 @@ export class HarnessController {
       track.detach();
       this.updateDom();
     });
+
+    room.on(RoomEvent.DataReceived, (payload: Uint8Array, participant, kind, topic) => {
+      let text = '';
+      try {
+        text = new TextDecoder().decode(payload);
+      } catch {
+        text = '';
+      }
+      this.receivedDataMessages.push({
+        payload: text,
+        binaryPayload: Array.from(payload),
+        participantIdentity: participant?.identity,
+        kind: kind === 0 ? 'RELIABLE' : 'LOSSY',
+        topic,
+        receivedAt: new Date().toISOString()
+      });
+      console.log(`[HarnessApp] DataReceived from ${participant?.identity} (${payload.length} bytes, topic=${topic}): ${text}`);
+      this.updateDom();
+    });
+
+    room.on(RoomEvent.ParticipantMetadataChanged, (metadata, participant) => {
+      this.metadataChanges.push({
+        participantIdentity: participant.identity,
+        metadata: metadata || '',
+        timestamp: new Date().toISOString()
+      });
+      console.log(`[HarnessApp] ParticipantMetadataChanged for ${participant.identity}: ${metadata}`);
+      this.updateDom();
+    });
+
+    room.on(RoomEvent.TrackMuted, (pub, participant) => {
+      this.mutedTrackEvents.push({
+        trackSid: pub.trackSid,
+        participantIdentity: participant.identity,
+        muted: true,
+        timestamp: new Date().toISOString()
+      });
+      console.log(`[HarnessApp] TrackMuted: ${pub.trackSid} by ${participant.identity}`);
+      this.updateDom();
+    });
+
+    room.on(RoomEvent.TrackUnmuted, (pub, participant) => {
+      this.mutedTrackEvents.push({
+        trackSid: pub.trackSid,
+        participantIdentity: participant.identity,
+        muted: false,
+        timestamp: new Date().toISOString()
+      });
+      console.log(`[HarnessApp] TrackUnmuted: ${pub.trackSid} by ${participant.identity}`);
+      this.updateDom();
+    });
+
+    room.on(RoomEvent.ParticipantPermissionsChanged, (_prevPermissions, participant) => {
+      this.permissionChanges.push({
+        participantIdentity: participant.identity,
+        permissions: participant.permissions,
+        timestamp: new Date().toISOString()
+      });
+      console.log(`[HarnessApp] ParticipantPermissionsChanged for ${participant.identity}`);
+      this.updateDom();
+    });
   }
 
   public async connect(url: string, token: string, options?: RoomConnectOptions): Promise<void> {
@@ -166,7 +260,13 @@ export class HarnessController {
     this.updateDom();
 
     try {
-      await this.room!.connect(url, token, options);
+      const connectOptions: RoomConnectOptions = {
+        rtcConfig: {
+          iceServers: []
+        },
+        ...options
+      };
+      await this.room!.connect(url, token, connectOptions);
       this.state.status = 'CONNECTED';
       this.state.roomName = this.room!.name || '';
       this.state.participantIdentity = this.room!.localParticipant.identity;
@@ -317,6 +417,48 @@ export class HarnessController {
       readyState: el.readyState,
       currentTime: el.currentTime
     };
+  }
+
+  public async publishData(
+    data: string | number[] | Uint8Array,
+    options?: { reliable?: boolean; topic?: string; destinationIdentities?: string[] }
+  ): Promise<void> {
+    if (!this.room || this.room.state !== ConnectionState.Connected) {
+      throw new Error('Cannot publish data when room is not connected');
+    }
+    let payload: Uint8Array;
+    if (typeof data === 'string') {
+      payload = new TextEncoder().encode(data);
+    } else if (Array.isArray(data)) {
+      payload = new Uint8Array(data);
+    } else {
+      payload = data;
+    }
+    await this.room.localParticipant.publishData(payload, {
+      reliable: options?.reliable ?? true,
+      topic: options?.topic,
+      destinationIdentities: options?.destinationIdentities
+    });
+  }
+
+  public getReceivedDataMessages(): ReceivedDataMessage[] {
+    return [...this.receivedDataMessages];
+  }
+
+  public clearDataMessages(): void {
+    this.receivedDataMessages = [];
+  }
+
+  public getMetadataChanges(): MetadataChangeEvent[] {
+    return [...this.metadataChanges];
+  }
+
+  public getMutedTrackEvents(): MutedTrackEvent[] {
+    return [...this.mutedTrackEvents];
+  }
+
+  public getPermissionChanges(): PermissionChangeEvent[] {
+    return [...this.permissionChanges];
   }
 
   public async disconnect(): Promise<void> {

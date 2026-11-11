@@ -31,20 +31,22 @@ describe('Sequential Gate Dependencies & Failure Propagation', () => {
     expect(report.gates.gate_01_connection.status).toBe('FAILED');
     expect(report.gates.gate_01_connection.failureReason).toBe(failureMsg);
 
-    // Gates 2 through 5 must be BLOCKED, never PASSED
+    // Gates 2 through 7 must be BLOCKED, never PASSED
     expect(report.gates.gate_02_bidirectional_rtp.status).toBe('BLOCKED');
     expect(report.gates.gate_02_bidirectional_rtp.blockedReason).toContain(failureMsg);
     expect(report.gates.gate_03_concurrency_glare.status).toBe('BLOCKED');
     expect(report.gates.gate_04_simulcast_layers.status).toBe('BLOCKED');
     expect(report.gates.gate_05_ice_restart.status).toBe('BLOCKED');
+    expect(report.gates.gate_06_datachannels_twirp_moderation.status).toBe('BLOCKED');
+    expect(report.gates.gate_07_multinode_cascading_and_licensing.status).toBe('BLOCKED');
 
     expect(report.summary.passed).toBe(0);
     expect(report.summary.failed).toBe(1);
-    expect(report.summary.blocked).toBe(4);
+    expect(report.summary.blocked).toBe(6);
     expect(report.summary.notRun).toBe(0);
   });
 
-  it('blocks Gates 3-5 when Gate 2 fails after Gate 1 passed', () => {
+  it('blocks Gates 3-7 when Gate 2 fails after Gate 1 passed', () => {
     // Gate 1 passed
     registry.setStatus('gate_01_connection', 'PASSED');
     recorder.startGate('gate_01_connection');
@@ -69,9 +71,11 @@ describe('Sequential Gate Dependencies & Failure Propagation', () => {
     expect(report.gates.gate_03_concurrency_glare.status).toBe('BLOCKED');
     expect(report.gates.gate_04_simulcast_layers.status).toBe('BLOCKED');
     expect(report.gates.gate_05_ice_restart.status).toBe('BLOCKED');
+    expect(report.gates.gate_06_datachannels_twirp_moderation.status).toBe('BLOCKED');
+    expect(report.gates.gate_07_multinode_cascading_and_licensing.status).toBe('BLOCKED');
 
     expect(report.summary.passed).toBe(1);
     expect(report.summary.failed).toBe(1);
-    expect(report.summary.blocked).toBe(3);
+    expect(report.summary.blocked).toBe(5);
   });
 });

@@ -18,14 +18,14 @@ describe('EvidenceRecorder', () => {
     }
   });
 
-  it('initializes all 5 gates with NOT_RUN status', () => {
+  it('initializes all 7 gates with NOT_RUN status', () => {
     const recorder = new EvidenceRecorder('chromium', '1148', testReportPath);
     const report = recorder.generateReport();
 
     expect(report.sdkVersion).toBe(PINNED_LIVEKIT_SDK_VERSION);
     expect(report.sdkVersion).toBe('2.23.0');
     expect(report.overallStatus).toBe('NOT_RUN');
-    expect(report.summary.notRun).toBe(5);
+    expect(report.summary.notRun).toBe(7);
     expect(report.summary.passed).toBe(0);
     expect(report.summary.failed).toBe(0);
     expect(report.summary.blocked).toBe(0);
@@ -35,6 +35,8 @@ describe('EvidenceRecorder', () => {
     expect(report.gates.gate_03_concurrency_glare.status).toBe('NOT_RUN');
     expect(report.gates.gate_04_simulcast_layers.status).toBe('NOT_RUN');
     expect(report.gates.gate_05_ice_restart.status).toBe('NOT_RUN');
+    expect(report.gates.gate_06_datachannels_twirp_moderation.status).toBe('NOT_RUN');
+    expect(report.gates.gate_07_multinode_cascading_and_licensing.status).toBe('NOT_RUN');
   });
 
   it('records gate results and updates overall status to PARTIAL when one passes', () => {
@@ -51,7 +53,7 @@ describe('EvidenceRecorder', () => {
     const report = recorder.generateReport();
     expect(report.overallStatus).toBe('PARTIAL');
     expect(report.summary.passed).toBe(1);
-    expect(report.summary.notRun).toBe(4);
+    expect(report.summary.notRun).toBe(6);
     expect(report.gates.gate_01_connection.status).toBe('PASSED');
   });
 
@@ -76,7 +78,7 @@ describe('EvidenceRecorder', () => {
     const report = recorder.generateReport();
     expect(report.overallStatus).toBe('FAILED');
     expect(report.summary.failed).toBe(1);
-    expect(report.summary.blocked).toBe(4);
+    expect(report.summary.blocked).toBe(6);
     expect(report.summary.notRun).toBe(0);
 
     expect(report.gates.gate_01_connection.status).toBe('FAILED');
@@ -87,6 +89,8 @@ describe('EvidenceRecorder', () => {
     expect(report.gates.gate_03_concurrency_glare.status).toBe('BLOCKED');
     expect(report.gates.gate_04_simulcast_layers.status).toBe('BLOCKED');
     expect(report.gates.gate_05_ice_restart.status).toBe('BLOCKED');
+    expect(report.gates.gate_06_datachannels_twirp_moderation.status).toBe('BLOCKED');
+    expect(report.gates.gate_07_multinode_cascading_and_licensing.status).toBe('BLOCKED');
   });
 
   it('saves structured report to disk and verifies JSON structure', () => {

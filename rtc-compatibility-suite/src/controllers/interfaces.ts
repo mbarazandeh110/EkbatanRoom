@@ -1,4 +1,5 @@
 import type { RtpMetricsSnapshot } from '../domain/qoe_metrics.js';
+import type { ReceivedDataMessage, MetadataChangeEvent, MutedTrackEvent, PermissionChangeEvent } from './window.js';
 
 export interface TokenOptions {
   name?: string;
@@ -25,6 +26,15 @@ export interface IParticipantController {
   restartIce(): Promise<void>;
   waitForRemoteParticipant(participantIdentity?: string, timeoutMs?: number): Promise<void>;
   waitForRemoteTrack(kind: 'audio' | 'video', timeoutMs?: number): Promise<void>;
+  publishData(
+    data: string | number[] | Uint8Array,
+    options?: { reliable?: boolean; topic?: string; destinationIdentities?: string[] }
+  ): Promise<void>;
+  getReceivedDataMessages(): Promise<ReceivedDataMessage[]>;
+  clearDataMessages(): Promise<void>;
+  getMetadataChanges(): Promise<MetadataChangeEvent[]>;
+  getMutedTrackEvents(): Promise<MutedTrackEvent[]>;
+  getPermissionChanges(): Promise<PermissionChangeEvent[]>;
   getStats(): Promise<RtpMetricsSnapshot>;
   leave(): Promise<void>;
 }

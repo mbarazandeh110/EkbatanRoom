@@ -47,4 +47,32 @@ export class TokenFactory implements ITokenFactory {
 
     return token;
   }
+
+  public async createAdminToken(roomId?: string, options?: TokenOptions): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    const ttl = options?.ttlSeconds ?? this.defaultTtlSeconds;
+
+    const payload = {
+      sub: options?.name || 'admin-client',
+      iss: this.apiKey,
+      nbf: now - 5,
+      exp: now + ttl,
+      name: 'Admin',
+      video: {
+        roomAdmin: true,
+        roomCreate: true,
+        roomList: true,
+        roomRecord: true,
+        ...(roomId ? { room: roomId } : {})
+      }
+    };
+
+    const token = await new SignJWT(payload)
+      .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+      .setIssuedAt(now)
+      .setExpirationTime(now + ttl)
+      .sign(this.apiSecret);
+
+    return token;
+  }
 }

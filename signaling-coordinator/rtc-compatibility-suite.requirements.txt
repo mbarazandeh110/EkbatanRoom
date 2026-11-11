@@ -1297,3 +1297,121 @@ STATUS: IMPLEMENTED
      - `internal/adapters/inbound/livekit/sdp_mapper_test.go`: Added unit tests `TestSDPMapper_GeneratePublisherAnswer_ExcludeRedAndUlpfec_REQ025` and `TestSDPMapper_ParsePublisherOffer_SkipsRedAndUlpfec`.
    - Verification: All tests pass cleanly under `go test -v -race -count=1 ./...` and `go vet ./...` exits 0.
 ===================================================================
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-026
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Twirp Contract] Twirp RoomService.UpdateParticipant must broadcast ParticipantUpdate to active room participants
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When Twirp `RoomService.UpdateParticipant` is called (e.g. `twirpClient.updateParticipant(roomId, aliceId, { metadata: ... })`):
+     - The coordinator successfully mutates the participant's metadata in memory and returns the updated `ParticipantInfo` in the Twirp HTTP response.
+     - However, the coordinator fails to notify active room participants via WebSocket.
+     - In official `livekit-client`, remote peers (Bob) listen for `RoomEvent.ParticipantMetadataChanged`.
+     - In Gate 6 black-box verification (`06-datachannels-twirp-moderation.spec.ts`), Bob never receives the event because no `SignalResponse_Update` (`ParticipantUpdate`) is sent across the WebSocket.
+     - Alice's metadata on Bob remains empty: `{"identity":"peer-alice","metadata":"","name":"Alice"}`.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `twirp_handler.go` (or `RoomActor`), upon successful execution of `UpdateParticipant`:
+     - Broadcast a `SignalResponse_Update` (`ParticipantUpdate{ Participants: []*ParticipantInfo{ updatedParticipant } }`) to all active participants in the room (including or excluding the target as per LiveKit protocol; typically to all participants).
+     - When received, official `livekit-client` fires `RoomEvent.ParticipantMetadataChanged`, updating the participant's metadata in client state.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-027
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Bug Fix | Twirp Moderation Contract] Send SignalResponse_LeaveRequest before closing signal WebSocket in RoomService.RemoveParticipant
+
+2. REASON & TECHNICAL EVIDENCE:
+   - When Twirp `RoomService.RemoveParticipant` is called to evict a participant (e.g. Bob):
+     - The coordinator abruptly closes the participant's WebSocket connection with `"server closed the signal connection"`.
+     - In official `livekit-client`, an abrupt WebSocket closure without a prior `LeaveRequest` or clean code is treated as an unexpected transport failure (`code 1006`).
+     - Consequently, `livekit-client`'s connection state machine enters an aggressive reconnect loop:
+       `info signal connecting to ws://127.0.0.1:7880/rtc?room=...&identity=peer-bob&access_token=...&reconnect=1&sid=PA_...`
+     - Bob spam-reconnects, creating new sessions on the coordinator (`PA_240995b5`, `PA_3296bd6b`), which triggers new `participantConnected` events back to Alice, preventing Alice's remote participant count from dropping to 0 and causing `06-datachannels-twirp-moderation.spec.ts` to time out.
+     - Furthermore, per LiveKit server specification: when a participant is kicked/removed by the server, the server transmits a `SignalResponse_LeaveRequest` (`LeaveRequest{ Reason: livekitproto.DisconnectReason_USER_REJECTED, Action: livekitproto.LeaveRequest_DISCONNECT }`) before closing the transport. When `livekit-client` receives `LeaveRequest`, it immediately transitions to `DISCONNECTED` state and halts all reconnection attempts.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `twirp_handler.go` / `RoomActor.RemoveParticipant`:
+     1. Before closing the participant's signal WebSocket connection, send:
+        ```go
+        &livekitproto.SignalResponse{
+            Message: &livekitproto.SignalResponse_Leave{
+                Leave: &livekitproto.LeaveRequest{
+                    CanReconnect: false,
+                    Reason:       livekitproto.DisconnectReason_USER_REJECTED,
+                    Action:       livekitproto.LeaveRequest_DISCONNECT,
+                },
+            },
+        }
+        ```
+     2. Wait a brief moment (or flush the message buffer) before terminating the WebSocket.
+     3. If an evicted participant attempts to reconnect using `?reconnect=1` with the evicted identity/SID, reject the connection.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-028
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [Feature Completeness | Contract Compliance] Subscriber SCTP DataChannel Negotiation and Message Forwarding for localParticipant.publishData and RoomService.SendData
+
+2. REASON & TECHNICAL EVIDENCE:
+   - In Gate 6 (`06-datachannels-twirp-moderation.spec.ts`), participants establish WebRTC connections.
+   - On the publisher side, Alice has SCTP DataChannels (`_reliable`, `_lossy`) open and can send data (`clientA.publishData`).
+   - However, in `GenerateSubscriberOffer` (`internal/adapters/inbound/livekit/sdp_mapper.go`), the coordinator only generates `m=audio` and `m=video` media sections for published tracks. It omits `m=application UDP/DTLS/SCTP webrtc-datachannel`.
+   - Consequently:
+     1. Bob's subscriber PeerConnection has no SCTP transport; `pc.ondatachannel` never fires on Bob.
+     2. Neither client-to-client data (`clientA.publishData`) nor server-to-client data (`RoomService.SendData`) can be delivered to subscribers over WebRTC DataChannels.
+     3. Bob times out waiting for DataChannel messages in Gate 6.
+   - Note that `sfu-media-node` already implements `ProduceData`, `ConsumeData`, and `SendDirectData` in `media_engine.proto`!
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - In `internal/adapters/inbound/livekit/sdp_mapper.go` (`GenerateSubscriberOffer`):
+     - Include an `m=application` media description in subscriber offers:
+       `m=application <sctpPort> UDP/DTLS/SCTP webrtc-datachannel`
+       with attributes:
+       `a=mid:<mid>`
+       `a=sctp-port:5000` (or `transport.SctpPort`)
+       `a=max-message-size:262144`
+   - In `room_actor.go` / `MediaStreamPort`:
+     - When `ProduceData` / `ConsumeData` or DataChannels are used, route SCTP packets between publisher DataProducers and subscriber DataConsumers on `sfu-media-node`.
+     - In Twirp `RoomService.SendData`, forward data to room participants via `sfu-media-node` `SendDirectData` or broadcast `DataPacket` over the subscriber DataChannel.
+
+===================================================================
+RFC / REQUIREMENT ID: REQ-029
+SOURCE SERVICE: rtc-compatibility-suite
+TARGET SERVICE: signaling-coordinator
+STATUS: OPEN
+===================================================================
+
+1. SUMMARY & TYPE:
+   [New Capability | Enterprise Architecture] Multi-Node Cluster Configuration and Inter-Node Cascading via PipeTransport
+
+2. REASON & TECHNICAL EVIDENCE:
+   - For Gate 7 black-box verification (`07-multinode-cascading-and-licensing.spec.ts`), the test suite needs to verify Multi-Node Room Cascading where Peer A (Publisher) is routed to SFU Node 1 and Peer B (Subscriber) is routed to SFU Node 2, with media seamlessly bridged via Mediasoup `PipeTransport`.
+   - Currently, `signaling-coordinator` only supports a single SFU gRPC address in `sfu.grpc_addr` (`SFU_GRPC_ADDR`).
+   - When attempting to specify multiple nodes (e.g. `SFU_GRPC_ADDR="127.0.0.1:50051,127.0.0.1:50052"`), the coordinator fails with:
+     `grpc watch node events failed: rpc error: code = Unavailable desc = invalid target address 127.0.0.1:50051,127.0.0.1:50052, error info: address 127.0.0.1:50051,127.0.0.1:50052:443: too many colons in address`
+   - Furthermore, `NodeRegistry` registers only a single node (`sfu-primary`, `cluster_total_nodes: 1`).
+   - `sfu-media-node` already provides `CreatePipeTransport`, `ConnectPipeTransport`, `PipeProduce`, and `PipeConsume` in `proto/sfu/v1/media_engine.proto`.
+
+3. EXPECTED BOUNDARY BEHAVIOR:
+   - Support configuring multiple SFU media nodes in `signaling-coordinator`:
+     - Allow `SFU_NODES` or `SFU_GRPC_ADDRS` as comma-separated addresses (e.g. `127.0.0.1:50051,127.0.0.1:50052` or `node1=127.0.0.1:50051,node2=127.0.0.1:50052`), or YAML list in `sfu.nodes`.
+     - Register each node in `NodeRegistry` (`cluster_total_nodes: 2`).
+   - In `placement_enterprise.go` / `RoomActor`:
+     - When cascading across nodes (or when a query parameter/node selector directs participants to different nodes):
+     - Establish PipeTransports between the nodes for the room.
+     - Pipe audio and video producers across the pipe transport so subscribers on Node 2 receive RTP packets (`bytesReceived > 0`) published by Node 1.

@@ -12,7 +12,9 @@ const ALL_GATE_IDS: GateId[] = [
   'gate_02_bidirectional_rtp',
   'gate_03_concurrency_glare',
   'gate_04_simulcast_layers',
-  'gate_05_ice_restart'
+  'gate_05_ice_restart',
+  'gate_06_datachannels_twirp_moderation',
+  'gate_07_multinode_cascading_and_licensing'
 ];
 
 const GATE_NAMES: Record<GateId, string> = {
@@ -20,7 +22,9 @@ const GATE_NAMES: Record<GateId, string> = {
   gate_02_bidirectional_rtp: 'Gate 2: Bidirectional Media RTP & Video Rendering',
   gate_03_concurrency_glare: 'Gate 3: Concurrency & Negotiation Glare Protection',
   gate_04_simulcast_layers: 'Gate 4: Simulcast Layers & Quality Update Mapping',
-  gate_05_ice_restart: 'Gate 5: ICE Restart & Media Resumption'
+  gate_05_ice_restart: 'Gate 5: ICE Restart & Media Resumption',
+  gate_06_datachannels_twirp_moderation: 'Gate 6: SCTP DataChannels & Twirp Moderation',
+  gate_07_multinode_cascading_and_licensing: 'Gate 7: Multi-Node Cascading & Licensing Enforcement'
 };
 
 export class EvidenceRecorder {

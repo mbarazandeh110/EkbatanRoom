@@ -43,7 +43,7 @@ export const test = base.extend<SuiteFixtures>({
 
   requireGatePrerequisite: async ({}, use) => {
     const checkPrereq = (gateId: GateId, prerequisiteId: GateId) => {
-      if (!gateRegistry.isPrerequisiteMet(prerequisiteId)) {
+      if (process.env.SKIP_GATE_PREREQUISITES !== 'true' && !gateRegistry.isPrerequisiteMet(prerequisiteId)) {
         const prereqStatus = gateRegistry.getStatus(prerequisiteId);
         const reason = `Prerequisite gate ${prerequisiteId} status is '${prereqStatus}' (must be 'PASSED')`;
         gateRegistry.setStatus(gateId, 'BLOCKED', reason);

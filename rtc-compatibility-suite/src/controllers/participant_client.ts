@@ -2,6 +2,7 @@ import type { Page, WebSocket } from '@playwright/test';
 import type { IParticipantController, JoinOptions } from './interfaces.js';
 import { StatsCollector, type RawStatsReportEntry } from './stats_collector.js';
 import type { RtpMetricsSnapshot } from '../domain/qoe_metrics.js';
+import type { ReceivedDataMessage, MetadataChangeEvent, MutedTrackEvent, PermissionChangeEvent } from './window.js';
 
 export class ParticipantClientController implements IParticipantController {
   private page: Page;
@@ -186,6 +187,88 @@ export class ParticipantClientController implements IParticipantController {
       selector,
       { timeout: timeoutMs }
     );
+  }
+
+  public async publishData(
+    data: string | number[] | Uint8Array,
+    options?: { reliable?: boolean; topic?: string; destinationIdentities?: string[] }
+  ): Promise<void> {
+    const serializedData = data instanceof Uint8Array ? Array.from(data) : data;
+    await this.page.evaluate(
+      async ({ d, opts }) => {
+        await window.testHarness.publishData(d, opts);
+      },
+      { d: serializedData, opts: options }
+    );
+  }
+
+  public async getReceivedDataMessages(): Promise<ReceivedDataMessage[]> {
+    return this.page.evaluate(() => window.testHarness.getReceivedDataMessages());
+  }
+
+  public async clearDataMessages(): Promise<void> {
+    await this.page.evaluate(() => window.testHarness.clearDataMessages());
+  }
+
+  public async getMetadataChanges(): Promise<MetadataChangeEvent[]> {
+    return this.page.evaluate(() => window.testHarness.getMetadataChanges());
+  }
+
+  public async getMutedTrackEvents(): Promise<MutedTrackEvent[]> {
+    return this.page.evaluate(() => window.testHarness.getMutedTrackEvents());
+  }
+
+  public async getPermissionChanges(): Promise<PermissionChangeEvent[]> {
+    return this.page.evaluate(() => window.testHarness.getPermissionChanges());
+  }
+
+  public async waitForDataMessage(
+    predicate?: (msg: ReceivedDataMessage) => boolean,
+    timeoutMs = 15000
+  ): Promise<ReceivedDataMessage> {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+      const messages = await this.getReceivedDataMessages();
+      const match = predicate ? messages.find(predicate) : messages[messages.length - 1];
+      if (match) {
+        return match;
+      }
+      await this.page.waitForTimeout(200);
+    }
+    throw new Error(`Timed out waiting for DataChannel message after ${timeoutMs}ms`);
+  }
+
+  public async waitForMetadataChange(
+    participantIdentity: string,
+    timeoutMs = 15000
+  ): Promise<MetadataChangeEvent> {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+      const changes = await this.getMetadataChanges();
+      const match = changes.find(c => c.participantIdentity === participantIdentity);
+      if (match) {
+        return match;
+      }
+      await this.page.waitForTimeout(200);
+    }
+    throw new Error(`Timed out waiting for metadata change for ${participantIdentity} after ${timeoutMs}ms`);
+  }
+
+  public async waitForTrackMuted(
+    trackSid?: string,
+    muted = true,
+    timeoutMs = 15000
+  ): Promise<MutedTrackEvent> {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+      const events = await this.getMutedTrackEvents();
+      const match = events.find(e => (trackSid ? e.trackSid === trackSid : true) && e.muted === muted);
+      if (match) {
+        return match;
+      }
+      await this.page.waitForTimeout(200);
+    }
+    throw new Error(`Timed out waiting for track mute=${muted} event after ${timeoutMs}ms`);
   }
 
   public async leave(): Promise<void> {
