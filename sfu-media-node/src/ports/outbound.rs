@@ -60,6 +60,15 @@ pub trait EventPublisherPort: Send + Sync {
     );
 
     fn publish_node_capacity(&self, info: &crate::domain::entities::NodeCapacityInfo);
+
+    fn publish_dynacast_layer(
+        &self,
+        router_id: &str,
+        producer_id: &str,
+        spatial_layer: i32,
+        is_active: bool,
+        active_consumers: u32,
+    );
 }
 
 pub trait MetricsPort: Send + Sync {
@@ -67,6 +76,8 @@ pub trait MetricsPort: Send + Sync {
     fn dec_active_routers(&self);
     fn inc_active_transports(&self, is_publisher: bool);
     fn dec_active_transports(&self, is_publisher: bool);
+    fn inc_active_pipe_transports(&self);
+    fn dec_active_pipe_transports(&self);
     fn inc_active_producers(&self, kind: &str);
     fn dec_active_producers(&self, kind: &str);
     fn inc_active_consumers(&self, kind: &str);
@@ -80,5 +91,6 @@ pub trait MetricsPort: Send + Sync {
         cpu_usage_percent: f32,
         effective_load_percent: f32,
     );
+    fn update_worker_cpu_percent(&self, worker_index: usize, cpu_percent: f32);
     fn update_license_status(&self, is_valid: bool, expiry_timestamp_secs: u64);
 }

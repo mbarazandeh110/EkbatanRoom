@@ -5,7 +5,8 @@ use crate::domain::idempotency::IdempotencyCache;
 use crate::domain::validation;
 use crate::observability::redaction::{log_raw_sdp_if_enabled, redact_ice_pwd};
 use crate::ports::inbound::{
-    ConnectTransportParams, CreateTransportParams, CreateTransportResult, RestartIceResult,
+    ConnectPlainTransportParams, ConnectTransportParams, CreatePlainTransportParams,
+    CreatePlainTransportResult, CreateTransportParams, CreateTransportResult, RestartIceResult,
     TransportUseCase,
 };
 use crate::ports::outbound::{EventPublisherPort, MetricsPort, WorkerPoolPort};
@@ -756,6 +757,175 @@ impl TransportUseCase for TransportService {
                 transport_id,
             );
         }
+
+        if let Some((_, pt)) = self
+            .state
+            .plain_transports
+            .remove_if(transport_id, |_, item| item.router_id == router_id)
+        {
+            pt.is_closed.store(true, Ordering::SeqCst);
+            if let Some(set) = self.state.router_plain_transports.get_mut(router_id) {
+                set.remove(transport_id);
+            }
+            self.event_publisher.publish_resource_closed(
+                router_id,
+                "transport",
+                transport_id,
+                "plain_transport_closed",
+            );
+        }
+
+        Ok(())
+    }
+
+    #[tracing::instrument(
+        skip(self, params),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %params.router_id,
+            request_id = %params.request_id
+        )
+    )]
+    async fn create_plain_transport(
+        &self,
+        params: CreatePlainTransportParams,
+    ) -> Result<CreatePlainTransportResult, SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(&params.router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
+        if self.state.is_draining.load(Ordering::SeqCst) {
+            return Err(SfuDomainError::SystemDraining(
+                "Node is draining; rejecting new plain transport".to_string(),
+            ));
+        }
+
+        validation::validate_not_empty("request_id", &params.request_id)?;
+        validation::validate_not_empty("router_id", &params.router_id)?;
+
+        let r_item = self.state.routers.get(&params.router_id).ok_or_else(|| {
+            SfuDomainError::NotFound(format!("Router '{}' not found", params.router_id))
+        })?;
+
+        if r_item.is_closed.load(Ordering::SeqCst) {
+            return Err(SfuDomainError::NotFound(format!(
+                "Router '{}' is closed",
+                params.router_id
+            )));
+        }
+
+        let listen_ip = match params.listening_ip {
+            Some(ip_str) => ip_str
+                .parse::<std::net::IpAddr>()
+                .map_err(|e| SfuDomainError::InvalidArgument(e.to_string()))?,
+            None => self.config.listen_ip,
+        };
+
+        let mut listen_info = self
+            .config
+            .create_listen_info(mediasoup::prelude::Protocol::Udp);
+        listen_info.ip = listen_ip;
+        let mut options = mediasoup::plain_transport::PlainTransportOptions::new(listen_info);
+        options.rtcp_mux = params.rtcp_mux;
+        options.comedia = params.comedia;
+        options.enable_sctp = params.enable_sctp;
+
+        let plain_transport = r_item
+            .router
+            .create_plain_transport(options)
+            .await
+            .map_err(|e| {
+                SfuDomainError::Mediasoup(format!("Failed to create PlainTransport: {e}"))
+            })?;
+
+        let transport_id = plain_transport.id().to_string();
+        let ip = plain_transport.tuple().local_address().clone();
+        let port = plain_transport.tuple().local_port() as u32;
+        let rtcp_port = plain_transport
+            .rtcp_tuple()
+            .map(|t| t.local_port() as u32)
+            .unwrap_or(0);
+
+        let item = crate::application::state::PlainTransportItem {
+            transport: plain_transport,
+            router_id: params.router_id.clone(),
+            worker_index: r_item.worker_index,
+            is_closed: Arc::new(AtomicBool::new(false)),
+        };
+
+        self.state
+            .plain_transports
+            .insert(transport_id.clone(), item);
+        self.state
+            .router_plain_transports
+            .entry(params.router_id.clone())
+            .or_default()
+            .insert(transport_id.clone());
+
+        Ok(CreatePlainTransportResult {
+            transport_id,
+            ip,
+            port,
+            rtcp_port,
+        })
+    }
+
+    #[tracing::instrument(
+        skip(self, params),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %params.router_id,
+            transport_id = %params.transport_id
+        )
+    )]
+    async fn connect_plain_transport(
+        &self,
+        params: ConnectPlainTransportParams,
+    ) -> Result<(), SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(&params.router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
+
+        validation::validate_not_empty("router_id", &params.router_id)?;
+        validation::validate_not_empty("transport_id", &params.transport_id)?;
+        validation::validate_not_empty("remote_ip", &params.remote_ip)?;
+
+        let pt_item = self
+            .state
+            .plain_transports
+            .get(&params.transport_id)
+            .ok_or_else(|| {
+                SfuDomainError::NotFound(format!(
+                    "PlainTransport '{}' not found",
+                    params.transport_id
+                ))
+            })?;
+
+        if pt_item.is_closed.load(Ordering::SeqCst) {
+            return Err(SfuDomainError::NotFound(format!(
+                "PlainTransport '{}' is closed",
+                params.transport_id
+            )));
+        }
+
+        let remote_ip = params
+            .remote_ip
+            .parse::<std::net::IpAddr>()
+            .map_err(|e| SfuDomainError::InvalidArgument(format!("Invalid remote_ip: {e}")))?;
+
+        let remote_params = mediasoup::plain_transport::PlainTransportRemoteParameters {
+            ip: Some(remote_ip),
+            port: Some(params.remote_port as u16),
+            rtcp_port: params.remote_rtcp_port.map(|p| p as u16),
+            srtp_parameters: None,
+        };
+
+        pt_item
+            .transport
+            .connect(remote_params)
+            .await
+            .map_err(|e| {
+                SfuDomainError::Mediasoup(format!("Failed to connect PlainTransport: {e}"))
+            })?;
 
         Ok(())
     }

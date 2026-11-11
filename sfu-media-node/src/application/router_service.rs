@@ -198,6 +198,34 @@ impl RouterUseCase for RouterService {
                             }
                         })
                         .detach();
+                    let mut aso_options =
+                        mediasoup::active_speaker_observer::ActiveSpeakerObserverOptions::default();
+                    aso_options.interval = self.config.audio_level_observer.interval_ms;
+                    if let Ok(aso) = router.create_active_speaker_observer(aso_options).await {
+                        let ep_aso = self.event_publisher.clone();
+                        let r_aso = router_id.clone();
+                        let state_aso = self.state.clone();
+                        let closed_aso = is_closed.clone();
+
+                        aso.on_dominant_speaker(move |dominant| {
+                            if closed_aso.load(Ordering::SeqCst)
+                                || !state_aso.is_router_active(&r_aso)
+                            {
+                                return;
+                            }
+                            let p_id = dominant.producer.id().to_string();
+                            let peer_id = state_aso
+                                .get_producer(&r_aso, &p_id)
+                                .map(|p| p.peer_id.clone())
+                                .unwrap_or_default();
+                            ep_aso.publish_active_speaker(&r_aso, &p_id, &peer_id, 0.0);
+                        })
+                        .detach();
+
+                        self.state
+                            .active_speaker_observers
+                            .insert(router_id.clone(), aso);
+                    }
 
                     let item = RouterItem {
                         router,
@@ -218,6 +246,9 @@ impl RouterUseCase for RouterService {
                         .insert(router_id.clone(), DashSet::new());
                     self.state
                         .router_pipe_transports
+                        .insert(router_id.clone(), DashSet::new());
+                    self.state
+                        .router_plain_transports
                         .insert(router_id.clone(), DashSet::new());
                     self.metrics.inc_active_routers();
 
@@ -306,6 +337,67 @@ impl RouterUseCase for RouterService {
                     );
                 }
             }
+
+            // Cascade close plain transports
+            if let Some((_, plain_ids)) = self.state.router_plain_transports.remove(router_id) {
+                for ptid in plain_ids {
+                    if let Some((_, pt)) = self.state.plain_transports.remove(&ptid) {
+                        pt.is_closed.store(true, Ordering::SeqCst);
+                    }
+                    self.event_publisher.publish_resource_closed(
+                        router_id,
+                        "transport",
+                        &ptid,
+                        "cascade_closed",
+                    );
+                }
+            }
+
+            // Cascade close data producers and consumers for this router
+            let dead_dprods: Vec<String> = self
+                .state
+                .data_producers
+                .iter()
+                .filter(|e| e.value().router_id == router_id)
+                .map(|e| e.key().1.clone())
+                .collect();
+            for dpid in dead_dprods {
+                if let Some((_, dp)) = self
+                    .state
+                    .data_producers
+                    .remove(&(router_id.to_string(), dpid.clone()))
+                {
+                    dp.is_closed.store(true, Ordering::SeqCst);
+                    self.event_publisher.publish_resource_closed(
+                        router_id,
+                        "data_producer",
+                        &dpid,
+                        "cascade_closed",
+                    );
+                }
+            }
+
+            let dead_dcons: Vec<String> = self
+                .state
+                .data_consumers
+                .iter()
+                .filter(|e| e.value().router_id == router_id)
+                .map(|e| e.key().clone())
+                .collect();
+            for dcid in dead_dcons {
+                if let Some((_, dc)) = self.state.data_consumers.remove(&dcid) {
+                    dc.is_closed.store(true, Ordering::SeqCst);
+                    self.event_publisher.publish_resource_closed(
+                        router_id,
+                        "data_consumer",
+                        &dcid,
+                        "cascade_closed",
+                    );
+                }
+            }
+
+            self.state.direct_transports.remove(router_id);
+            self.state.active_speaker_observers.remove(router_id);
         }
 
         Ok(())

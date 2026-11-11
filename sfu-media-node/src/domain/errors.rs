@@ -37,4 +37,7 @@ pub enum SfuDomainError {
 
     #[error("Invalid license: {0}")]
     InvalidLicense(String),
+
+    #[error("Resource exhausted: {0}")]
+    ResourceExhausted(String),
 }

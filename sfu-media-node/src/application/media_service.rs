@@ -1,4 +1,5 @@
 use crate::application::state::{ConsumerItem, EngineState, PipedProducerEntry, ProducerItem};
+use crate::config::Config;
 use crate::domain::entities::MediaKind;
 use crate::domain::entities::*;
 use crate::domain::errors::SfuDomainError;
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub struct MediaService {
+    config: Config,
     state: EngineState,
     worker_pool: Arc<dyn WorkerPoolPort>,
     event_publisher: Arc<dyn EventPublisherPort>,
@@ -29,6 +31,7 @@ pub struct MediaService {
 
 impl MediaService {
     pub fn new(
+        config: Config,
         state: EngineState,
         worker_pool: Arc<dyn WorkerPoolPort>,
         event_publisher: Arc<dyn EventPublisherPort>,
@@ -41,6 +44,7 @@ impl MediaService {
         let c_clean = consume_cache.start_periodic_cleanup(Duration::from_secs(30));
 
         Self {
+            config,
             state,
             worker_pool,
             event_publisher,
@@ -302,6 +306,25 @@ impl MediaUseCase for MediaService {
                                 );
                             }
                         }
+
+                        if let Some(aso) =
+                            self.state.active_speaker_observers.get(&params.router_id)
+                        {
+                            use mediasoup::rtp_observer::{
+                                RtpObserver, RtpObserverAddProducerOptions,
+                            };
+                            if let Err(e) = aso
+                                .add_producer(RtpObserverAddProducerOptions::new(producer.id()))
+                                .await
+                            {
+                                tracing::warn!(
+                                    router_id = %params.router_id,
+                                    producer_id = %producer_id,
+                                    error = %e,
+                                    "Failed to add audio producer to ActiveSpeakerObserver"
+                                );
+                            }
+                        }
                     }
 
                     // Verify router and transport are still active after all .await points
@@ -487,6 +510,39 @@ impl MediaUseCase for MediaService {
                         )
                     };
                     tracing::Span::current().record("peer_id", peer_id.as_str());
+
+                    // Enforce max consumers per worker license and config quota
+                    let licensed_consumers = self.state.get_active_license().and_then(|lic| {
+                        let limit = lic.max_consumers_per_worker() as usize;
+                        if limit > 0 {
+                            Some(limit)
+                        } else {
+                            None
+                        }
+                    });
+                    let effective_max_consumers = match (licensed_consumers, self.config.max_consumers_per_worker) {
+                        (Some(l), Some(c)) => Some(std::cmp::min(l, c)),
+                        (Some(l), None) => Some(l),
+                        (None, Some(c)) => Some(c),
+                        (None, None) => None,
+                    };
+
+                    if let Some(max_c) = effective_max_consumers {
+                        let current_consumers_on_worker = self
+                            .state
+                            .consumers
+                            .iter()
+                            .filter(|c| {
+                                c.worker_index == sub_worker_index && !c.is_closed.load(Ordering::SeqCst)
+                            })
+                            .count();
+
+                        if current_consumers_on_worker >= max_c {
+                            return Err(SfuDomainError::ResourceExhausted(format!(
+                                "Worker {sub_worker_index} reached maximum consumer limit ({max_c})"
+                            )));
+                        }
+                    }
 
                     // Protect pipe against premature removal by concurrent requests (Race Condition Fix)
                     let mut in_flight_pipe_counter = None;
@@ -841,6 +897,24 @@ impl MediaUseCase for MediaService {
                                             .unwrap_or(-1),
                                     },
                                 );
+
+                                if let Some(l) = layers {
+                                    let transitions = state_ref.dynacast_tracker.update_consumer(
+                                        &c_id,
+                                        &p_id,
+                                        Some(l.spatial_layer as i32),
+                                        false,
+                                    );
+                                    for t in transitions {
+                                        event_publisher.publish_dynacast_layer(
+                                            &r_id,
+                                            &p_id,
+                                            t.spatial_layer,
+                                            t.is_active,
+                                            t.active_consumers,
+                                        );
+                                    }
+                                }
                             }
                         })
                         .detach();
@@ -1049,6 +1123,25 @@ impl MediaUseCase for MediaService {
                     self.metrics
                         .inc_active_consumers(&consumer_kind.to_string());
 
+                    if consumer_kind == MediaKind::Video {
+                        let initial_spatial = initial_spatial_layer.max(0);
+                        let transitions = self.state.dynacast_tracker.update_consumer(
+                            &consumer_id,
+                            &params.producer_id,
+                            Some(initial_spatial),
+                            params.paused,
+                        );
+                        for t in transitions {
+                            self.event_publisher.publish_dynacast_layer(
+                                &params.router_id,
+                                &params.producer_id,
+                                t.spatial_layer,
+                                t.is_active,
+                                t.active_consumers,
+                            );
+                        }
+                    }
+
                     Ok(ConsumeResult {
                         consumer_id,
                         producer_id: params.producer_id,
@@ -1168,7 +1261,7 @@ impl MediaUseCase for MediaService {
             }
         } else {
             // Extract consumer and DROP guard before .await
-            let (consumer, peer_id) = {
+            let (consumer, peer_id, producer_id, c_kind) = {
                 let c_item = self.state.consumers.get(resource_id).ok_or_else(|| {
                     SfuDomainError::NotFound(format!("Consumer '{resource_id}' not found"))
                 })?;
@@ -1185,7 +1278,12 @@ impl MediaUseCase for MediaService {
                     )));
                 }
 
-                (c_item.consumer.clone(), c_item.peer_id.clone())
+                (
+                    c_item.consumer.clone(),
+                    c_item.peer_id.clone(),
+                    c_item.producer_id.clone(),
+                    c_item.kind,
+                )
             };
             tracing::Span::current().record("peer_id", peer_id.as_str());
 
@@ -1221,6 +1319,29 @@ impl MediaUseCase for MediaService {
                     }
                 }
             }
+
+            if c_kind == MediaKind::Video {
+                let current_spatial = consumer
+                    .current_layers()
+                    .map(|l| l.spatial_layer as i32)
+                    .or_else(|| consumer.preferred_layers().map(|l| l.spatial_layer as i32))
+                    .unwrap_or(0);
+                let transitions = self.state.dynacast_tracker.update_consumer(
+                    resource_id,
+                    &producer_id,
+                    Some(current_spatial),
+                    paused,
+                );
+                for t in transitions {
+                    self.event_publisher.publish_dynacast_layer(
+                        router_id,
+                        &producer_id,
+                        t.spatial_layer,
+                        t.is_active,
+                        t.active_consumers,
+                    );
+                }
+            }
         }
 
         Ok(())
@@ -1248,7 +1369,7 @@ impl MediaUseCase for MediaService {
         validation::validate_not_empty("consumer_id", consumer_id)?;
 
         // Extract consumer and DROP guard before .await
-        let (consumer, peer_id) = {
+        let (consumer, peer_id, producer_id, c_kind) = {
             let c_item = self.state.consumers.get(consumer_id).ok_or_else(|| {
                 SfuDomainError::NotFound(format!("Consumer '{consumer_id}' not found"))
             })?;
@@ -1265,7 +1386,12 @@ impl MediaUseCase for MediaService {
                 )));
             }
 
-            (c_item.consumer.clone(), c_item.peer_id.clone())
+            (
+                c_item.consumer.clone(),
+                c_item.peer_id.clone(),
+                c_item.producer_id.clone(),
+                c_item.kind,
+            )
         };
         tracing::Span::current().record("peer_id", peer_id.as_str());
 
@@ -1289,6 +1415,78 @@ impl MediaUseCase for MediaService {
                 );
             }
         }
+
+        if c_kind == MediaKind::Video {
+            let is_paused = consumer.paused();
+            let transitions = self.state.dynacast_tracker.update_consumer(
+                consumer_id,
+                &producer_id,
+                Some(layers.spatial_layer as i32),
+                is_paused,
+            );
+            for t in transitions {
+                self.event_publisher.publish_dynacast_layer(
+                    router_id,
+                    &producer_id,
+                    t.spatial_layer,
+                    t.is_active,
+                    t.active_consumers,
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            room_id = tracing::field::Empty,
+            router_id = %router_id,
+            consumer_id = %consumer_id,
+        )
+    )]
+    async fn request_key_frame(
+        &self,
+        router_id: &str,
+        consumer_id: &str,
+    ) -> Result<(), SfuDomainError> {
+        if let Some(room_id) = self.state.get_room_id_for_router(router_id) {
+            tracing::Span::current().record("room_id", room_id.as_str());
+        }
+        validation::validate_not_empty("router_id", router_id)?;
+        validation::validate_not_empty("consumer_id", consumer_id)?;
+
+        let consumer = {
+            let c_item = self.state.consumers.get(consumer_id).ok_or_else(|| {
+                SfuDomainError::NotFound(format!("Consumer '{consumer_id}' not found"))
+            })?;
+
+            if c_item.is_closed.load(Ordering::SeqCst) {
+                return Err(SfuDomainError::NotFound(format!(
+                    "Consumer '{consumer_id}' is closed"
+                )));
+            }
+
+            if c_item.router_id != router_id {
+                return Err(SfuDomainError::NotFound(format!(
+                    "Consumer '{consumer_id}' does not belong to router '{router_id}'"
+                )));
+            }
+
+            if c_item.kind != MediaKind::Video {
+                return Err(SfuDomainError::InvalidArgument(format!(
+                    "Consumer '{consumer_id}' is not a video consumer"
+                )));
+            }
+
+            c_item.consumer.clone()
+        };
+
+        consumer
+            .request_key_frame()
+            .await
+            .map_err(|e| SfuDomainError::Mediasoup(format!("Failed to request keyframe: {e}")))?;
 
         Ok(())
     }
@@ -1335,6 +1533,8 @@ impl MediaUseCase for MediaService {
                 // Dropping entry closes both pipe_consumer and pipe_producer via mediasoup RAII
             }
 
+            self.state.dynacast_tracker.remove_producer(producer_id);
+
             self.event_publisher.publish_resource_closed(
                 router_id,
                 "producer",
@@ -1347,6 +1547,7 @@ impl MediaUseCase for MediaService {
                 .state
                 .take_consumers_for_producer(router_id, producer_id);
             for cid in c_ids {
+                self.state.dynacast_tracker.remove_consumer(&cid);
                 if let Some(c) = self.state.cascade_remove_consumer(&cid) {
                     let c_weight = if c.kind == MediaKind::Audio { 1 } else { 2 };
                     self.worker_pool
@@ -1391,6 +1592,19 @@ impl MediaUseCase for MediaService {
             Some((true, peer_id)) => {
                 tracing::Span::current().record("peer_id", peer_id.as_str());
                 if let Some(item) = self.state.cascade_remove_consumer(consumer_id) {
+                    if item.kind == MediaKind::Video {
+                        let transitions = self.state.dynacast_tracker.remove_consumer(consumer_id);
+                        for t in transitions {
+                            self.event_publisher.publish_dynacast_layer(
+                                router_id,
+                                &item.producer_id,
+                                t.spatial_layer,
+                                t.is_active,
+                                t.active_consumers,
+                            );
+                        }
+                    }
+
                     let c_weight = if item.kind == MediaKind::Audio { 1 } else { 2 };
                     self.worker_pool
                         .sub_resource_score(item.worker_index, c_weight);

@@ -1,4 +1,5 @@
 use crate::adapters::outbound_mediasoup::{EventHub, WorkerPool};
+use crate::application::data_service::DataService;
 use crate::application::media_service::MediaService;
 use crate::application::router_service::RouterService;
 use crate::application::state::EngineState;
@@ -26,6 +27,7 @@ pub struct MediaNode {
     pub router_service: Arc<RouterService>,
     pub transport_service: Arc<TransportService>,
     pub media_service: Arc<MediaService>,
+    pub data_service: Arc<DataService>,
     pub pipe_service: Arc<dyn crate::ports::inbound::InterNodePipeUseCase>,
     system_sampler: Arc<SystemSampler>,
     capacity_task_abort: Option<tokio::task::AbortHandle>,
@@ -33,21 +35,10 @@ pub struct MediaNode {
 
 impl MediaNode {
     pub async fn new(config: Config) -> Result<Self, SfuDomainError> {
-        let worker_manager = WorkerManager::new();
-        let worker_pool = Arc::new(
-            WorkerPool::new(
-                &worker_manager,
-                config.worker_count,
-                config.port_range(),
-                &config.worker_settings,
-            )
-            .await?,
-        );
-
-        let event_hub = Arc::new(EventHub::new(4096));
-        let metrics = Arc::new(PrometheusMetrics);
         let state = EngineState::default();
+        let metrics = Arc::new(PrometheusMetrics);
 
+        let mut initial_claims = None;
         if let Some(ref hex_key) = config.license_public_key_hex {
             match crate::domain::license::parse_public_key_hex(hex_key) {
                 Ok(pubkey) => state.set_license_public_key(pubkey),
@@ -73,7 +64,8 @@ impl MediaNode {
                         "Loaded valid license from environment"
                     );
                     metrics.update_license_status(true, claims.expires_at);
-                    state.set_active_license(claims);
+                    state.set_active_license(claims.clone());
+                    initial_claims = Some(claims);
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to verify initial license from environment");
@@ -83,6 +75,43 @@ impl MediaNode {
         } else {
             metrics.update_license_status(false, 0);
         }
+
+        let licensed_workers = initial_claims.as_ref().and_then(|c| {
+            let limit = c.max_active_workers() as usize;
+            if limit > 0 {
+                Some(limit)
+            } else {
+                None
+            }
+        });
+        let effective_max_workers = match (licensed_workers, config.max_active_workers) {
+            (Some(l), Some(c)) => Some(std::cmp::min(l, c)),
+            (Some(l), None) => Some(l),
+            (None, Some(c)) => Some(c),
+            (None, None) => None,
+        };
+
+        if let Some(max_w) = effective_max_workers {
+            if config.worker_count > max_w {
+                return Err(SfuDomainError::ResourceExhausted(format!(
+                    "Configured worker count ({}) exceeds maximum allowed workers ({})",
+                    config.worker_count, max_w
+                )));
+            }
+        }
+
+        let worker_manager = WorkerManager::new();
+        let worker_pool = Arc::new(
+            WorkerPool::new(
+                &worker_manager,
+                config.worker_count,
+                config.port_range(),
+                &config.worker_settings,
+            )
+            .await?,
+        );
+
+        let event_hub = Arc::new(EventHub::new(4096));
 
         let state_dead = state.clone();
         let worker_pool_dead = worker_pool.clone();
@@ -138,6 +167,15 @@ impl MediaNode {
         ));
 
         let media_service = Arc::new(MediaService::new(
+            config.clone(),
+            state.clone(),
+            worker_pool.clone(),
+            event_hub.clone(),
+            metrics.clone(),
+        ));
+
+        let data_service = Arc::new(DataService::new(
+            config.clone(),
             state.clone(),
             worker_pool.clone(),
             event_hub.clone(),
@@ -226,6 +264,16 @@ impl MediaNode {
                     info.effective_load_percent,
                 );
 
+                for i in 0..worker_pool_clone.total_workers() {
+                    let w_score = worker_pool_clone.worker_resource_score(i);
+                    let w_pct = if config_clone.worker_capacity_weight > 0 {
+                        (w_score as f32 / config_clone.worker_capacity_weight as f32) * 100.0
+                    } else {
+                        0.0
+                    };
+                    metrics_clone.update_worker_cpu_percent(i, w_pct);
+                }
+
                 // Check hysteresis, heartbeat, or dynamic license state transition
                 let delta = (info.effective_load_percent - last_published_load).abs();
                 let enterprise_changed = current_is_enterprise != last_enterprise_state;
@@ -251,6 +299,7 @@ impl MediaNode {
             router_service,
             transport_service,
             media_service,
+            data_service,
             pipe_service,
             system_sampler,
             capacity_task_abort: Some(capacity_task.abort_handle()),
@@ -407,6 +456,7 @@ impl Drop for MediaNode {
         self.router_service.abort_cleanup_tasks();
         self.transport_service.abort_cleanup_tasks();
         self.media_service.abort_cleanup_tasks();
+        self.data_service.abort_cleanup_tasks();
         self.pipe_service.abort_cleanup_tasks();
     }
 }

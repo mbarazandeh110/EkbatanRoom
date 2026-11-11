@@ -1,6 +1,6 @@
 use crate::adapters::inbound_grpc::mapper;
 use crate::application::MediaNode;
-use crate::ports::inbound::{MediaUseCase, RouterUseCase, TransportUseCase};
+use crate::ports::inbound::{DataUseCase, MediaUseCase, RouterUseCase, TransportUseCase};
 use crate::ports::outbound::MetricsPort;
 use crate::proto::sfu::v1 as proto;
 use crate::proto::sfu::v1::sfu_media_engine_service_server::SfuMediaEngineService;
@@ -438,6 +438,16 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                             .close_consumer(&req.router_id, &req.resource_id)
                             .map_err(Status::from)?;
                     }
+                    proto::ResourceType::DataProducer => {
+                        node.data_service
+                            .close_data_producer(&req.router_id, &req.resource_id)
+                            .map_err(Status::from)?;
+                    }
+                    proto::ResourceType::DataConsumer => {
+                        node.data_service
+                            .close_data_consumer(&req.router_id, &req.resource_id)
+                            .map_err(Status::from)?;
+                    }
                     proto::ResourceType::Unspecified => {
                         return Err(Status::invalid_argument("Resource type unspecified"));
                     }
@@ -476,6 +486,17 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                         if let Some(c) = node.state.consumers.get(&req.resource_id) {
                             tracing::Span::current().record("peer_id", &c.peer_id);
                         }
+                    }
+                    proto::ResourceType::DataProducer | proto::ResourceType::DataConsumer => {
+                        return Ok(proto::GetStatsResponse {
+                            stats_json: "[]".to_string(),
+                            bytes_sent: 0,
+                            bytes_received: 0,
+                            packets_sent: 0,
+                            packets_received: 0,
+                            current_spatial_layer: -1,
+                            current_temporal_layer: -1,
+                        });
                     }
                     _ => {}
                 }
@@ -730,6 +751,156 @@ impl SfuMediaEngineService for GrpcMediaEngineService {
                     issued_to: res.issued_to,
                     error_message: res.error_message,
                 })
+            },
+        )
+        .await
+    }
+
+    async fn request_key_frame(
+        &self,
+        request: Request<proto::RequestKeyFrameRequest>,
+    ) -> Result<Response<proto::RequestKeyFrameResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc(
+            "RequestKeyFrame",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                node.media_service
+                    .request_key_frame(&req.router_id, &req.consumer_id)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(proto::RequestKeyFrameResponse {})
+            },
+        )
+        .await
+    }
+
+    async fn produce_data(
+        &self,
+        request: Request<proto::ProduceDataRequest>,
+    ) -> Result<Response<proto::ProduceDataResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc(
+            "ProduceData",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::Span::current().record("request_id", &req.request_id);
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params = mapper::from_produce_data_request(req).map_err(Status::from)?;
+                let res = node
+                    .data_service
+                    .produce_data(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_produce_data_response(res))
+            },
+        )
+        .await
+    }
+
+    async fn consume_data(
+        &self,
+        request: Request<proto::ConsumeDataRequest>,
+    ) -> Result<Response<proto::ConsumeDataResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc(
+            "ConsumeData",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::Span::current().record("request_id", &req.request_id);
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params = mapper::from_consume_data_request(req).map_err(Status::from)?;
+                let res = node
+                    .data_service
+                    .consume_data(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_consume_data_response(res))
+            },
+        )
+        .await
+    }
+
+    async fn send_direct_data(
+        &self,
+        request: Request<proto::SendDirectDataRequest>,
+    ) -> Result<Response<proto::SendDirectDataResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc(
+            "SendDirectData",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                node.data_service
+                    .send_direct_data(&req.router_id, &req.label, &req.protocol, &req.payload)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(proto::SendDirectDataResponse {})
+            },
+        )
+        .await
+    }
+
+    async fn create_plain_transport(
+        &self,
+        request: Request<proto::CreatePlainTransportRequest>,
+    ) -> Result<Response<proto::CreatePlainTransportResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc(
+            "CreatePlainTransport",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                tracing::Span::current().record("request_id", &req.request_id);
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params =
+                    mapper::from_create_plain_transport_request(req).map_err(Status::from)?;
+                let res = node
+                    .transport_service
+                    .create_plain_transport(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(mapper::to_create_plain_transport_response(res))
+            },
+        )
+        .await
+    }
+
+    async fn connect_plain_transport(
+        &self,
+        request: Request<proto::ConnectPlainTransportRequest>,
+    ) -> Result<Response<proto::ConnectPlainTransportResponse>, Status> {
+        let node = self.node.clone();
+        instrument_rpc(
+            "ConnectPlainTransport",
+            self.node.metrics.clone(),
+            request,
+            move |req| async move {
+                if let Some(room_id) = node.state.get_room_id_for_router(&req.router_id) {
+                    tracing::Span::current().record("room_id", &room_id);
+                }
+                let params =
+                    mapper::from_connect_plain_transport_request(req).map_err(Status::from)?;
+                node.transport_service
+                    .connect_plain_transport(params)
+                    .await
+                    .map_err(Status::from)?;
+                Ok(proto::ConnectPlainTransportResponse {})
             },
         )
         .await

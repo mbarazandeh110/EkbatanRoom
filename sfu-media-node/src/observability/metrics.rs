@@ -3,6 +3,7 @@ use metrics::{counter, gauge, histogram};
 
 pub const METRIC_ACTIVE_ROUTERS: &str = "sfu_active_routers";
 pub const METRIC_ACTIVE_TRANSPORTS: &str = "sfu_active_transports";
+pub const METRIC_ACTIVE_PIPE_TRANSPORTS: &str = "sfu_active_pipe_transports";
 pub const METRIC_ACTIVE_PRODUCERS: &str = "sfu_active_producers";
 pub const METRIC_ACTIVE_CONSUMERS: &str = "sfu_active_consumers";
 pub const METRIC_GRPC_REQUESTS_TOTAL: &str = "sfu_grpc_requests_total";
@@ -11,6 +12,7 @@ pub const METRIC_IDEMPOTENCY_HITS_TOTAL: &str = "sfu_idempotency_hits_total";
 pub const METRIC_NODE_CAPACITY_WEIGHT: &str = "sfu_node_capacity_weight";
 pub const METRIC_NODE_LOGICAL_LOAD_PERCENT: &str = "sfu_node_logical_load_percent";
 pub const METRIC_NODE_CPU_USAGE_PERCENT: &str = "sfu_node_cpu_usage_percent";
+pub const METRIC_WORKER_CPU_PERCENT: &str = "sfu_worker_cpu_percent";
 pub const METRIC_NODE_EFFECTIVE_LOAD_PERCENT: &str = "sfu_node_effective_load_percent";
 pub const METRIC_LICENSE_VALID: &str = "sfu_license_valid";
 pub const METRIC_LICENSE_EXPIRY_TIMESTAMP: &str = "sfu_license_expiry_timestamp_seconds";
@@ -30,6 +32,12 @@ impl MetricsPort for PrometheusMetrics {
     }
     fn dec_active_transports(&self, is_publisher: bool) {
         dec_active_transports(is_publisher);
+    }
+    fn inc_active_pipe_transports(&self) {
+        inc_active_pipe_transports();
+    }
+    fn dec_active_pipe_transports(&self) {
+        dec_active_pipe_transports();
     }
     fn inc_active_producers(&self, kind: &str) {
         inc_active_producers(kind);
@@ -63,6 +71,9 @@ impl MetricsPort for PrometheusMetrics {
             effective_load_percent,
         );
     }
+    fn update_worker_cpu_percent(&self, worker_index: usize, cpu_percent: f32) {
+        update_worker_cpu_percent(worker_index, cpu_percent);
+    }
     fn update_license_status(&self, is_valid: bool, expiry_timestamp_secs: u64) {
         update_license_status(is_valid, expiry_timestamp_secs);
     }
@@ -88,6 +99,22 @@ pub fn inc_active_transports(is_publisher: bool) {
 pub fn dec_active_transports(is_publisher: bool) {
     let direction = if is_publisher { "pub" } else { "sub" };
     gauge!(METRIC_ACTIVE_TRANSPORTS, "direction" => direction).decrement(1.0);
+}
+
+/// Increment active pipe transports gauge
+pub fn inc_active_pipe_transports() {
+    gauge!(METRIC_ACTIVE_PIPE_TRANSPORTS).increment(1.0);
+}
+
+/// Decrement active pipe transports gauge
+pub fn dec_active_pipe_transports() {
+    gauge!(METRIC_ACTIVE_PIPE_TRANSPORTS).decrement(1.0);
+}
+
+/// Update worker cpu percent gauge with worker_index label
+pub fn update_worker_cpu_percent(worker_index: usize, cpu_percent: f32) {
+    let idx_str = worker_index.to_string();
+    gauge!(METRIC_WORKER_CPU_PERCENT, "worker_index" => idx_str).set(cpu_percent as f64);
 }
 
 /// Increment active producers with kind label ("audio" or "video")
@@ -195,6 +222,9 @@ mod tests {
         m.dec_active_producers("video");
         m.inc_active_consumers("audio");
         m.dec_active_consumers("audio");
+        m.inc_active_pipe_transports();
+        m.dec_active_pipe_transports();
+        m.update_worker_cpu_percent(0, 15.5);
         m.record_idempotency_hit();
         m.record_grpc_request("CreateRouter", "ok", 0.012);
         m.record_grpc_request("CreateRouter", "invalid_argument", 0.001);

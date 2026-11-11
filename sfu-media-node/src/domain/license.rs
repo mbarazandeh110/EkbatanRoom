@@ -19,6 +19,10 @@ pub struct ClusterLimits {
     pub max_concurrent_peers: u32,
     #[serde(default)]
     pub max_concurrent_rooms: u32,
+    #[serde(default)]
+    pub max_active_workers: u32,
+    #[serde(default)]
+    pub max_consumers_per_worker: u32,
 }
 
 impl Default for ClusterLimits {
@@ -27,6 +31,8 @@ impl Default for ClusterLimits {
             max_sfu_nodes: 1,
             max_concurrent_peers: 500,
             max_concurrent_rooms: 20,
+            max_active_workers: 0,
+            max_consumers_per_worker: 0,
         }
     }
 }
@@ -93,6 +99,18 @@ impl LicenseClaims {
         self.is_valid_at(now_secs)
             && (self.tier.eq_ignore_ascii_case("enterprise"))
             && self.has_feature(FEATURE_INTER_NODE_CASCADING)
+    }
+
+    /// Maximum active workers allowed by this license (0 = unlimited).
+    #[must_use]
+    pub fn max_active_workers(&self) -> u32 {
+        self.cluster_limits.max_active_workers
+    }
+
+    /// Maximum consumers per worker allowed by this license (0 = unlimited).
+    #[must_use]
+    pub fn max_consumers_per_worker(&self) -> u32 {
+        self.cluster_limits.max_consumers_per_worker
     }
 }
 
@@ -253,6 +271,8 @@ mod tests {
                 max_sfu_nodes: 10,
                 max_concurrent_peers: 5000,
                 max_concurrent_rooms: 200,
+                max_active_workers: 16,
+                max_consumers_per_worker: 500,
             },
             allowed_domains: vec!["ekbatan.local".to_string()],
             issued_at: now - 1000,
@@ -266,6 +286,8 @@ mod tests {
         let verified = verify_license_token(&token, &pub_key, now).expect("verification");
         assert_eq!(verified.license_id, "lic-ent-001");
         assert_eq!(verified.tier, "enterprise");
+        assert_eq!(verified.max_active_workers(), 16);
+        assert_eq!(verified.max_consumers_per_worker(), 500);
         assert!(verified.is_enterprise_cascading_allowed(now));
         assert!(!verified.is_expired_at(now));
         assert!(!verified.is_in_grace_period_at(now));

@@ -2,10 +2,11 @@ use crate::domain::entities::*;
 use crate::domain::errors::SfuDomainError;
 use crate::domain::validation;
 use crate::ports::inbound::{
-    ConnectPipeTransportParams, ConnectTransportParams, ConsumeParams, ConsumeResult,
-    CreatePipeTransportParams, CreatePipeTransportResult, CreateTransportParams,
-    CreateTransportResult, PipeConsumeParams, PipeProduceParams, ProduceParams, ProduceResult,
-    RestartIceResult,
+    ConnectPipeTransportParams, ConnectPlainTransportParams, ConnectTransportParams,
+    ConsumeDataParams, ConsumeDataResult, ConsumeParams, ConsumeResult, CreatePipeTransportParams,
+    CreatePipeTransportResult, CreatePlainTransportParams, CreatePlainTransportResult,
+    CreateTransportParams, CreateTransportResult, PipeConsumeParams, PipeProduceParams,
+    ProduceDataParams, ProduceDataResult, ProduceParams, ProduceResult, RestartIceResult,
 };
 use crate::proto::sfu::v1 as proto;
 use mediasoup::prelude::{RtpCapabilities, RtpParameters};
@@ -28,6 +29,7 @@ impl From<SfuDomainError> for tonic::Status {
             SfuDomainError::EnterpriseFeatureRequired(msg) => tonic::Status::unimplemented(msg),
             SfuDomainError::LicensePermissionDenied(msg) => tonic::Status::permission_denied(msg),
             SfuDomainError::InvalidLicense(msg) => tonic::Status::invalid_argument(msg),
+            SfuDomainError::ResourceExhausted(msg) => tonic::Status::resource_exhausted(msg),
         }
     }
 }
@@ -855,6 +857,8 @@ pub fn to_proto_node_event(event: DomainNodeEvent) -> proto::NodeEvent {
                 DomainResourceType::Transport => proto::ResourceType::Transport as i32,
                 DomainResourceType::Producer => proto::ResourceType::Producer as i32,
                 DomainResourceType::Consumer => proto::ResourceType::Consumer as i32,
+                DomainResourceType::DataProducer => proto::ResourceType::DataProducer as i32,
+                DomainResourceType::DataConsumer => proto::ResourceType::DataConsumer as i32,
                 DomainResourceType::Unspecified => proto::ResourceType::Unspecified as i32,
             };
             proto::node_event::Payload::ResourceClosed(proto::ResourceClosedEvent {
@@ -866,11 +870,124 @@ pub fn to_proto_node_event(event: DomainNodeEvent) -> proto::NodeEvent {
         DomainNodeEventPayload::NodeCapacity(info) => {
             proto::node_event::Payload::NodeCapacity(to_node_capacity_metrics(info))
         }
+        DomainNodeEventPayload::DynacastLayer(d) => {
+            proto::node_event::Payload::DynacastLayer(proto::DynacastLayerEvent {
+                router_id: event.router_id.clone(),
+                producer_id: d.producer_id,
+                spatial_layer: d.spatial_layer,
+                is_active: d.is_active,
+                active_consumers: d.active_consumers,
+            })
+        }
     });
 
     proto::NodeEvent {
         router_id: event.router_id,
         timestamp_ms: event.timestamp_ms,
         payload,
+    }
+}
+
+pub fn from_create_plain_transport_request(
+    req: proto::CreatePlainTransportRequest,
+) -> Result<CreatePlainTransportParams, SfuDomainError> {
+    validation::validate_not_empty("request_id", &req.request_id)?;
+    validation::validate_not_empty("router_id", &req.router_id)?;
+
+    Ok(CreatePlainTransportParams {
+        request_id: req.request_id,
+        router_id: req.router_id,
+        listening_ip: if req.listening_ip.is_empty() {
+            None
+        } else {
+            Some(req.listening_ip)
+        },
+        rtcp_mux: req.rtcp_mux,
+        comedia: req.comedia,
+        enable_sctp: req.enable_sctp,
+    })
+}
+
+pub fn to_create_plain_transport_response(
+    res: CreatePlainTransportResult,
+) -> proto::CreatePlainTransportResponse {
+    proto::CreatePlainTransportResponse {
+        transport_id: res.transport_id,
+        ip: res.ip,
+        port: res.port,
+        rtcp_port: res.rtcp_port,
+    }
+}
+
+pub fn from_connect_plain_transport_request(
+    req: proto::ConnectPlainTransportRequest,
+) -> Result<ConnectPlainTransportParams, SfuDomainError> {
+    validation::validate_not_empty("router_id", &req.router_id)?;
+    validation::validate_not_empty("transport_id", &req.transport_id)?;
+    validation::validate_not_empty("remote_ip", &req.remote_ip)?;
+
+    Ok(ConnectPlainTransportParams {
+        router_id: req.router_id,
+        transport_id: req.transport_id,
+        remote_ip: req.remote_ip,
+        remote_port: req.remote_port,
+        remote_rtcp_port: if req.remote_rtcp_port > 0 {
+            Some(req.remote_rtcp_port)
+        } else {
+            None
+        },
+    })
+}
+
+pub fn from_produce_data_request(
+    req: proto::ProduceDataRequest,
+) -> Result<ProduceDataParams, SfuDomainError> {
+    validation::validate_not_empty("request_id", &req.request_id)?;
+    validation::validate_not_empty("router_id", &req.router_id)?;
+    validation::validate_not_empty("transport_id", &req.transport_id)?;
+
+    Ok(ProduceDataParams {
+        request_id: req.request_id,
+        router_id: req.router_id,
+        transport_id: req.transport_id,
+        peer_id: req.peer_id,
+        sctp_stream_parameters_json: req.sctp_stream_parameters_json,
+        label: req.label,
+        protocol: req.protocol,
+    })
+}
+
+pub fn to_produce_data_response(res: ProduceDataResult) -> proto::ProduceDataResponse {
+    proto::ProduceDataResponse {
+        data_producer_id: res.data_producer_id,
+        label: res.label,
+        protocol: res.protocol,
+        sctp_stream_parameters_json: res.sctp_stream_parameters_json,
+    }
+}
+
+pub fn from_consume_data_request(
+    req: proto::ConsumeDataRequest,
+) -> Result<ConsumeDataParams, SfuDomainError> {
+    validation::validate_not_empty("request_id", &req.request_id)?;
+    validation::validate_not_empty("router_id", &req.router_id)?;
+    validation::validate_not_empty("transport_id", &req.transport_id)?;
+    validation::validate_not_empty("data_producer_id", &req.data_producer_id)?;
+
+    Ok(ConsumeDataParams {
+        request_id: req.request_id,
+        router_id: req.router_id,
+        transport_id: req.transport_id,
+        data_producer_id: req.data_producer_id,
+    })
+}
+
+pub fn to_consume_data_response(res: ConsumeDataResult) -> proto::ConsumeDataResponse {
+    proto::ConsumeDataResponse {
+        data_consumer_id: res.data_consumer_id,
+        data_producer_id: res.data_producer_id,
+        label: res.label,
+        protocol: res.protocol,
+        sctp_stream_parameters_json: res.sctp_stream_parameters_json,
     }
 }

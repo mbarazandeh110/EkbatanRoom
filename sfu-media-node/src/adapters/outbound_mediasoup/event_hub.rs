@@ -108,6 +108,8 @@ impl EventPublisherPort for EventHub {
             "transport" => DomainResourceType::Transport,
             "producer" => DomainResourceType::Producer,
             "consumer" => DomainResourceType::Consumer,
+            "data_producer" => DomainResourceType::DataProducer,
+            "data_consumer" => DomainResourceType::DataConsumer,
             _ => DomainResourceType::Unspecified,
         };
 
@@ -130,6 +132,29 @@ impl EventPublisherPort for EventHub {
             router_id: String::new(),
             timestamp_ms: Self::now_ms(),
             payload: Some(DomainNodeEventPayload::NodeCapacity(info.clone())),
+        };
+        let _ = self.sender.send(event);
+    }
+
+    fn publish_dynacast_layer(
+        &self,
+        router_id: &str,
+        producer_id: &str,
+        spatial_layer: i32,
+        is_active: bool,
+        active_consumers: u32,
+    ) {
+        let event = DomainNodeEvent {
+            router_id: router_id.to_string(),
+            timestamp_ms: Self::now_ms(),
+            payload: Some(DomainNodeEventPayload::DynacastLayer(
+                crate::domain::entities::DomainDynacastLayerEvent {
+                    producer_id: producer_id.to_string(),
+                    spatial_layer,
+                    is_active,
+                    active_consumers,
+                },
+            )),
         };
         let _ = self.sender.send(event);
     }

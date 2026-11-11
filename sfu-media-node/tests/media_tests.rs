@@ -521,6 +521,15 @@ async fn test_video_produce_consume_lifecycle_and_keyframe_request() {
         }))
         .await
         .unwrap();
+
+    // Explicit RequestKeyFrame RPC invocation
+    let kf_resp = service
+        .request_key_frame(Request::new(proto::RequestKeyFrameRequest {
+            router_id: router_id.clone(),
+            consumer_id: cons_paused_resp.consumer_id.clone(),
+        }))
+        .await;
+    assert!(kf_resp.is_ok());
 }
 
 #[test]
@@ -1106,4 +1115,317 @@ async fn test_connect_transport_reciprocal_dtls_role_client_and_server() {
         }))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn test_plain_transport_lifecycle() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-plain".to_string(),
+            room_id: "room-plain".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let pt_resp = service
+        .create_plain_transport(Request::new(proto::CreatePlainTransportRequest {
+            request_id: "req-pt-1".to_string(),
+            router_id: r_resp.router_id.clone(),
+            rtcp_mux: true,
+            comedia: false,
+            enable_sctp: false,
+            listening_ip: "127.0.0.1".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!pt_resp.transport_id.is_empty());
+    assert!(!pt_resp.ip.is_empty());
+    assert!(pt_resp.port > 0);
+
+    let connect_resp = service
+        .connect_plain_transport(Request::new(proto::ConnectPlainTransportRequest {
+            router_id: r_resp.router_id.clone(),
+            transport_id: pt_resp.transport_id.clone(),
+            remote_ip: "127.0.0.1".to_string(),
+            remote_port: 5004,
+            remote_rtcp_port: 0,
+        }))
+        .await;
+
+    assert!(connect_resp.is_ok());
+
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r_resp.router_id.clone(),
+            resource_type: proto::ResourceType::Transport as i32,
+            resource_id: pt_resp.transport_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r_resp.router_id.clone(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: r_resp.router_id.clone(),
+        }))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_data_produce_and_consume_lifecycle() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-data".to_string(),
+            room_id: "room-data".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let pub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-tr-pub-sctp".to_string(),
+            router_id: r_resp.router_id.clone(),
+            peer_id: "peer-data-pub".to_string(),
+            is_publisher: true,
+            enable_sctp: true,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-tr-sub-sctp".to_string(),
+            router_id: r_resp.router_id.clone(),
+            peer_id: "peer-data-sub".to_string(),
+            is_publisher: false,
+            enable_sctp: true,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sctp_params = r#"{"streamId": 1, "ordered": true}"#;
+    let prod_data = service
+        .produce_data(Request::new(proto::ProduceDataRequest {
+            request_id: "req-dp-1".to_string(),
+            router_id: r_resp.router_id.clone(),
+            transport_id: pub_tr.transport_id.clone(),
+            peer_id: "peer-data-pub".to_string(),
+            sctp_stream_parameters_json: sctp_params.to_string(),
+            label: "_reliable".to_string(),
+            protocol: "".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!prod_data.data_producer_id.is_empty());
+    assert_eq!(prod_data.label, "_reliable");
+
+    let cons_data = service
+        .consume_data(Request::new(proto::ConsumeDataRequest {
+            request_id: "req-dc-1".to_string(),
+            router_id: r_resp.router_id.clone(),
+            transport_id: sub_tr.transport_id.clone(),
+            data_producer_id: prod_data.data_producer_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!cons_data.data_consumer_id.is_empty());
+    assert_eq!(cons_data.data_producer_id, prod_data.data_producer_id);
+    assert_eq!(cons_data.label, "_reliable");
+
+    // Close data producer
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r_resp.router_id.clone(),
+            resource_type: proto::ResourceType::DataProducer as i32,
+            resource_id: prod_data.data_producer_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+    // Close router
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r_resp.router_id.clone(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: r_resp.router_id.clone(),
+        }))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_send_direct_data() {
+    let node = Arc::new(MediaNode::new(test_config()).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-direct".to_string(),
+            room_id: "room-direct".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let send_resp = service
+        .send_direct_data(Request::new(proto::SendDirectDataRequest {
+            router_id: r_resp.router_id.clone(),
+            label: "chat".to_string(),
+            protocol: "".to_string(),
+            payload: b"Hello Direct Transport".to_vec(),
+        }))
+        .await;
+
+    assert!(send_resp.is_ok());
+
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r_resp.router_id.clone(),
+            resource_type: proto::ResourceType::Router as i32,
+            resource_id: r_resp.router_id.clone(),
+        }))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_consumer_quota_enforcement() {
+    let mut config = test_config();
+    config.max_consumers_per_worker = Some(1);
+    let node = Arc::new(MediaNode::new(config).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-quota".to_string(),
+            room_id: "room-quota".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let pub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-tr-pub-quota".to_string(),
+            router_id: r_resp.router_id.clone(),
+            peer_id: "peer-pub-quota".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let opus_rtp_params = r#"{
+        "mid": "0",
+        "codecs": [
+            {
+                "mimeType": "audio/opus",
+                "payloadType": 111,
+                "clockRate": 48000,
+                "channels": 2,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": [],
+        "encodings": [
+            {
+                "ssrc": 22222222
+            }
+        ],
+        "rtcp": {
+            "cname": "audio-quota-test",
+            "reducedSize": true
+        }
+    }"#;
+
+    let prod_resp = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-prod-quota".to_string(),
+            router_id: r_resp.router_id.clone(),
+            transport_id: pub_tr.transport_id.clone(),
+            peer_id: "peer-pub-quota".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_rtp_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-tr-sub-quota".to_string(),
+            router_id: r_resp.router_id.clone(),
+            peer_id: "peer-sub-quota".to_string(),
+            is_publisher: false,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let rtp_caps = r#"{
+        "codecs": [
+            {
+                "mimeType": "audio/opus",
+                "kind": "audio",
+                "preferredPayloadType": 111,
+                "clockRate": 48000,
+                "channels": 2,
+                "parameters": {},
+                "rtcpFeedback": []
+            }
+        ],
+        "headerExtensions": []
+    }"#;
+
+    // 1st consumer -> should succeed (count = 1 <= 1)
+    let cons_resp1 = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-cons-quota-1".to_string(),
+            router_id: r_resp.router_id.clone(),
+            subscriber_transport_id: sub_tr.transport_id.clone(),
+            producer_id: prod_resp.producer_id.clone(),
+            rtp_capabilities_json: rtp_caps.to_string(),
+            paused: false,
+        }))
+        .await;
+
+    assert!(cons_resp1.is_ok());
+
+    // 2nd consumer -> must exceed max_consumers_per_worker = 1 and return ResourceExhausted
+    let cons_resp2 = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-cons-quota-2".to_string(),
+            router_id: r_resp.router_id.clone(),
+            subscriber_transport_id: sub_tr.transport_id.clone(),
+            producer_id: prod_resp.producer_id.clone(),
+            rtp_capabilities_json: rtp_caps.to_string(),
+            paused: false,
+        }))
+        .await;
+
+    assert!(cons_resp2.is_err());
+    let err = cons_resp2.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::ResourceExhausted);
 }

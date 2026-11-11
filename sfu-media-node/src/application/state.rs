@@ -45,6 +45,36 @@ pub struct PipeTransportItem {
 }
 
 #[derive(Clone)]
+pub struct PlainTransportItem {
+    pub transport: mediasoup::plain_transport::PlainTransport,
+    pub router_id: String,
+    pub worker_index: usize,
+    pub is_closed: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+pub struct DataProducerItem {
+    pub data_producer: mediasoup::data_producer::DataProducer,
+    pub router_id: String,
+    pub transport_id: String,
+    pub peer_id: String,
+    pub label: String,
+    pub protocol: String,
+    pub is_closed: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+pub struct DataConsumerItem {
+    pub data_consumer: mediasoup::data_consumer::DataConsumer,
+    pub router_id: String,
+    pub transport_id: String,
+    pub data_producer_id: String,
+    pub label: String,
+    pub protocol: String,
+    pub is_closed: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
 pub struct ProducerItem {
     pub producer: Producer,
     pub router_id: String,
@@ -133,15 +163,25 @@ pub struct EngineState {
     pub room_to_router: Arc<DashMap<String, String>>,
     pub transports: Arc<DashMap<String, TransportItem>>,
     pub pipe_transports: Arc<DashMap<String, PipeTransportItem>>,
+    pub plain_transports: Arc<DashMap<String, PlainTransportItem>>,
+    pub direct_transports: Arc<DashMap<String, mediasoup::direct_transport::DirectTransport>>,
+    pub active_speaker_observers:
+        Arc<DashMap<String, mediasoup::active_speaker_observer::ActiveSpeakerObserver>>,
     pub router_transports: Arc<DashMap<String, DashSet<String>>>,
     pub router_pipe_transports: Arc<DashMap<String, DashSet<String>>>,
+    pub router_plain_transports: Arc<DashMap<String, DashSet<String>>>,
     pub producers: Arc<DashMap<(String, String), ProducerItem>>,
     pub transport_producers: Arc<DashMap<String, DashSet<String>>>,
     pub producer_consumers: Arc<DashMap<String, DashSet<String>>>,
     pub consumers: Arc<DashMap<String, ConsumerItem>>,
     pub transport_consumers: Arc<DashMap<String, DashSet<String>>>,
+    pub data_producers: Arc<DashMap<(String, String), DataProducerItem>>,
+    pub data_consumers: Arc<DashMap<String, DataConsumerItem>>,
+    pub transport_data_producers: Arc<DashMap<String, DashSet<String>>>,
+    pub transport_data_consumers: Arc<DashMap<String, DashSet<String>>>,
     pub peer_worker_affinity: Arc<DashMap<(String, String), usize>>,
     pub piped_producers: Arc<DashMap<String, Vec<PipedProducerEntry>>>,
+    pub dynacast_tracker: Arc<crate::domain::dynacast::DynacastTracker>,
     pub room_singleflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub pipe_singleflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub sub_router_singleflight: Arc<SubRouterLockMap>,
@@ -161,15 +201,24 @@ impl Default for EngineState {
             room_to_router: Arc::new(DashMap::new()),
             transports: Arc::new(DashMap::new()),
             pipe_transports: Arc::new(DashMap::new()),
+            plain_transports: Arc::new(DashMap::new()),
+            direct_transports: Arc::new(DashMap::new()),
+            active_speaker_observers: Arc::new(DashMap::new()),
             router_transports: Arc::new(DashMap::new()),
             router_pipe_transports: Arc::new(DashMap::new()),
+            router_plain_transports: Arc::new(DashMap::new()),
             producers: Arc::new(DashMap::new()),
             transport_producers: Arc::new(DashMap::new()),
             producer_consumers: Arc::new(DashMap::new()),
             consumers: Arc::new(DashMap::new()),
             transport_consumers: Arc::new(DashMap::new()),
+            data_producers: Arc::new(DashMap::new()),
+            data_consumers: Arc::new(DashMap::new()),
+            transport_data_producers: Arc::new(DashMap::new()),
+            transport_data_consumers: Arc::new(DashMap::new()),
             peer_worker_affinity: Arc::new(DashMap::new()),
             piped_producers: Arc::new(DashMap::new()),
+            dynacast_tracker: Arc::new(crate::domain::dynacast::DynacastTracker::new()),
             room_singleflight: Arc::new(DashMap::new()),
             pipe_singleflight: Arc::new(DashMap::new()),
             sub_router_singleflight: Arc::new(DashMap::new()),
@@ -439,6 +488,29 @@ impl EngineState {
             }
         }
 
+        // 1c. Identify and close all PlainTransports on this worker
+        let dead_plain_transports: Vec<(String, String)> = self
+            .plain_transports
+            .iter()
+            .filter(|entry| entry.value().worker_index == worker_index)
+            .map(|entry| (entry.key().clone(), entry.value().router_id.clone()))
+            .collect();
+
+        for (ptid, router_id) in dead_plain_transports {
+            if let Some((_, pt)) = self.plain_transports.remove(&ptid) {
+                pt.is_closed.store(true, Ordering::SeqCst);
+                if let Some(set) = self.router_plain_transports.get_mut(&router_id) {
+                    set.remove(&ptid);
+                }
+                event_publisher.publish_resource_closed(
+                    &router_id,
+                    "transport",
+                    &ptid,
+                    "worker_died",
+                );
+            }
+        }
+
         // 2. Identify and close all producers on this worker
         let dead_producers: Vec<((String, String), String, MediaKind)> = self
             .producers
@@ -627,6 +699,24 @@ impl EngineState {
                         }
                     }
                 }
+
+                // Cascade close any remaining plain transports for this router
+                if let Some((_, plain_ids)) = self.router_plain_transports.remove(&router_id) {
+                    for ptid in plain_ids {
+                        if let Some((_, pt)) = self.plain_transports.remove(&ptid) {
+                            pt.is_closed.store(true, Ordering::SeqCst);
+                            event_publisher.publish_resource_closed(
+                                &router_id,
+                                "transport",
+                                &ptid,
+                                "worker_died",
+                            );
+                        }
+                    }
+                }
+
+                self.direct_transports.remove(&router_id);
+                self.active_speaker_observers.remove(&router_id);
 
                 metrics.dec_active_routers();
                 event_publisher.publish_resource_closed(

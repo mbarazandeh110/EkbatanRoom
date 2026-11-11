@@ -92,6 +92,8 @@ pub enum DomainResourceType {
     Transport,
     Producer,
     Consumer,
+    DataProducer,
+    DataConsumer,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -128,6 +130,14 @@ pub struct DomainResourceClosedEvent {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainDynacastLayerEvent {
+    pub producer_id: String,
+    pub spatial_layer: i32,
+    pub is_active: bool,
+    pub active_consumers: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DomainNodeEventPayload {
     MediaScore(DomainMediaScoreEvent),
@@ -135,6 +145,7 @@ pub enum DomainNodeEventPayload {
     ActiveSpeaker(DomainActiveSpeakerEvent),
     ResourceClosed(DomainResourceClosedEvent),
     NodeCapacity(NodeCapacityInfo),
+    DynacastLayer(DomainDynacastLayerEvent),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

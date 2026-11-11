@@ -286,6 +286,10 @@ pub struct Config {
     pub license_token: Option<String>,
     #[serde(default)]
     pub license_public_key_hex: Option<String>,
+    #[serde(default)]
+    pub max_active_workers: Option<usize>,
+    #[serde(default)]
+    pub max_consumers_per_worker: Option<usize>,
 }
 
 impl Config {
@@ -446,6 +450,8 @@ impl Config {
             observability: ObservabilityConfig::default(),
             license_token: None,
             license_public_key_hex: None,
+            max_active_workers: None,
+            max_consumers_per_worker: None,
         }
     }
 
@@ -728,6 +734,18 @@ impl Config {
         if let Ok(s) = std::env::var("SFU_WORKER_SPILLOVER_THRESHOLD_PERCENT") {
             self.worker_spillover_threshold_percent =
                 s.trim().parse::<f32>().unwrap_or(80.0).clamp(1.0, 100.0);
+        }
+
+        if let Ok(s) = std::env::var("SFU_MAX_ACTIVE_WORKERS") {
+            if let Ok(val) = s.trim().parse::<usize>() {
+                self.max_active_workers = Some(val);
+            }
+        }
+
+        if let Ok(s) = std::env::var("SFU_MAX_CONSUMERS_PER_WORKER") {
+            if let Ok(val) = s.trim().parse::<usize>() {
+                self.max_consumers_per_worker = Some(val);
+            }
         }
 
         // Mediasoup worker env overrides

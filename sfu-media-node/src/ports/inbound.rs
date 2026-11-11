@@ -143,6 +143,69 @@ pub struct RestartIceResult {
     pub raw_ice_parameters_json: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CreatePlainTransportParams {
+    pub request_id: String,
+    pub router_id: String,
+    pub rtcp_mux: bool,
+    pub comedia: bool,
+    pub enable_sctp: bool,
+    pub listening_ip: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreatePlainTransportResult {
+    pub transport_id: String,
+    pub ip: String,
+    pub port: u32,
+    pub rtcp_port: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectPlainTransportParams {
+    pub router_id: String,
+    pub transport_id: String,
+    pub remote_ip: String,
+    pub remote_port: u32,
+    pub remote_rtcp_port: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProduceDataParams {
+    pub request_id: String,
+    pub router_id: String,
+    pub transport_id: String,
+    pub peer_id: String,
+    pub sctp_stream_parameters_json: String,
+    pub label: String,
+    pub protocol: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProduceDataResult {
+    pub data_producer_id: String,
+    pub label: String,
+    pub protocol: String,
+    pub sctp_stream_parameters_json: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConsumeDataParams {
+    pub request_id: String,
+    pub router_id: String,
+    pub transport_id: String,
+    pub data_producer_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConsumeDataResult {
+    pub data_consumer_id: String,
+    pub data_producer_id: String,
+    pub label: String,
+    pub protocol: String,
+    pub sctp_stream_parameters_json: String,
+}
+
 #[async_trait]
 pub trait TransportUseCase: Send + Sync {
     async fn create_transport(
@@ -160,6 +223,16 @@ pub trait TransportUseCase: Send + Sync {
     ) -> Result<RestartIceResult, SfuDomainError>;
 
     fn close_transport(&self, router_id: &str, transport_id: &str) -> Result<(), SfuDomainError>;
+
+    async fn create_plain_transport(
+        &self,
+        params: CreatePlainTransportParams,
+    ) -> Result<CreatePlainTransportResult, SfuDomainError>;
+
+    async fn connect_plain_transport(
+        &self,
+        params: ConnectPlainTransportParams,
+    ) -> Result<(), SfuDomainError>;
 }
 
 #[async_trait]
@@ -183,6 +256,12 @@ pub trait MediaUseCase: Send + Sync {
         layers: ConsumerLayersInfo,
     ) -> Result<(), SfuDomainError>;
 
+    async fn request_key_frame(
+        &self,
+        router_id: &str,
+        consumer_id: &str,
+    ) -> Result<(), SfuDomainError>;
+
     fn close_producer(&self, router_id: &str, producer_id: &str) -> Result<(), SfuDomainError>;
 
     fn close_consumer(&self, router_id: &str, consumer_id: &str) -> Result<(), SfuDomainError>;
@@ -193,6 +272,38 @@ pub trait MediaUseCase: Send + Sync {
         resource_id: &str,
         resource_type: &str,
     ) -> Result<ResourceStatsInfo, SfuDomainError>;
+}
+
+#[async_trait]
+pub trait DataUseCase: Send + Sync {
+    async fn produce_data(
+        &self,
+        params: ProduceDataParams,
+    ) -> Result<ProduceDataResult, SfuDomainError>;
+
+    async fn consume_data(
+        &self,
+        params: ConsumeDataParams,
+    ) -> Result<ConsumeDataResult, SfuDomainError>;
+
+    async fn send_direct_data(
+        &self,
+        router_id: &str,
+        label: &str,
+        protocol: &str,
+        payload: &[u8],
+    ) -> Result<(), SfuDomainError>;
+
+    fn close_data_producer(
+        &self,
+        router_id: &str,
+        data_producer_id: &str,
+    ) -> Result<(), SfuDomainError>;
+    fn close_data_consumer(
+        &self,
+        router_id: &str,
+        data_consumer_id: &str,
+    ) -> Result<(), SfuDomainError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
