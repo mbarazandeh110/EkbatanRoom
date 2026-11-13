@@ -10,7 +10,7 @@ describe("BrowserMediaAdapter", () => {
 
   it("handles AudioContext unlocking", async () => {
     const mockResume = vi.fn().mockResolvedValue(undefined);
-    (window as any).AudioContext = class {
+    (window as unknown as { AudioContext: unknown }).AudioContext = class {
       public state = "suspended";
       public async resume() {
         this.state = "running";
@@ -25,23 +25,24 @@ describe("BrowserMediaAdapter", () => {
 
   it("handles WakeLock request and release", async () => {
     const releaseMock = vi.fn().mockResolvedValue(undefined);
-    (navigator as any).wakeLock = {
-      request: vi.fn().mockResolvedValue({
-        release: releaseMock,
-        addEventListener: vi.fn(),
-      }),
+    const requestMock = vi.fn().mockResolvedValue({
+      release: releaseMock,
+      addEventListener: vi.fn(),
+    });
+    (navigator as unknown as { wakeLock: unknown }).wakeLock = {
+      request: requestMock,
     };
 
     const requested = await adapter.requestWakeLock();
     expect(requested).toBe(true);
-    expect((navigator as any).wakeLock.request).toHaveBeenCalledWith("screen");
+    expect(requestMock).toHaveBeenCalledWith("screen");
 
     await adapter.releaseWakeLock();
     expect(releaseMock).toHaveBeenCalled();
   });
 
   it("enumerates devices from navigator.mediaDevices", async () => {
-    (navigator as any).mediaDevices = {
+    (navigator as unknown as { mediaDevices: unknown }).mediaDevices = {
       enumerateDevices: vi.fn().mockResolvedValue([
         {
           deviceId: "mic-1",

@@ -55,4 +55,36 @@ describe("VideoGrid Component", () => {
     expect(screen.getByTestId("video-tile-local-1")).toBeInTheDocument();
     expect(screen.getByTestId("video-tile-remote-1")).toBeInTheDocument();
   });
+
+  it("renders presentation mode with host lock indicator and watermark", () => {
+    useRoomStore.getState().setLocalParticipantId("local-1");
+    useRoomStore.getState().addRemoteParticipantId("remote-1");
+    useParticipantsStore.getState().upsertParticipant({
+      id: "local-1",
+      identity: "prof-dr",
+      name: "Professor",
+      isLocal: true,
+      role: "host",
+      isSpeaking: false,
+      audioLevel: 0,
+      connectionQuality: "excellent",
+      isMicMuted: false,
+      isCameraMuted: true,
+      isScreenSharing: false,
+      joinedAt: 1,
+    });
+
+    render(
+      <VideoGrid
+        overrideLayoutMode="presentation"
+        isHostSyncLocked={true}
+        watermarkEnabled={true}
+        watermarkUserPhone="+989120000000"
+      />
+    );
+
+    expect(screen.getByText("Host Locked Presentation")).toBeInTheDocument();
+    expect(screen.getByTestId("forensic-watermark")).toBeInTheDocument();
+    expect(screen.getByText(/\+989120000000/)).toBeInTheDocument();
+  });
 });

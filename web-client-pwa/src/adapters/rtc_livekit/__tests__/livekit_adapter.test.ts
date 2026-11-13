@@ -1,12 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { LiveKitEngineAdapter, conformAnswerSdp } from "../livekit_adapter";
 import { EventEmitter } from "events";
-import { VideoQuality, Track } from "livekit-client";
+import { VideoQuality, Track, Room } from "livekit-client";
+
+interface MockLocalParticipant {
+  sid: string;
+  identity: string;
+  name: string;
+  audioLevel: number;
+  isSpeaking: boolean;
+  isMicrophoneEnabled: boolean;
+  isCameraEnabled: boolean;
+  isScreenShareEnabled: boolean;
+  trackPublications: Map<string, unknown>;
+  publishTrack: ReturnType<typeof vi.fn>;
+  unpublishTrack: ReturnType<typeof vi.fn>;
+}
 
 class MockLiveKitRoom extends EventEmitter {
   public state = "disconnected";
   public name = "test-lk-room";
-  public localParticipant: any = null;
+  public localParticipant: MockLocalParticipant;
   public remoteParticipants = new Map();
 
   constructor() {
@@ -34,14 +48,19 @@ class MockLiveKitRoom extends EventEmitter {
             pub.isMuted = false;
           }),
         };
-        this.localParticipant.trackPublications.set(pub.trackSid, pub);
+        (this.localParticipant as { trackPublications: Map<string, unknown> }).trackPublications.set(
+          pub.trackSid,
+          pub
+        );
         return pub;
       }),
       unpublishTrack: vi.fn().mockResolvedValue(undefined),
     };
   }
 
-  public async connect(url: string, token: string) {
+  public async connect(_url?: string, _token?: string) {
+    void _url;
+    void _token;
     this.state = "connected";
     this.emit("connected");
     this.emit("connectionStateChanged", "connected");
@@ -60,7 +79,7 @@ describe("LiveKitEngineAdapter", () => {
 
   beforeEach(() => {
     mockRoom = new MockLiveKitRoom();
-    adapter = new LiveKitEngineAdapter(undefined, () => mockRoom as any);
+    adapter = new LiveKitEngineAdapter(undefined, () => mockRoom as unknown as Room);
   });
 
   it("connects and disconnects mapping room state", async () => {

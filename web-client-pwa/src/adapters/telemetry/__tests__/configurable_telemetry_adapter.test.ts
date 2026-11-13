@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ConfigurableTelemetryAdapter } from "../configurable_telemetry_adapter";
 
 describe("ConfigurableTelemetryAdapter", () => {
-  let consoleLogSpy: any;
-  let consoleWarnSpy: any;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -72,7 +72,7 @@ describe("ConfigurableTelemetryAdapter", () => {
 
     // In trace level, the sanitized labels are logged
     expect(consoleLogSpy).toHaveBeenCalled();
-    const loggedJson = JSON.parse(consoleLogSpy.mock.calls[0][0]);
+    const loggedJson = JSON.parse(String(consoleLogSpy.mock.calls[0][0]));
     expect(loggedJson.labels.region).toBe("eu-west-1");
     expect(loggedJson.labels.codec).toBe("opus");
     expect(loggedJson.labels.room_id).toBeUndefined();
@@ -95,7 +95,7 @@ describe("ConfigurableTelemetryAdapter", () => {
     });
 
     expect(consoleWarnSpy).toHaveBeenCalled();
-    const loggedJson = JSON.parse(consoleWarnSpy.mock.calls[0][0]);
+    const loggedJson = JSON.parse(String(consoleWarnSpy.mock.calls[0][0]));
     expect(loggedJson.event).toBe("qoe_anomaly_detected");
     expect(loggedJson.rttMs).toBe(320);
     expect(loggedJson.packetLossRate).toBe(0.05);

@@ -2,13 +2,9 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { useRoomStore } from "../use_room_store";
 import {
   useParticipantsStore,
-  useParticipant,
-  useParticipantTrack,
 } from "../use_participants_store";
 import {
   useTelemetryStore,
-  useParticipantAudioLevel,
-  useIsParticipantSpeaking,
 } from "../use_telemetry_store";
 import { ParticipantModel } from "../../domain/models/participant";
 import { TrackDescriptor } from "../../domain/models/media";

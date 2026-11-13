@@ -33,10 +33,12 @@ export class MediasoupOrtcEngineAdapter implements RtcEnginePort {
     event: E,
     handler: RtcEngineEvents[E]
   ): void {
-    if (!this.eventListeners[event]) {
-      this.eventListeners[event] = [];
+    const list = this.eventListeners[event];
+    if (!list) {
+      (this.eventListeners as Record<keyof RtcEngineEvents, unknown>)[event] = [handler];
+    } else {
+      (list as Array<RtcEngineEvents[E]>).push(handler);
     }
-    this.eventListeners[event]!.push(handler);
   }
 
   public off<E extends keyof RtcEngineEvents>(
@@ -45,7 +47,8 @@ export class MediasoupOrtcEngineAdapter implements RtcEnginePort {
   ): void {
     const list = this.eventListeners[event];
     if (list) {
-      this.eventListeners[event] = list.filter((h) => h !== handler) as any;
+      (this.eventListeners as Record<keyof RtcEngineEvents, unknown>)[event] =
+        list.filter((h) => h !== handler);
     }
   }
 
@@ -55,7 +58,8 @@ export class MediasoupOrtcEngineAdapter implements RtcEnginePort {
   ): void {
     const handlers = this.eventListeners[event];
     if (handlers) {
-      handlers.forEach((h: any) => h(...args));
+      const typedHandlers = handlers as Array<(...a: Parameters<RtcEngineEvents[E]>) => void>;
+      typedHandlers.forEach((h) => h(...args));
     }
   }
 
@@ -163,5 +167,25 @@ export class MediasoupOrtcEngineAdapter implements RtcEnginePort {
       trackId,
       quality,
     });
+  }
+
+  public async sendData(
+    data: Uint8Array | string,
+    options?: { topic?: string; reliable?: boolean; destinationIdentities?: string[] }
+  ): Promise<void> {
+    this.telemetry?.log("debug", "ortc_datachannel_send", {
+      topic: options?.topic,
+      byteLength: typeof data === "string" ? data.length : data.byteLength,
+    });
+  }
+
+  public async restartIce(): Promise<void> {
+    this.emit("connectionStatusChanged", "reconnecting");
+    this.emit("reconnecting");
+    this.telemetry?.log("info", "ortc_ice_restart_initiated");
+    // Simulate ICE reconnection completing
+    this.status = "connected";
+    this.emit("connectionStatusChanged", "connected");
+    this.emit("reconnected");
   }
 }

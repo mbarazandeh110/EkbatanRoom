@@ -5,8 +5,23 @@ import {
   DeviceNotFoundError,
 } from "../../domain/errors";
 
+interface WakeLockSentinelLike {
+  release: () => Promise<void>;
+  addEventListener: (type: string, listener: () => void) => void;
+}
+
+interface NavigatorWithWakeLock {
+  wakeLock?: {
+    request: (type: string) => Promise<WakeLockSentinelLike>;
+  };
+}
+
+interface WindowWithAudioContext {
+  webkitAudioContext?: typeof AudioContext;
+}
+
 export class BrowserMediaAdapter implements MediaDevicesPort {
-  private activeWakeLock: any = null;
+  private activeWakeLock: WakeLockSentinelLike | null = null;
   private audioContext: AudioContext | null = null;
 
   public async enumerateDevices(): Promise<DeviceInfo[]> {
@@ -64,11 +79,12 @@ export class BrowserMediaAdapter implements MediaDevicesPort {
         audio: audioConstraints,
         video: videoConstraints,
       });
-    } catch (err: any) {
-      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+    } catch (err: unknown) {
+      const errName = err instanceof Error ? err.name : "";
+      if (errName === "NotAllowedError" || errName === "PermissionDeniedError") {
         throw new MediaPermissionError("Permission to access camera or microphone was denied");
       }
-      if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      if (errName === "NotFoundError" || errName === "DevicesNotFoundError") {
         throw new DeviceNotFoundError("Requested camera or microphone device not found");
       }
       throw err;
@@ -87,7 +103,9 @@ export class BrowserMediaAdapter implements MediaDevicesPort {
 
   public async unlockAudioContext(): Promise<boolean> {
     if (typeof window === "undefined") return false;
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as WindowWithAudioContext).webkitAudioContext;
     if (!AudioCtx) return false;
 
     if (!this.audioContext || this.audioContext.state === "closed") {
@@ -110,11 +128,15 @@ export class BrowserMediaAdapter implements MediaDevicesPort {
       return false;
     }
     try {
-      this.activeWakeLock = await (navigator as any).wakeLock.request("screen");
-      this.activeWakeLock.addEventListener("release", () => {
-        this.activeWakeLock = null;
-      });
-      return true;
+      const nav = navigator as unknown as NavigatorWithWakeLock;
+      if (nav.wakeLock?.request) {
+        this.activeWakeLock = await nav.wakeLock.request("screen");
+        this.activeWakeLock.addEventListener("release", () => {
+          this.activeWakeLock = null;
+        });
+        return true;
+      }
+      return false;
     } catch {
       return false;
     }

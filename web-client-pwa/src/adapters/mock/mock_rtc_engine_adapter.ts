@@ -31,10 +31,12 @@ export class MockRtcEngineAdapter implements RtcEnginePort {
     event: E,
     handler: RtcEngineEvents[E]
   ): void {
-    if (!this.eventListeners[event]) {
-      this.eventListeners[event] = [];
+    const list = this.eventListeners[event];
+    if (!list) {
+      (this.eventListeners as Record<keyof RtcEngineEvents, unknown>)[event] = [handler];
+    } else {
+      (list as Array<RtcEngineEvents[E]>).push(handler);
     }
-    this.eventListeners[event]!.push(handler);
   }
 
   public off<E extends keyof RtcEngineEvents>(
@@ -43,7 +45,8 @@ export class MockRtcEngineAdapter implements RtcEnginePort {
   ): void {
     const list = this.eventListeners[event];
     if (list) {
-      this.eventListeners[event] = list.filter((h) => h !== handler) as any;
+      (this.eventListeners as Record<keyof RtcEngineEvents, unknown>)[event] =
+        list.filter((h) => h !== handler);
     }
   }
 
@@ -53,7 +56,8 @@ export class MockRtcEngineAdapter implements RtcEnginePort {
   ): void {
     const handlers = this.eventListeners[event];
     if (handlers) {
-      handlers.forEach((h: any) => h(...args));
+      const typedHandlers = handlers as Array<(...a: Parameters<RtcEngineEvents[E]>) => void>;
+      typedHandlers.forEach((h) => h(...args));
     }
   }
 
@@ -156,6 +160,32 @@ export class MockRtcEngineAdapter implements RtcEnginePort {
     return this.qualityLayers.get(trackId);
   }
 
+  public sentDataPackets: Array<{
+    data: Uint8Array | string;
+    topic?: string;
+    reliable?: boolean;
+    destinationIdentities?: string[];
+  }> = [];
+
+  public async sendData(
+    data: Uint8Array | string,
+    options?: { topic?: string; reliable?: boolean; destinationIdentities?: string[] }
+  ): Promise<void> {
+    this.sentDataPackets.push({
+      data,
+      topic: options?.topic,
+      reliable: options?.reliable,
+      destinationIdentities: options?.destinationIdentities,
+    });
+  }
+
+  public async restartIce(): Promise<void> {
+    this.emit("connectionStatusChanged", "reconnecting");
+    this.emit("reconnecting");
+    this.emit("connectionStatusChanged", "connected");
+    this.emit("reconnected");
+  }
+
   // Simulation helpers for tests
   public simulateRemoteParticipantJoin(participant: ParticipantModel): void {
     this.emit("participantJoined", participant);
@@ -185,5 +215,13 @@ export class MockRtcEngineAdapter implements RtcEnginePort {
     quality: ConnectionQualityLevel
   ): void {
     this.emit("connectionQualityChanged", participantId, quality);
+  }
+
+  public simulateDataReceived(
+    data: Uint8Array | string,
+    participant?: ParticipantModel,
+    topic?: string
+  ): void {
+    this.emit("dataReceived", data, participant, topic);
   }
 }

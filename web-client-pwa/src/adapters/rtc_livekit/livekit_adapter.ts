@@ -5,8 +5,11 @@ import {
   VideoQuality as LkVideoQuality,
   ConnectionState as LkConnectionState,
   Participant as LkParticipant,
+  RemoteParticipant as LkRemoteParticipant,
   RemoteTrackPublication,
-  LocalTrackPublication,
+  TrackPublication as LkTrackPublication,
+  RemoteTrack as LkRemoteTrack,
+  ConnectionQuality as LkConnectionQuality,
 } from "livekit-client";
 import {
   RtcEnginePort,
@@ -150,7 +153,7 @@ function ensurePeerConnectionPatched(lanIp?: string) {
   isPeerConnectionPatched = true;
 
   const origSetRemote = window.RTCPeerConnection.prototype.setRemoteDescription;
-  window.RTCPeerConnection.prototype.setRemoteDescription = async function (desc) {
+  window.RTCPeerConnection.prototype.setRemoteDescription = async function (desc: RTCSessionDescriptionInit) {
     if (desc && desc.sdp) {
       let rewrittenSdp = desc.sdp;
       if (currentTargetLanIp && rewrittenSdp.includes("127.0.0.1")) {
@@ -159,13 +162,13 @@ function ensurePeerConnectionPatched(lanIp?: string) {
       if (desc.type === "answer" && this.localDescription && this.localDescription.sdp) {
         rewrittenSdp = conformAnswerSdp(rewrittenSdp, this.localDescription.sdp);
       }
-      return (origSetRemote as any).call(this, { type: desc.type, sdp: rewrittenSdp });
+      return Reflect.apply(origSetRemote, this, [{ type: desc.type, sdp: rewrittenSdp }]);
     }
-    return (origSetRemote as any).call(this, desc);
+    return Reflect.apply(origSetRemote, this, [desc]);
   };
 
   const origAddIce = window.RTCPeerConnection.prototype.addIceCandidate;
-  window.RTCPeerConnection.prototype.addIceCandidate = async function (cand) {
+  window.RTCPeerConnection.prototype.addIceCandidate = async function (cand?: RTCIceCandidateInit | RTCIceCandidate) {
     if (
       currentTargetLanIp &&
       cand &&
@@ -175,9 +178,9 @@ function ensurePeerConnectionPatched(lanIp?: string) {
       cand.candidate.includes("127.0.0.1")
     ) {
       const rewrittenCand = cand.candidate.replaceAll("127.0.0.1", currentTargetLanIp);
-      return (origAddIce as any).call(this, { ...cand, candidate: rewrittenCand });
+      return Reflect.apply(origAddIce, this, [{ ...cand, candidate: rewrittenCand }]);
     }
-    return (origAddIce as any).call(this, cand);
+    return Reflect.apply(origAddIce, this, [cand]);
   };
 }
 
@@ -202,10 +205,12 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
     event: E,
     handler: RtcEngineEvents[E]
   ): void {
-    if (!this.eventListeners[event]) {
-      this.eventListeners[event] = [];
+    const list = this.eventListeners[event];
+    if (!list) {
+      (this.eventListeners as Record<keyof RtcEngineEvents, unknown>)[event] = [handler];
+    } else {
+      (list as Array<RtcEngineEvents[E]>).push(handler);
     }
-    this.eventListeners[event]!.push(handler);
   }
 
   public off<E extends keyof RtcEngineEvents>(
@@ -214,7 +219,8 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
   ): void {
     const list = this.eventListeners[event];
     if (list) {
-      this.eventListeners[event] = list.filter((h) => h !== handler) as any;
+      (this.eventListeners as Record<keyof RtcEngineEvents, unknown>)[event] =
+        list.filter((h) => h !== handler);
     }
   }
 
@@ -224,7 +230,8 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
   ): void {
     const handlers = this.eventListeners[event];
     if (handlers) {
-      handlers.forEach((h: any) => h(...args));
+      const typedHandlers = handlers as Array<(...a: Parameters<RtcEngineEvents[E]>) => void>;
+      typedHandlers.forEach((h) => h(...args));
     }
   }
 
@@ -485,7 +492,16 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
     if (!this.room) return;
 
     for (const participant of this.room.remoteParticipants.values()) {
-      const pub = participant.getTrackPublication(trackId as any);
+      let pub: RemoteTrackPublication | undefined;
+      if (participant.trackPublications?.values) {
+        pub = Array.from(participant.trackPublications.values()).find(
+          (p) => p.trackSid === trackId || p.track?.sid === trackId
+        ) as RemoteTrackPublication | undefined;
+      }
+      if (!pub && typeof participant.getTrackPublication === "function") {
+        const lookup = (participant.getTrackPublication as unknown as (id: string) => RemoteTrackPublication | undefined)(trackId);
+        if (lookup) pub = lookup;
+      }
       if (pub instanceof RemoteTrackPublication) {
         pub.setEnabled(enabled);
         return;
@@ -501,7 +517,16 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
 
     const lkQuality = this.mapVideoQuality(quality);
     for (const participant of this.room.remoteParticipants.values()) {
-      const pub = participant.getTrackPublication(trackId as any);
+      let pub: RemoteTrackPublication | undefined;
+      if (participant.trackPublications?.values) {
+        pub = Array.from(participant.trackPublications.values()).find(
+          (p) => p.trackSid === trackId || p.track?.sid === trackId
+        ) as RemoteTrackPublication | undefined;
+      }
+      if (!pub && typeof participant.getTrackPublication === "function") {
+        const lookup = (participant.getTrackPublication as unknown as (id: string) => RemoteTrackPublication | undefined)(trackId);
+        if (lookup) pub = lookup;
+      }
       if (pub instanceof RemoteTrackPublication) {
         pub.setVideoQuality(lkQuality);
         return;
@@ -509,10 +534,52 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
     }
   }
 
+  public async sendData(
+    data: Uint8Array | string,
+    options?: { topic?: string; reliable?: boolean; destinationIdentities?: string[] }
+  ): Promise<void> {
+    if (!this.room || !this.room.localParticipant) {
+      throw new Error("Cannot send data: Room not connected");
+    }
+    const payload = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    await this.room.localParticipant.publishData(payload, {
+      reliable: options?.reliable ?? true,
+      destinationIdentities: options?.destinationIdentities,
+      topic: options?.topic,
+    });
+  }
+
+  public async restartIce(): Promise<void> {
+    if (!this.room) return;
+    this.telemetry?.log("info", "livekit_ice_restart_requested");
+    const roomWithReconnect = this.room as unknown as { reconnect?: () => Promise<void> };
+    if (typeof roomWithReconnect.reconnect === "function") {
+      await roomWithReconnect.reconnect();
+    }
+  }
+
   private bindRoomEvents(room: Room): void {
     room.on(RoomEvent.ConnectionStateChanged, (state: LkConnectionState) => {
       this.emit("connectionStatusChanged", this.mapConnectionState(state));
     });
+
+    room.on(RoomEvent.Reconnecting, () => {
+      this.emit("connectionStatusChanged", "reconnecting");
+      this.emit("reconnecting");
+    });
+
+    room.on(RoomEvent.Reconnected, () => {
+      this.emit("connectionStatusChanged", "connected");
+      this.emit("reconnected");
+    });
+
+    room.on(
+      RoomEvent.DataReceived,
+      (payload: Uint8Array, participant?: LkRemoteParticipant, _kind?: unknown, topic?: string) => {
+        const pModel = participant ? this.mapParticipant(participant) : undefined;
+        this.emit("dataReceived", payload, pModel, topic);
+      }
+    );
 
     room.on(RoomEvent.ParticipantConnected, (p: LkParticipant) => {
       this.emit("participantJoined", this.mapParticipant(p));
@@ -524,8 +591,8 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
 
     room.on(
       RoomEvent.TrackSubscribed,
-      (track: any, pub: RemoteTrackPublication, participant: LkParticipant) => {
-        if (track && (track.kind === "audio" || track.kind === LkTrack.Kind.Audio)) {
+      (track: LkRemoteTrack, pub: RemoteTrackPublication, participant: LkRemoteParticipant) => {
+        if (track && ((track.kind as string) === "audio" || (track.kind as string) === LkTrack.Kind.Audio)) {
           try {
             const el = track.attach();
             if (el) {
@@ -541,7 +608,7 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
         }
 
         const descriptor: TrackDescriptor = {
-          id: pub.trackSid || track.sid,
+          id: pub.trackSid || track.sid || "",
           kind: track.kind as TrackKind,
           source: this.mapTrackSource(pub.source),
           participantId: participant.sid || participant.identity,
@@ -555,8 +622,8 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
 
     room.on(
       RoomEvent.TrackUnsubscribed,
-      (track: any, pub: RemoteTrackPublication, participant: LkParticipant) => {
-        if (track && (track.kind === "audio" || track.kind === LkTrack.Kind.Audio)) {
+      (track: LkRemoteTrack, pub: RemoteTrackPublication, participant: LkRemoteParticipant) => {
+        if (track && ((track.kind as string) === "audio" || (track.kind as string) === LkTrack.Kind.Audio)) {
           try {
             const detached = track.detach();
             const elements = Array.isArray(detached) ? detached : detached ? [detached] : [];
@@ -566,14 +633,14 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
                 el.remove();
               }
             }
-          } catch (err) {
+          } catch {
             // ignore
           }
         }
 
         this.emit(
           "trackUnsubscribed",
-          pub.trackSid || track.sid,
+          pub.trackSid || track.sid || "",
           participant.sid || participant.identity
         );
       }
@@ -581,10 +648,10 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
 
     room.on(
       RoomEvent.TrackMuted,
-      (pub: any, participant: LkParticipant) => {
+      (pub: LkTrackPublication, participant: LkParticipant) => {
         this.emit(
           "trackMutedChanged",
-          pub.trackSid || pub.track?.sid,
+          pub.trackSid || pub.track?.sid || "",
           participant.sid || participant.identity,
           true
         );
@@ -593,10 +660,10 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
 
     room.on(
       RoomEvent.TrackUnmuted,
-      (pub: any, participant: LkParticipant) => {
+      (pub: LkTrackPublication, participant: LkParticipant) => {
         this.emit(
           "trackMutedChanged",
-          pub.trackSid || pub.track?.sid,
+          pub.trackSid || pub.track?.sid || "",
           participant.sid || participant.identity,
           false
         );
@@ -613,7 +680,7 @@ export class LiveKitEngineAdapter implements RtcEnginePort {
 
     room.on(
       RoomEvent.ConnectionQualityChanged,
-      (quality: any, participant: LkParticipant) => {
+      (quality: LkConnectionQuality, participant: LkParticipant) => {
         let qLevel: ConnectionQualityLevel = "good";
         const qStr = quality?.toString().toLowerCase();
         if (qStr === "excellent") qLevel = "excellent";

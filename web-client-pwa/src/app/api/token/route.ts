@@ -107,13 +107,13 @@ export async function POST(request: Request) {
         },
       }
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
     const errorEntry = {
       timestamp: new Date().toISOString(),
       level: "error",
       event: "token_issuance_failed",
       requestId,
-      error: err?.message || String(err),
+      error: err instanceof Error ? err.message : String(err),
     };
     console.error(JSON.stringify(errorEntry));
 

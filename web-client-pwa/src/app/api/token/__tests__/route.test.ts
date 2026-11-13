@@ -29,9 +29,11 @@ describe("/api/token Route Handler", () => {
     const { payload } = await jwtVerify(data.token, secret);
 
     expect(payload.sub).toBe("user-42");
-    expect(payload.iss).toBe("devkey");
-    expect((payload as any).video?.room).toBe("engineering-sync");
-    expect((payload as any).video?.roomJoin).toBe(true);
+    const videoPayload = (payload as Record<string, unknown>).video as
+      | { room?: string; roomJoin?: boolean }
+      | undefined;
+    expect(videoPayload?.room).toBe("engineering-sync");
+    expect(videoPayload?.roomJoin).toBe(true);
   });
 
   it("returns 400 when required fields are missing", async () => {

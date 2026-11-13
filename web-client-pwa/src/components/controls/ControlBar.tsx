@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import {
   Mic,
   MicOff,
@@ -12,6 +12,10 @@ import {
   Maximize2,
   PhoneOff,
   Wifi,
+  Sparkles,
+  Wand2,
+  Disc,
+  Hand,
 } from "lucide-react";
 import { useRoomStore } from "../../store/use_room_store";
 import { useParticipantsStore } from "../../store/use_participants_store";
@@ -22,6 +26,14 @@ export interface ControlBarProps {
   onLeave?: () => void;
   onToggleScreenShare?: () => void;
   isScreenSharing?: boolean;
+  onToggleNoiseSuppression?: () => void;
+  isNoiseSuppressionEnabled?: boolean;
+  onToggleVirtualBackground?: () => void;
+  isVirtualBackgroundEnabled?: boolean;
+  onToggleRecording?: () => void;
+  isRecording?: boolean;
+  onRaiseHand?: () => void;
+  isHandRaised?: boolean;
 }
 
 export const ControlBar: React.FC<ControlBarProps> = ({
@@ -29,6 +41,14 @@ export const ControlBar: React.FC<ControlBarProps> = ({
   onLeave,
   onToggleScreenShare,
   isScreenSharing = false,
+  onToggleNoiseSuppression,
+  isNoiseSuppressionEnabled = false,
+  onToggleVirtualBackground,
+  isVirtualBackgroundEnabled = false,
+  onToggleRecording,
+  isRecording = false,
+  onRaiseHand,
+  isHandRaised = false,
 }) => {
   const localParticipantId = useRoomStore((state) => state.localParticipantId);
   const layoutMode = useRoomStore((state) => state.layoutMode);
@@ -43,19 +63,19 @@ export const ControlBar: React.FC<ControlBarProps> = ({
   const isMicMuted = localParticipant?.isMicMuted ?? false;
   const isCameraMuted = localParticipant?.isCameraMuted ?? false;
 
-  const toggleMic = async () => {
+  const toggleMic = useCallback(async () => {
     try {
       const next = await controller.toggleTrackMute("microphone");
       setAnnouncement(next ? "Microphone muted" : "Microphone unmuted");
     } catch {}
-  };
+  }, [controller]);
 
-  const toggleCamera = async () => {
+  const toggleCamera = useCallback(async () => {
     try {
       const next = await controller.toggleTrackMute("camera");
       setAnnouncement(next ? "Camera turned off" : "Camera turned on");
     } catch {}
-  };
+  }, [controller]);
 
   const toggleLayout = () => {
     const nextMode = layoutMode === "grid" ? "speaker" : "grid";
@@ -81,12 +101,17 @@ export const ControlBar: React.FC<ControlBarProps> = ({
       } else if (e.key === "v" || e.key === "V") {
         e.preventDefault();
         toggleCamera();
+      } else if (e.key === "h" || e.key === "H") {
+        if (onRaiseHand) {
+          e.preventDefault();
+          onRaiseHand();
+        }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [toggleMic, toggleCamera]);
+  }, [toggleMic, toggleCamera, onRaiseHand]);
 
   return (
     <footer
@@ -107,7 +132,7 @@ export const ControlBar: React.FC<ControlBarProps> = ({
       </div>
 
       {/* Center Controls */}
-      <div className="flex items-center space-x-2 sm:space-x-4 mx-auto sm:mx-0">
+      <div className="flex items-center space-x-2 sm:space-x-3 mx-auto sm:mx-0 flex-wrap justify-center">
         {/* Microphone Toggle */}
         <button
           type="button"
@@ -160,6 +185,74 @@ export const ControlBar: React.FC<ControlBarProps> = ({
             ) : (
               <Monitor className="w-5 h-5" />
             )}
+          </button>
+        )}
+
+        {/* Noise Suppression Toggle */}
+        {onToggleNoiseSuppression && (
+          <button
+            type="button"
+            onClick={onToggleNoiseSuppression}
+            aria-label={isNoiseSuppressionEnabled ? "Disable noise suppression" : "Enable noise suppression"}
+            aria-pressed={isNoiseSuppressionEnabled}
+            className={`p-3 rounded-full transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
+              isNoiseSuppressionEnabled
+                ? "bg-teal-600 text-white shadow-lg shadow-teal-500/30"
+                : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white border border-slate-700"
+            }`}
+          >
+            <Sparkles className="w-5 h-5" />
+          </button>
+        )}
+
+        {/* Virtual Background Toggle */}
+        {onToggleVirtualBackground && (
+          <button
+            type="button"
+            onClick={onToggleVirtualBackground}
+            aria-label={isVirtualBackgroundEnabled ? "Disable virtual background blur" : "Enable virtual background blur"}
+            aria-pressed={isVirtualBackgroundEnabled}
+            className={`p-3 rounded-full transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
+              isVirtualBackgroundEnabled
+                ? "bg-purple-600 text-white shadow-lg shadow-purple-500/30"
+                : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white border border-slate-700"
+            }`}
+          >
+            <Wand2 className="w-5 h-5" />
+          </button>
+        )}
+
+        {/* Raise Hand Toggle */}
+        {onRaiseHand && (
+          <button
+            type="button"
+            onClick={onRaiseHand}
+            aria-label={isHandRaised ? "Lower hand (h)" : "Raise hand (h)"}
+            aria-pressed={isHandRaised}
+            className={`p-3 rounded-full transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
+              isHandRaised
+                ? "bg-amber-600 text-white shadow-lg shadow-amber-500/30 animate-pulse"
+                : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white border border-slate-700"
+            }`}
+          >
+            <Hand className="w-5 h-5" />
+          </button>
+        )}
+
+        {/* Recording Toggle */}
+        {onToggleRecording && (
+          <button
+            type="button"
+            onClick={onToggleRecording}
+            aria-label={isRecording ? "Stop recording" : "Start local recording"}
+            aria-pressed={isRecording}
+            className={`p-3 rounded-full transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 ${
+              isRecording
+                ? "bg-red-600 text-white shadow-lg shadow-red-500/30 animate-pulse"
+                : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white border border-slate-700"
+            }`}
+          >
+            <Disc className="w-5 h-5" />
           </button>
         )}
 

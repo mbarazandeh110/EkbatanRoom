@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { RoomSessionController } from "../room_session_controller";
 import { MockRtcEngineAdapter } from "../../adapters/mock/mock_rtc_engine_adapter";
 import { useRoomStore } from "../../store/use_room_store";

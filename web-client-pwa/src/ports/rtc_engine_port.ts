@@ -32,12 +32,23 @@ export interface PublishTrackOptions {
   source: TrackSource;
 }
 
+export interface DataSendOptions {
+  topic?: string;
+  reliable?: boolean;
+  destinationIdentities?: string[];
+}
+
+export interface RtcDataChannelPort {
+  sendData(data: Uint8Array | string, options?: DataSendOptions): Promise<void>;
+}
+
 export interface RtcConnectionPort {
   connect(options: ConnectOptions): Promise<void>;
   disconnect(): Promise<void>;
   getConnectionStatus(): ConnectionStatus;
   getRoomId(): string;
   getLocalParticipant(): ParticipantModel | null;
+  restartIce?(): Promise<void>;
 }
 
 export interface LocalMediaControlPort {
@@ -67,6 +78,9 @@ export interface RtcEngineEvents {
   activeSpeakersChanged: (speakers: ActiveSpeakerInfo[]) => void;
   connectionQualityChanged: (participantId: string, quality: ConnectionQualityLevel) => void;
   audioLevelsChanged: (levels: Record<string, number>) => void;
+  dataReceived: (data: Uint8Array | string, participant?: ParticipantModel, topic?: string) => void;
+  reconnecting: () => void;
+  reconnected: () => void;
 }
 
 export interface RtcEventsPort {
@@ -82,4 +96,5 @@ export interface RtcEnginePort
   extends RtcConnectionPort,
     LocalMediaControlPort,
     RemoteSubscriptionPort,
+    RtcDataChannelPort,
     RtcEventsPort {}

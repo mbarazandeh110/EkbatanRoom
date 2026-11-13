@@ -1,6 +1,6 @@
 import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { ControlBar } from "../ControlBar";
 import { useRoomStore } from "../../../store/use_room_store";
 import { useParticipantsStore } from "../../../store/use_participants_store";

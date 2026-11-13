@@ -6,7 +6,7 @@ import { MediaDevicesPort } from "../../../ports/media_devices_port";
 
 describe("PreJoinLobby Component", () => {
   let mockMediaDevices: MediaDevicesPort;
-  let mockOnJoin: any;
+  let mockOnJoin: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     mockMediaDevices = {
