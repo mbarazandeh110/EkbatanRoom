@@ -14,6 +14,43 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Clone)]
+enum AnyDataTransport {
+    WebRtc(WebRtcTransport),
+    Plain(mediasoup::plain_transport::PlainTransport),
+}
+
+impl AnyDataTransport {
+    async fn produce_data(&self, options: DataProducerOptions) -> Result<DataProducer, String> {
+        match self {
+            Self::WebRtc(t) => t.produce_data(options).await.map_err(|e| e.to_string()),
+            Self::Plain(t) => t.produce_data(options).await.map_err(|e| e.to_string()),
+        }
+    }
+
+    async fn consume_data(&self, options: DataConsumerOptions) -> Result<DataConsumer, String> {
+        match self {
+            Self::WebRtc(t) => t.consume_data(options).await.map_err(|e| e.to_string()),
+            Self::Plain(t) => t.consume_data(options).await.map_err(|e| e.to_string()),
+        }
+    }
+
+    fn is_active_in_state(&self, state: &EngineState, transport_id: &str) -> bool {
+        match self {
+            Self::WebRtc(_) => state
+                .transports
+                .get(transport_id)
+                .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                .unwrap_or(false),
+            Self::Plain(_) => state
+                .plain_transports
+                .get(transport_id)
+                .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                .unwrap_or(false),
+        }
+    }
+}
+
 pub struct DataService {
     _config: Config,
     state: EngineState,
@@ -55,6 +92,52 @@ impl DataService {
         for handle in &self.cleanup_handles {
             handle.abort();
         }
+    }
+
+    fn resolve_data_transport(
+        &self,
+        router_id: &str,
+        transport_id: &str,
+    ) -> Result<(AnyDataTransport, String, usize), SfuDomainError> {
+        if let Some(t_item) = self.state.transports.get(transport_id) {
+            if t_item.is_closed.load(Ordering::SeqCst) {
+                return Err(SfuDomainError::NotFound(format!(
+                    "Transport '{transport_id}' is closed"
+                )));
+            }
+            if t_item.router_id != router_id {
+                return Err(SfuDomainError::NotFound(format!(
+                    "Transport '{transport_id}' does not belong to router '{router_id}'"
+                )));
+            }
+            return Ok((
+                AnyDataTransport::WebRtc(t_item.transport.clone()),
+                t_item.physical_router_id.clone(),
+                t_item.worker_index,
+            ));
+        }
+
+        if let Some(pt_item) = self.state.plain_transports.get(transport_id) {
+            if pt_item.is_closed.load(Ordering::SeqCst) {
+                return Err(SfuDomainError::NotFound(format!(
+                    "PlainTransport '{transport_id}' is closed"
+                )));
+            }
+            if pt_item.router_id != router_id {
+                return Err(SfuDomainError::NotFound(format!(
+                    "PlainTransport '{transport_id}' does not belong to router '{router_id}'"
+                )));
+            }
+            return Ok((
+                AnyDataTransport::Plain(pt_item.transport.clone()),
+                pt_item.router_id.clone(),
+                pt_item.worker_index,
+            ));
+        }
+
+        Err(SfuDomainError::NotFound(format!(
+            "Transport '{transport_id}' not found"
+        )))
     }
 }
 
@@ -115,34 +198,8 @@ impl DataUseCase for DataService {
                         .unwrap_or(false)
                 },
                 || async {
-                    let transport = {
-                        let t_item =
-                            self.state
-                                .transports
-                                .get(&params.transport_id)
-                                .ok_or_else(|| {
-                                    SfuDomainError::NotFound(format!(
-                                        "Transport '{}' not found",
-                                        params.transport_id
-                                    ))
-                                })?;
-
-                        if t_item.is_closed.load(Ordering::SeqCst) {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Transport '{}' is closed",
-                                params.transport_id
-                            )));
-                        }
-
-                        if t_item.router_id != params.router_id {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Transport '{}' does not belong to router '{}'",
-                                params.transport_id, params.router_id
-                            )));
-                        }
-
-                        t_item.transport.clone()
-                    };
+                    let (transport, physical_router_id, worker_index) =
+                        self.resolve_data_transport(&params.router_id, &params.transport_id)?;
 
                     let sctp_params: Option<SctpStreamParameters> =
                         if !params.sctp_stream_parameters_json.trim().is_empty() {
@@ -174,6 +231,22 @@ impl DataUseCase for DataService {
                         SfuDomainError::Mediasoup(format!("Failed to produce data: {e}"))
                     })?;
 
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(data_producer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during produce_data",
+                            params.router_id
+                        )));
+                    }
+
+                    if !transport.is_active_in_state(&self.state, &params.transport_id) {
+                        drop(data_producer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Transport '{}' was closed during produce_data",
+                            params.transport_id
+                        )));
+                    }
+
                     let data_producer_id = data_producer.id().to_string();
                     let sctp_json = data_producer
                         .sctp_stream_parameters()
@@ -183,6 +256,8 @@ impl DataUseCase for DataService {
                     let item = DataProducerItem {
                         data_producer,
                         router_id: params.router_id.clone(),
+                        physical_router_id,
+                        worker_index,
                         transport_id: params.transport_id.clone(),
                         peer_id: params.peer_id.clone(),
                         label: params.label.clone(),
@@ -262,66 +337,35 @@ impl DataUseCase for DataService {
                         .unwrap_or(false)
                 },
                 || async {
-                    let (transport, sub_physical_router_id, sub_worker_index) = {
-                        let t_item =
-                            self.state
-                                .transports
-                                .get(&params.transport_id)
-                                .ok_or_else(|| {
-                                    SfuDomainError::NotFound(format!(
-                                        "Transport '{}' not found",
-                                        params.transport_id
-                                    ))
-                                })?;
+                    let (transport, sub_physical_router_id, sub_worker_index) =
+                        self.resolve_data_transport(&params.router_id, &params.transport_id)?;
 
-                        if t_item.is_closed.load(Ordering::SeqCst) {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Transport '{}' is closed",
-                                params.transport_id
-                            )));
-                        }
+                    let (label, protocol, pub_physical_router_id, pub_worker_index) = {
+                        let data_producer_item = self
+                            .state
+                            .data_producers
+                            .get(&(params.router_id.clone(), params.data_producer_id.clone()))
+                            .ok_or_else(|| {
+                                SfuDomainError::NotFound(format!(
+                                    "DataProducer '{}' not found",
+                                    params.data_producer_id
+                                ))
+                            })?;
 
-                        if t_item.router_id != params.router_id {
+                        if data_producer_item.is_closed.load(Ordering::SeqCst) {
                             return Err(SfuDomainError::NotFound(format!(
-                                "Transport '{}' does not belong to router '{}'",
-                                params.transport_id, params.router_id
+                                "DataProducer '{}' is closed",
+                                params.data_producer_id
                             )));
                         }
 
                         (
-                            t_item.transport.clone(),
-                            t_item.physical_router_id.clone(),
-                            t_item.worker_index,
+                            data_producer_item.label.clone(),
+                            data_producer_item.protocol.clone(),
+                            data_producer_item.physical_router_id.clone(),
+                            data_producer_item.worker_index,
                         )
                     };
-
-                    let data_producer_item = self
-                        .state
-                        .data_producers
-                        .get(&(params.router_id.clone(), params.data_producer_id.clone()))
-                        .ok_or_else(|| {
-                            SfuDomainError::NotFound(format!(
-                                "DataProducer '{}' not found",
-                                params.data_producer_id
-                            ))
-                        })?;
-
-                    if data_producer_item.is_closed.load(Ordering::SeqCst) {
-                        return Err(SfuDomainError::NotFound(format!(
-                            "DataProducer '{}' is closed",
-                            params.data_producer_id
-                        )));
-                    }
-
-                    let label = data_producer_item.label.clone();
-                    let protocol = data_producer_item.protocol.clone();
-
-                    // If producer and subscriber live on different physical routers, pipe data producer
-                    let pub_transport = self.state.transports.get(&data_producer_item.transport_id);
-                    let pub_physical_router_id = pub_transport
-                        .as_ref()
-                        .map(|t| t.physical_router_id.clone())
-                        .unwrap_or_else(|| params.router_id.clone());
 
                     let data_prod_id: DataProducerId =
                         params.data_producer_id.parse().map_err(|e| {
@@ -331,18 +375,91 @@ impl DataUseCase for DataService {
                         })?;
 
                     if pub_physical_router_id != sub_physical_router_id {
-                        if let Some(r_item) = self.state.routers.get(&params.router_id) {
-                            if let Some(sub_r) = r_item.sub_routers.get(&sub_worker_index) {
-                                let _ = r_item
-                                    .router
-                                    .pipe_data_producer_to_router(
-                                        data_prod_id,
-                                        mediasoup::router::PipeToRouterOptions::new(
-                                            sub_r.router.clone(),
-                                        ),
-                                    )
-                                    .await;
-                            }
+                        let already_piped = self
+                            .state
+                            .piped_data_producers
+                            .get(&params.data_producer_id)
+                            .map(|entries| {
+                                entries.iter().any(|e| {
+                                    e.router_id == params.router_id
+                                        && e.target_router_id == sub_physical_router_id
+                                })
+                            })
+                            .unwrap_or(false);
+
+                        if !already_piped {
+                            let (pub_router, sub_router) = {
+                                let r_item =
+                                    self.state.routers.get(&params.router_id).ok_or_else(|| {
+                                        SfuDomainError::NotFound(format!(
+                                            "Router '{}' not found",
+                                            params.router_id
+                                        ))
+                                    })?;
+
+                                if r_item.is_closed.load(Ordering::SeqCst) {
+                                    return Err(SfuDomainError::NotFound(format!(
+                                        "Router '{}' is closed",
+                                        params.router_id
+                                    )));
+                                }
+
+                                let pub_r = if pub_worker_index == r_item.worker_index {
+                                    r_item.router.clone()
+                                } else {
+                                    r_item
+                                        .sub_routers
+                                        .get(&pub_worker_index)
+                                        .map(|s| s.router.clone())
+                                        .ok_or_else(|| {
+                                            SfuDomainError::NotFound(format!(
+                                                "Sub-router on worker {pub_worker_index} not found"
+                                            ))
+                                        })?
+                                };
+
+                                let sub_r = if sub_worker_index == r_item.worker_index {
+                                    r_item.router.clone()
+                                } else {
+                                    r_item
+                                        .sub_routers
+                                        .get(&sub_worker_index)
+                                        .map(|s| s.router.clone())
+                                        .ok_or_else(|| {
+                                            SfuDomainError::NotFound(format!(
+                                                "Sub-router on worker {sub_worker_index} not found"
+                                            ))
+                                        })?
+                                };
+
+                                (pub_r, sub_r)
+                            };
+
+                            let pipe_pair = pub_router
+                                .pipe_data_producer_to_router(
+                                    data_prod_id,
+                                    mediasoup::router::PipeToRouterOptions::new(sub_router),
+                                )
+                                .await
+                                .map_err(|e| {
+                                    SfuDomainError::Mediasoup(format!(
+                                        "Failed to pipe data producer to router: {e}"
+                                    ))
+                                })?;
+
+                            let pipe_producer = pipe_pair.pipe_data_producer.into_inner();
+                            let entry = crate::application::state::PipedDataProducerEntry {
+                                router_id: params.router_id.clone(),
+                                pipe_data_consumer: pipe_pair.pipe_data_consumer,
+                                pipe_data_producer: pipe_producer,
+                                target_router_id: sub_physical_router_id.clone(),
+                            };
+
+                            self.state
+                                .piped_data_producers
+                                .entry(params.data_producer_id.clone())
+                                .or_default()
+                                .push(entry);
                         }
                     }
 
@@ -350,6 +467,22 @@ impl DataUseCase for DataService {
                     let data_consumer = transport.consume_data(options).await.map_err(|e| {
                         SfuDomainError::Mediasoup(format!("Failed to consume data: {e}"))
                     })?;
+
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(data_consumer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during consume_data",
+                            params.router_id
+                        )));
+                    }
+
+                    if !transport.is_active_in_state(&self.state, &params.transport_id) {
+                        drop(data_consumer);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Transport '{}' was closed during consume_data",
+                            params.transport_id
+                        )));
+                    }
 
                     let data_consumer_id = data_consumer.id().to_string();
                     let sctp_json = data_consumer
@@ -413,22 +546,24 @@ impl DataUseCase for DataService {
         }
         validation::validate_not_empty("router_id", router_id)?;
 
-        let r_item =
-            self.state.routers.get(router_id).ok_or_else(|| {
+        let router = {
+            let r_item = self.state.routers.get(router_id).ok_or_else(|| {
                 SfuDomainError::NotFound(format!("Router '{router_id}' not found"))
             })?;
 
-        if r_item.is_closed.load(Ordering::SeqCst) {
-            return Err(SfuDomainError::NotFound(format!(
-                "Router '{router_id}' is closed"
-            )));
-        }
+            if r_item.is_closed.load(Ordering::SeqCst) {
+                return Err(SfuDomainError::NotFound(format!(
+                    "Router '{router_id}' is closed"
+                )));
+            }
+
+            r_item.router.clone()
+        };
 
         let direct_transport = match self.state.direct_transports.get(router_id) {
             Some(dt) => dt.clone(),
             None => {
-                let dt = r_item
-                    .router
+                let dt = router
                     .create_direct_transport(DirectTransportOptions::default())
                     .await
                     .map_err(|e| {
@@ -441,40 +576,54 @@ impl DataUseCase for DataService {
             }
         };
 
-        // Create a direct producer to send server-injected message into room in RAM
-        let mut prod_opts = DataProducerOptions::new_direct();
-        if !label.is_empty() {
-            prod_opts.label = label.to_string();
-        }
-        if !protocol.is_empty() {
-            prod_opts.protocol = protocol.to_string();
-        }
+        let key = (
+            router_id.to_string(),
+            label.to_string(),
+            protocol.to_string(),
+        );
 
-        let direct_producer = direct_transport
-            .produce_data(prod_opts)
-            .await
+        let direct_producer = match self.state.direct_data_producers.get(&key) {
+            Some(dp) => dp.clone(),
+            None => {
+                let mut prod_opts = DataProducerOptions::new_direct();
+                if !label.is_empty() {
+                    prod_opts.label = label.to_string();
+                }
+                if !protocol.is_empty() {
+                    prod_opts.protocol = protocol.to_string();
+                }
+
+                let dp_generic = direct_transport
+                    .produce_data(prod_opts)
+                    .await
+                    .map_err(|e| {
+                        SfuDomainError::Mediasoup(format!("Failed to produce direct data: {e}"))
+                    })?;
+
+                let dp = match dp_generic {
+                    DataProducer::Direct(dp) => dp,
+                    _ => {
+                        return Err(SfuDomainError::Internal(
+                            "Expected DirectDataProducer".to_string(),
+                        ));
+                    }
+                };
+
+                self.state.direct_data_producers.insert(key, dp.clone());
+                dp
+            }
+        };
+
+        direct_producer
+            .send(
+                WebRtcMessage::Binary(payload.to_vec().into()),
+                None,
+                None,
+                None,
+            )
             .map_err(|e| {
-                SfuDomainError::Mediasoup(format!("Failed to produce direct data: {e}"))
+                SfuDomainError::Mediasoup(format!("Failed to send direct message: {e}"))
             })?;
-
-        match &direct_producer {
-            DataProducer::Direct(dp) => {
-                dp.send(
-                    WebRtcMessage::Binary(payload.to_vec().into()),
-                    None,
-                    None,
-                    None,
-                )
-                .map_err(|e| {
-                    SfuDomainError::Mediasoup(format!("Failed to send direct message: {e}"))
-                })?;
-            }
-            _ => {
-                return Err(SfuDomainError::Internal(
-                    "Expected DirectDataProducer".to_string(),
-                ));
-            }
-        }
 
         Ok(())
     }
@@ -497,6 +646,7 @@ impl DataUseCase for DataService {
             {
                 set.remove(data_producer_id);
             }
+            self.state.piped_data_producers.remove(data_producer_id);
             self.event_publisher.publish_resource_closed(
                 router_id,
                 "data_producer",

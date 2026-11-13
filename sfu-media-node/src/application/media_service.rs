@@ -18,6 +18,43 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Clone)]
+enum AnyMediaTransport {
+    WebRtc(WebRtcTransport),
+    Plain(mediasoup::plain_transport::PlainTransport),
+}
+
+impl AnyMediaTransport {
+    async fn produce(&self, options: ProducerOptions) -> Result<Producer, String> {
+        match self {
+            Self::WebRtc(t) => t.produce(options).await.map_err(|e| e.to_string()),
+            Self::Plain(t) => t.produce(options).await.map_err(|e| e.to_string()),
+        }
+    }
+
+    async fn consume(&self, options: ConsumerOptions) -> Result<Consumer, String> {
+        match self {
+            Self::WebRtc(t) => t.consume(options).await.map_err(|e| e.to_string()),
+            Self::Plain(t) => t.consume(options).await.map_err(|e| e.to_string()),
+        }
+    }
+
+    fn is_active_in_state(&self, state: &EngineState, transport_id: &str) -> bool {
+        match self {
+            Self::WebRtc(_) => state
+                .transports
+                .get(transport_id)
+                .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                .unwrap_or(false),
+            Self::Plain(_) => state
+                .plain_transports
+                .get(transport_id)
+                .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                .unwrap_or(false),
+        }
+    }
+}
+
 pub struct MediaService {
     config: Config,
     state: EngineState,
@@ -70,6 +107,54 @@ impl MediaService {
             self.worker_pool
                 .sub_resource_score(piped_entry.target_worker_index, 1);
         }
+    }
+
+    fn resolve_media_transport(
+        &self,
+        router_id: &str,
+        transport_id: &str,
+    ) -> Result<(AnyMediaTransport, String, String, usize), SfuDomainError> {
+        if let Some(t_item) = self.state.transports.get(transport_id) {
+            if t_item.is_closed.load(Ordering::SeqCst) {
+                return Err(SfuDomainError::NotFound(format!(
+                    "Transport '{transport_id}' is closed"
+                )));
+            }
+            if t_item.router_id != router_id {
+                return Err(SfuDomainError::NotFound(format!(
+                    "Transport '{transport_id}' does not belong to router '{router_id}'"
+                )));
+            }
+            return Ok((
+                AnyMediaTransport::WebRtc(t_item.transport.clone()),
+                t_item.peer_id.clone(),
+                t_item.physical_router_id.clone(),
+                t_item.worker_index,
+            ));
+        }
+
+        if let Some(pt_item) = self.state.plain_transports.get(transport_id) {
+            if pt_item.is_closed.load(Ordering::SeqCst) {
+                return Err(SfuDomainError::NotFound(format!(
+                    "PlainTransport '{transport_id}' is closed"
+                )));
+            }
+            if pt_item.router_id != router_id {
+                return Err(SfuDomainError::NotFound(format!(
+                    "PlainTransport '{transport_id}' does not belong to router '{router_id}'"
+                )));
+            }
+            return Ok((
+                AnyMediaTransport::Plain(pt_item.transport.clone()),
+                "plain-transport".to_string(),
+                pt_item.router_id.clone(),
+                pt_item.worker_index,
+            ));
+        }
+
+        Err(SfuDomainError::NotFound(format!(
+            "Transport '{transport_id}' not found"
+        )))
     }
 }
 
@@ -145,39 +230,9 @@ impl MediaUseCase for MediaService {
                         .unwrap_or(false)
                 },
                 || async {
-                    // Extract transport, check router ownership, and DROP guard before .await (Deadlock fix)
-                    let (transport, physical_router_id, worker_index) = {
-                        let t_item =
-                            self.state
-                                .transports
-                                .get(&params.transport_id)
-                                .ok_or_else(|| {
-                                    SfuDomainError::NotFound(format!(
-                                        "Transport '{}' not found",
-                                        params.transport_id
-                                    ))
-                                })?;
-
-                        if t_item.is_closed.load(Ordering::SeqCst) {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Transport '{}' is closed",
-                                params.transport_id
-                            )));
-                        }
-
-                        if t_item.router_id != params.router_id {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Transport '{}' does not belong to router '{}'",
-                                params.transport_id, params.router_id
-                            )));
-                        }
-
-                        (
-                            t_item.transport.clone(),
-                            t_item.physical_router_id.clone(),
-                            t_item.worker_index,
-                        )
-                    };
+                    // Resolve transport (WebRtc or Plain), check router ownership, and DROP guard before .await
+                    let (transport, _transport_peer_id, physical_router_id, worker_index) =
+                        self.resolve_media_transport(&params.router_id, &params.transport_id)?;
 
                     let ms_kind = to_mediasoup_kind(params.kind);
 
@@ -208,12 +263,8 @@ impl MediaUseCase for MediaService {
                         )));
                     }
 
-                    let transport_active = self
-                        .state
-                        .transports
-                        .get(&params.transport_id)
-                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
-                        .unwrap_or(false);
+                    let transport_active =
+                        transport.is_active_in_state(&self.state, &params.transport_id);
                     if !transport_active {
                         drop(producer);
                         return Err(SfuDomainError::NotFound(format!(
@@ -306,25 +357,6 @@ impl MediaUseCase for MediaService {
                                 );
                             }
                         }
-
-                        if let Some(aso) =
-                            self.state.active_speaker_observers.get(&params.router_id)
-                        {
-                            use mediasoup::rtp_observer::{
-                                RtpObserver, RtpObserverAddProducerOptions,
-                            };
-                            if let Err(e) = aso
-                                .add_producer(RtpObserverAddProducerOptions::new(producer.id()))
-                                .await
-                            {
-                                tracing::warn!(
-                                    router_id = %params.router_id,
-                                    producer_id = %producer_id,
-                                    error = %e,
-                                    "Failed to add audio producer to ActiveSpeakerObserver"
-                                );
-                            }
-                        }
                     }
 
                     // Verify router and transport are still active after all .await points
@@ -336,12 +368,8 @@ impl MediaUseCase for MediaService {
                         )));
                     }
 
-                    let transport_active = self
-                        .state
-                        .transports
-                        .get(&params.transport_id)
-                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
-                        .unwrap_or(false);
+                    let transport_active =
+                        transport.is_active_in_state(&self.state, &params.transport_id);
                     if !transport_active {
                         drop(producer);
                         return Err(SfuDomainError::NotFound(format!(
@@ -476,39 +504,8 @@ impl MediaUseCase for MediaService {
                         )
                     };
 
-                    let (transport, peer_id, sub_physical_router_id, sub_worker_index) = {
-                        let t_item = self
-                            .state
-                            .transports
-                            .get(&params.subscriber_transport_id)
-                            .ok_or_else(|| {
-                                SfuDomainError::NotFound(format!(
-                                    "Transport '{}' not found",
-                                    params.subscriber_transport_id
-                                ))
-                            })?;
-
-                        if t_item.is_closed.load(Ordering::SeqCst) {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Transport '{}' is closed",
-                                params.subscriber_transport_id
-                            )));
-                        }
-
-                        if t_item.router_id != params.router_id {
-                            return Err(SfuDomainError::NotFound(format!(
-                                "Transport '{}' does not belong to router '{}'",
-                                params.subscriber_transport_id, params.router_id
-                            )));
-                        }
-
-                        (
-                            t_item.transport.clone(),
-                            t_item.peer_id.clone(),
-                            t_item.physical_router_id.clone(),
-                            t_item.worker_index,
-                        )
-                    };
+                    let (transport, peer_id, sub_physical_router_id, sub_worker_index) =
+                        self.resolve_media_transport(&params.router_id, &params.subscriber_transport_id)?;
                     tracing::Span::current().record("peer_id", peer_id.as_str());
 
                     // Enforce max consumers per worker license and config quota
@@ -528,14 +525,7 @@ impl MediaUseCase for MediaService {
                     };
 
                     if let Some(max_c) = effective_max_consumers {
-                        let current_consumers_on_worker = self
-                            .state
-                            .consumers
-                            .iter()
-                            .filter(|c| {
-                                c.worker_index == sub_worker_index && !c.is_closed.load(Ordering::SeqCst)
-                            })
-                            .count();
+                        let current_consumers_on_worker = self.state.get_worker_consumers(sub_worker_index);
 
                         if current_consumers_on_worker >= max_c {
                             return Err(SfuDomainError::ResourceExhausted(format!(
@@ -998,17 +988,18 @@ impl MediaUseCase for MediaService {
                         let retry_attempts: usize = std::env::var("SFU_KEYFRAME_RETRY_COUNT")
                             .ok()
                             .and_then(|v| v.trim().parse().ok())
-                            .unwrap_or(10);
+                            .unwrap_or(3);
 
                         tokio::spawn(async move {
                             for attempt in 1..=retry_attempts {
-                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                tokio::time::sleep(Duration::from_millis(1500)).await;
 
                                 let Some(retry_consumer) = retry_weak_consumer.upgrade() else {
                                     break;
                                 };
 
                                 if retry_consumer.closed()
+                                    || retry_consumer.paused()
                                     || retry_is_closed.load(Ordering::SeqCst)
                                     || !retry_state.is_router_active(&retry_router_id)
                                 {
@@ -1050,12 +1041,8 @@ impl MediaUseCase for MediaService {
                         )));
                     }
 
-                    let transport_active = self
-                        .state
-                        .transports
-                        .get(&params.subscriber_transport_id)
-                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
-                        .unwrap_or(false);
+                    let transport_active =
+                        transport.is_active_in_state(&self.state, &params.subscriber_transport_id);
                     if !transport_active {
                         drop(consumer);
                         drop(_in_flight_guard);
@@ -1102,6 +1089,7 @@ impl MediaUseCase for MediaService {
                     };
 
                     self.state.consumers.insert(consumer_id.clone(), item);
+                    self.state.inc_worker_consumers(sub_worker_index);
                     if let Some(set) = self
                         .state
                         .transport_consumers
@@ -1664,6 +1652,7 @@ impl MediaUseCase for MediaService {
             "transport" => {
                 enum TargetTransport {
                     WebRtc(mediasoup::webrtc_transport::WebRtcTransport),
+                    Plain(mediasoup::plain_transport::PlainTransport),
                     Pipe(mediasoup::pipe_transport::PipeTransport),
                 }
 
@@ -1684,6 +1673,23 @@ impl MediaUseCase for MediaService {
                         (
                             TargetTransport::WebRtc(t_item.transport.clone()),
                             t_item.peer_id.clone(),
+                        )
+                    } else if let Some(pt_item) = self.state.plain_transports.get(resource_id) {
+                        if pt_item.is_closed.load(Ordering::SeqCst) {
+                            return Err(SfuDomainError::NotFound(format!(
+                                "Transport '{resource_id}' is closed"
+                            )));
+                        }
+
+                        if pt_item.router_id != router_id {
+                            return Err(SfuDomainError::NotFound(format!(
+                                "Transport '{resource_id}' does not belong to router '{router_id}'"
+                            )));
+                        }
+
+                        (
+                            TargetTransport::Plain(pt_item.transport.clone()),
+                            "plain-transport".to_string(),
                         )
                     } else if let Some(p_item) = self.state.pipe_transports.get(resource_id) {
                         if p_item.is_closed.load(Ordering::SeqCst) {
@@ -1743,6 +1749,30 @@ impl MediaUseCase for MediaService {
                 let (stats_json, bytes_sent, bytes_received, p_stats_list, c_stats_list) =
                     match target_transport {
                         TargetTransport::WebRtc(transport) => {
+                            let (transport_stats_res, p_stats_list, c_stats_list) = tokio::join!(
+                                transport.get_stats(),
+                                futures_util::future::join_all(producer_futs),
+                                futures_util::future::join_all(consumer_futs),
+                            );
+
+                            let stats = transport_stats_res
+                                .map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
+
+                            let stats_json = serde_json::to_string(&stats)
+                                .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
+
+                            let bytes_sent = stats.iter().map(|s| s.bytes_sent).sum();
+                            let bytes_received = stats.iter().map(|s| s.bytes_received).sum();
+
+                            (
+                                stats_json,
+                                bytes_sent,
+                                bytes_received,
+                                p_stats_list,
+                                c_stats_list,
+                            )
+                        }
+                        TargetTransport::Plain(transport) => {
                             let (transport_stats_res, p_stats_list, c_stats_list) = tokio::join!(
                                 transport.get_stats(),
                                 futures_util::future::join_all(producer_futs),

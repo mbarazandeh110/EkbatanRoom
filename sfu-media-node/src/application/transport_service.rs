@@ -26,6 +26,7 @@ pub struct TransportService {
     event_publisher: Arc<dyn EventPublisherPort>,
     metrics: Arc<dyn MetricsPort>,
     create_transport_cache: Arc<IdempotencyCache<CreateTransportResult>>,
+    create_plain_transport_cache: Arc<IdempotencyCache<CreatePlainTransportResult>>,
     cleanup_handles: Vec<tokio::task::AbortHandle>,
 }
 
@@ -40,6 +41,10 @@ impl TransportService {
         let create_transport_cache = Arc::new(IdempotencyCache::default());
         let cleanup_task = create_transport_cache.start_periodic_cleanup(Duration::from_secs(30));
 
+        let create_plain_transport_cache = Arc::new(IdempotencyCache::default());
+        let plain_cleanup_task =
+            create_plain_transport_cache.start_periodic_cleanup(Duration::from_secs(30));
+
         Self {
             config,
             state,
@@ -47,7 +52,11 @@ impl TransportService {
             event_publisher,
             metrics,
             create_transport_cache,
-            cleanup_handles: vec![cleanup_task.abort_handle()],
+            create_plain_transport_cache,
+            cleanup_handles: vec![
+                cleanup_task.abort_handle(),
+                plain_cleanup_task.abort_handle(),
+            ],
         }
     }
 
@@ -331,10 +340,12 @@ impl TransportUseCase for TransportService {
                             tracing::warn!(transport_id = %transport.id(), "Failed to set max_incoming_bitrate: {e}");
                         }
                     }
-                    let min_bitrate = self.config.webrtc_transport.min_outgoing_bitrate.unwrap_or(600_000);
-                    if min_bitrate > 0 {
-                        if let Err(e) = transport.set_min_outgoing_bitrate(min_bitrate).await {
-                            tracing::warn!(transport_id = %transport.id(), "Failed to set min_outgoing_bitrate: {e}");
+                    // Apply min_outgoing_bitrate ONLY when explicitly configured (> 0) so BWE can adapt down on weak links
+                    if let Some(min_bitrate) = self.config.webrtc_transport.min_outgoing_bitrate {
+                        if min_bitrate > 0 {
+                            if let Err(e) = transport.set_min_outgoing_bitrate(min_bitrate).await {
+                                tracing::warn!(transport_id = %transport.id(), "Failed to set min_outgoing_bitrate: {e}");
+                            }
                         }
                     }
                     if let Some(bitrate) = self.config.webrtc_transport.max_outgoing_bitrate {
@@ -802,71 +813,134 @@ impl TransportUseCase for TransportService {
         validation::validate_not_empty("request_id", &params.request_id)?;
         validation::validate_not_empty("router_id", &params.router_id)?;
 
-        let r_item = self.state.routers.get(&params.router_id).ok_or_else(|| {
-            SfuDomainError::NotFound(format!("Router '{}' not found", params.router_id))
-        })?;
+        let payload_bytes = format!(
+            "{}:{}:{}:{}:{}:{:?}",
+            params.request_id,
+            params.router_id,
+            params.rtcp_mux,
+            params.comedia,
+            params.enable_sctp,
+            params.listening_ip
+        )
+        .into_bytes();
 
-        if r_item.is_closed.load(Ordering::SeqCst) {
-            return Err(SfuDomainError::NotFound(format!(
-                "Router '{}' is closed",
-                params.router_id
-            )));
-        }
+        let metrics_ref = self.metrics.clone();
+        let state_for_valid = self.state.clone();
 
-        let listen_ip = match params.listening_ip {
-            Some(ip_str) => ip_str
-                .parse::<std::net::IpAddr>()
-                .map_err(|e| SfuDomainError::InvalidArgument(e.to_string()))?,
-            None => self.config.listen_ip,
-        };
+        self.create_plain_transport_cache
+            .execute_or_get_validated(
+                &params.request_id,
+                &payload_bytes,
+                move |cached: &CreatePlainTransportResult| {
+                    state_for_valid
+                        .plain_transports
+                        .get(&cached.transport_id)
+                        .map(|t| !t.is_closed.load(Ordering::SeqCst))
+                        .unwrap_or(false)
+                },
+                || async {
+                    // Extract router and worker_index, and DROP DashMap guard before .await
+                    let (router, worker_index) = {
+                        let r_item =
+                            self.state.routers.get(&params.router_id).ok_or_else(|| {
+                                SfuDomainError::NotFound(format!(
+                                    "Router '{}' not found",
+                                    params.router_id
+                                ))
+                            })?;
 
-        let mut listen_info = self
-            .config
-            .create_listen_info(mediasoup::prelude::Protocol::Udp);
-        listen_info.ip = listen_ip;
-        let mut options = mediasoup::plain_transport::PlainTransportOptions::new(listen_info);
-        options.rtcp_mux = params.rtcp_mux;
-        options.comedia = params.comedia;
-        options.enable_sctp = params.enable_sctp;
+                        if r_item.is_closed.load(Ordering::SeqCst) {
+                            return Err(SfuDomainError::NotFound(format!(
+                                "Router '{}' is closed",
+                                params.router_id
+                            )));
+                        }
 
-        let plain_transport = r_item
-            .router
-            .create_plain_transport(options)
+                        (r_item.router.clone(), r_item.worker_index)
+                    };
+
+                    let listen_ip = match params.listening_ip {
+                        Some(ref ip_str) => ip_str
+                            .parse::<std::net::IpAddr>()
+                            .map_err(|e| SfuDomainError::InvalidArgument(e.to_string()))?,
+                        None => self.config.listen_ip,
+                    };
+
+                    let mut listen_info = self
+                        .config
+                        .create_listen_info(mediasoup::prelude::Protocol::Udp);
+                    listen_info.ip = listen_ip;
+
+                    let mut options =
+                        mediasoup::plain_transport::PlainTransportOptions::new(listen_info);
+                    options.rtcp_mux = params.rtcp_mux;
+                    options.comedia = params.comedia;
+                    options.enable_sctp = params.enable_sctp;
+                    options.max_send_message_size =
+                        self.config.plain_transport.max_send_message_size;
+                    options.max_receive_message_size =
+                        self.config.plain_transport.max_receive_message_size;
+                    options.sctp_send_buffer_size =
+                        self.config.plain_transport.sctp_send_buffer_size;
+
+                    let plain_transport =
+                        router.create_plain_transport(options).await.map_err(|e| {
+                            SfuDomainError::Mediasoup(format!(
+                                "Failed to create PlainTransport: {e}"
+                            ))
+                        })?;
+
+                    if !self.state.is_router_active(&params.router_id) {
+                        drop(plain_transport);
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Router '{}' was closed during PlainTransport creation",
+                            params.router_id
+                        )));
+                    }
+
+                    let transport_id = plain_transport.id().to_string();
+                    let ip = plain_transport.tuple().local_address().to_string();
+                    let port = plain_transport.tuple().local_port() as u32;
+                    let rtcp_port = plain_transport
+                        .rtcp_tuple()
+                        .map(|t| t.local_port() as u32)
+                        .unwrap_or(0);
+
+                    let item = crate::application::state::PlainTransportItem {
+                        transport: plain_transport,
+                        router_id: params.router_id.clone(),
+                        worker_index,
+                        is_closed: Arc::new(AtomicBool::new(false)),
+                    };
+
+                    self.state
+                        .plain_transports
+                        .insert(transport_id.clone(), item);
+                    self.state
+                        .router_plain_transports
+                        .entry(params.router_id.clone())
+                        .or_default()
+                        .insert(transport_id.clone());
+                    self.state
+                        .transport_producers
+                        .insert(transport_id.clone(), DashSet::new());
+                    self.state
+                        .transport_consumers
+                        .insert(transport_id.clone(), DashSet::new());
+                    self.worker_pool.add_resource_score(worker_index, 1);
+
+                    Ok(CreatePlainTransportResult {
+                        transport_id,
+                        ip,
+                        port,
+                        rtcp_port,
+                    })
+                },
+                move || {
+                    metrics_ref.record_idempotency_hit();
+                },
+            )
             .await
-            .map_err(|e| {
-                SfuDomainError::Mediasoup(format!("Failed to create PlainTransport: {e}"))
-            })?;
-
-        let transport_id = plain_transport.id().to_string();
-        let ip = plain_transport.tuple().local_address().clone();
-        let port = plain_transport.tuple().local_port() as u32;
-        let rtcp_port = plain_transport
-            .rtcp_tuple()
-            .map(|t| t.local_port() as u32)
-            .unwrap_or(0);
-
-        let item = crate::application::state::PlainTransportItem {
-            transport: plain_transport,
-            router_id: params.router_id.clone(),
-            worker_index: r_item.worker_index,
-            is_closed: Arc::new(AtomicBool::new(false)),
-        };
-
-        self.state
-            .plain_transports
-            .insert(transport_id.clone(), item);
-        self.state
-            .router_plain_transports
-            .entry(params.router_id.clone())
-            .or_default()
-            .insert(transport_id.clone());
-
-        Ok(CreatePlainTransportResult {
-            transport_id,
-            ip,
-            port,
-            rtcp_port,
-        })
     }
 
     #[tracing::instrument(
@@ -889,23 +963,35 @@ impl TransportUseCase for TransportService {
         validation::validate_not_empty("transport_id", &params.transport_id)?;
         validation::validate_not_empty("remote_ip", &params.remote_ip)?;
 
-        let pt_item = self
-            .state
-            .plain_transports
-            .get(&params.transport_id)
-            .ok_or_else(|| {
-                SfuDomainError::NotFound(format!(
-                    "PlainTransport '{}' not found",
-                    params.transport_id
-                ))
-            })?;
+        // Extract PlainTransport and DROP DashMap guard before .await
+        let transport = {
+            let pt_item = self
+                .state
+                .plain_transports
+                .get(&params.transport_id)
+                .ok_or_else(|| {
+                    SfuDomainError::NotFound(format!(
+                        "PlainTransport '{}' not found",
+                        params.transport_id
+                    ))
+                })?;
 
-        if pt_item.is_closed.load(Ordering::SeqCst) {
-            return Err(SfuDomainError::NotFound(format!(
-                "PlainTransport '{}' is closed",
-                params.transport_id
-            )));
-        }
+            if pt_item.is_closed.load(Ordering::SeqCst) {
+                return Err(SfuDomainError::NotFound(format!(
+                    "PlainTransport '{}' is closed",
+                    params.transport_id
+                )));
+            }
+
+            if pt_item.router_id != params.router_id {
+                return Err(SfuDomainError::NotFound(format!(
+                    "PlainTransport '{}' does not belong to router '{}'",
+                    params.transport_id, params.router_id
+                )));
+            }
+
+            pt_item.transport.clone()
+        };
 
         let remote_ip = params
             .remote_ip
@@ -919,13 +1005,9 @@ impl TransportUseCase for TransportService {
             srtp_parameters: None,
         };
 
-        pt_item
-            .transport
-            .connect(remote_params)
-            .await
-            .map_err(|e| {
-                SfuDomainError::Mediasoup(format!("Failed to connect PlainTransport: {e}"))
-            })?;
+        transport.connect(remote_params).await.map_err(|e| {
+            SfuDomainError::Mediasoup(format!("Failed to connect PlainTransport: {e}"))
+        })?;
 
         Ok(())
     }
@@ -1020,6 +1102,40 @@ pub(crate) fn cascade_close_producers_and_consumers(
                     router_id,
                     "consumer",
                     &cid,
+                    "cascade_closed",
+                );
+            }
+        }
+    }
+
+    // Cascade close DataProducers on this transport
+    if let Some((_, dp_ids)) = state.transport_data_producers.remove(transport_id) {
+        for dpid in dp_ids {
+            if let Some((_, dp)) = state
+                .data_producers
+                .remove(&(router_id.to_string(), dpid.clone()))
+            {
+                dp.is_closed.store(true, Ordering::SeqCst);
+                state.piped_data_producers.remove(&dpid);
+                event_publisher.publish_resource_closed(
+                    router_id,
+                    "data_producer",
+                    &dpid,
+                    "cascade_closed",
+                );
+            }
+        }
+    }
+
+    // Cascade close DataConsumers on this transport
+    if let Some((_, dc_ids)) = state.transport_data_consumers.remove(transport_id) {
+        for dcid in dc_ids {
+            if let Some((_, dc)) = state.data_consumers.remove(&dcid) {
+                dc.is_closed.store(true, Ordering::SeqCst);
+                event_publisher.publish_resource_closed(
+                    router_id,
+                    "data_consumer",
+                    &dcid,
                     "cascade_closed",
                 );
             }

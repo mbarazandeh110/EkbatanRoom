@@ -1037,3 +1037,332 @@ async fn test_all_workers_dead_transitions_node_to_draining() {
 
     let _ = node.shutdown(Duration::from_secs(1)).await;
 }
+
+/// Verify PlainTransport supports produce, consume, and get_stats
+#[tokio::test]
+async fn test_plain_transport_produce_consume_and_stats() {
+    let node = Arc::new(MediaNode::new(test_config(1)).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-plain-media".to_string(),
+            room_id: "room-plain-media".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 1. Create Ingress PlainTransport
+    let pub_pt = service
+        .create_plain_transport(Request::new(proto::CreatePlainTransportRequest {
+            request_id: "req-pt-pub".to_string(),
+            router_id: r_resp.router_id.clone(),
+            rtcp_mux: true,
+            comedia: false,
+            enable_sctp: false,
+            listening_ip: "127.0.0.1".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    service
+        .connect_plain_transport(Request::new(proto::ConnectPlainTransportRequest {
+            router_id: r_resp.router_id.clone(),
+            transport_id: pub_pt.transport_id.clone(),
+            remote_ip: "127.0.0.1".to_string(),
+            remote_port: 5006,
+            remote_rtcp_port: 0,
+        }))
+        .await
+        .unwrap();
+
+    // 2. Produce on PlainTransport
+    let opus_params = r#"{
+        "mid": "0",
+        "codecs": [{
+            "mimeType": "audio/opus",
+            "payloadType": 111,
+            "clockRate": 48000,
+            "channels": 2,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": [],
+        "encodings": [{ "ssrc": 99887766 }],
+        "rtcp": { "cname": "plain-ingress", "reducedSize": true }
+    }"#;
+
+    let prod = service
+        .produce(Request::new(proto::ProduceRequest {
+            request_id: "req-prod-plain".to_string(),
+            router_id: r_resp.router_id.clone(),
+            transport_id: pub_pt.transport_id.clone(),
+            peer_id: "plain-producer".to_string(),
+            kind: "audio".to_string(),
+            rtp_parameters_json: opus_params.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!prod.producer_id.is_empty());
+    assert!(node
+        .state
+        .transport_producers
+        .get(&pub_pt.transport_id)
+        .unwrap()
+        .contains(&prod.producer_id));
+
+    // 3. Create Egress PlainTransport
+    let sub_pt = service
+        .create_plain_transport(Request::new(proto::CreatePlainTransportRequest {
+            request_id: "req-pt-sub".to_string(),
+            router_id: r_resp.router_id.clone(),
+            rtcp_mux: true,
+            comedia: false,
+            enable_sctp: false,
+            listening_ip: "127.0.0.1".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    service
+        .connect_plain_transport(Request::new(proto::ConnectPlainTransportRequest {
+            router_id: r_resp.router_id.clone(),
+            transport_id: sub_pt.transport_id.clone(),
+            remote_ip: "127.0.0.1".to_string(),
+            remote_port: 5008,
+            remote_rtcp_port: 0,
+        }))
+        .await
+        .unwrap();
+
+    let opus_caps = r#"{
+        "codecs": [{
+            "mimeType": "audio/opus",
+            "kind": "audio",
+            "preferredPayloadType": 111,
+            "clockRate": 48000,
+            "channels": 2,
+            "parameters": {},
+            "rtcpFeedback": []
+        }],
+        "headerExtensions": []
+    }"#;
+
+    // 4. Consume on Egress PlainTransport
+    let cons = service
+        .consume(Request::new(proto::ConsumeRequest {
+            request_id: "req-cons-plain".to_string(),
+            router_id: r_resp.router_id.clone(),
+            subscriber_transport_id: sub_pt.transport_id.clone(),
+            producer_id: prod.producer_id.clone(),
+            rtp_capabilities_json: opus_caps.to_string(),
+            paused: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!cons.consumer_id.is_empty());
+    assert!(node
+        .state
+        .transport_consumers
+        .get(&sub_pt.transport_id)
+        .unwrap()
+        .contains(&cons.consumer_id));
+
+    // 5. GetStats for PlainTransports
+    let stats_pub = service
+        .get_stats(Request::new(proto::GetStatsRequest {
+            router_id: r_resp.router_id.clone(),
+            resource_type: proto::ResourceType::Transport as i32,
+            resource_id: pub_pt.transport_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!stats_pub.stats_json.is_empty());
+
+    let stats_sub = service
+        .get_stats(Request::new(proto::GetStatsRequest {
+            router_id: r_resp.router_id.clone(),
+            resource_type: proto::ResourceType::Transport as i32,
+            resource_id: sub_pt.transport_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!stats_sub.stats_json.is_empty());
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}
+
+/// Verify multi-worker DataChannel piping and pipe pair retention
+#[tokio::test]
+async fn test_multi_worker_data_producer_piping_and_cleanup() {
+    let node = Arc::new(MediaNode::new(test_config(2)).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-multi-data".to_string(),
+            room_id: "room-multi-data".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Publisher on worker 0
+    let p_pub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-t-pub-data".to_string(),
+            router_id: r.router_id.clone(),
+            peer_id: "peer-pub-data".to_string(),
+            is_publisher: true,
+            enable_sctp: true,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Force spillover to worker 1 for subscriber
+    node.worker_pool.add_resource_score(0, 10);
+
+    let p_sub = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-t-sub-data".to_string(),
+            router_id: r.router_id.clone(),
+            peer_id: "peer-sub-data".to_string(),
+            is_publisher: false,
+            enable_sctp: true,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sub_item = node.state.transports.get(&p_sub.transport_id).unwrap();
+    assert_eq!(sub_item.worker_index, 1);
+    drop(sub_item);
+
+    // Produce data on publisher
+    let prod_data = service
+        .produce_data(Request::new(proto::ProduceDataRequest {
+            request_id: "req-pdata-1".to_string(),
+            router_id: r.router_id.clone(),
+            transport_id: p_pub.transport_id.clone(),
+            peer_id: "peer-pub-data".to_string(),
+            label: "chat".to_string(),
+            protocol: "json".to_string(),
+            sctp_stream_parameters_json: r#"{"streamId": 1, "ordered": true}"#.to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!prod_data.data_producer_id.is_empty());
+
+    // Consume data on subscriber on worker 1 (triggers pipe_data_producer_to_router)
+    let cons_data = service
+        .consume_data(Request::new(proto::ConsumeDataRequest {
+            request_id: "req-cdata-1".to_string(),
+            router_id: r.router_id.clone(),
+            transport_id: p_sub.transport_id.clone(),
+            data_producer_id: prod_data.data_producer_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(!cons_data.data_consumer_id.is_empty());
+
+    // Verify pipe exists in piped_data_producers
+    let piped_exists = node
+        .state
+        .piped_data_producers
+        .contains_key(&prod_data.data_producer_id);
+    assert!(
+        piped_exists,
+        "piped_data_producers must retain the piped pair!"
+    );
+
+    // Close data producer
+    service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r.router_id.clone(),
+            resource_type: proto::ResourceType::DataProducer as i32,
+            resource_id: prod_data.data_producer_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+    // Verify piped_data_producers was cleaned up
+    assert!(
+        !node
+            .state
+            .piped_data_producers
+            .contains_key(&prod_data.data_producer_id),
+        "piped_data_producers must be cleaned up on DataProducer close!"
+    );
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}
+
+/// Verify DirectDataProducer caching and reuse across multiple send_direct_data calls
+#[tokio::test]
+async fn test_direct_data_producer_persistence_and_reuse() {
+    let node = Arc::new(MediaNode::new(test_config(1)).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-direct-data".to_string(),
+            room_id: "room-direct-data".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 1st Send
+    let res1 = service
+        .send_direct_data(Request::new(proto::SendDirectDataRequest {
+            router_id: r.router_id.clone(),
+            label: "server-announcement".to_string(),
+            protocol: "utf-8".to_string(),
+            payload: b"Hello room 1".to_vec(),
+        }))
+        .await;
+    assert!(res1.is_ok());
+
+    let key = (
+        r.router_id.clone(),
+        "server-announcement".to_string(),
+        "utf-8".to_string(),
+    );
+    assert!(
+        node.state.direct_data_producers.contains_key(&key),
+        "DirectDataProducer must be cached in state!"
+    );
+
+    // 2nd Send (reuses cached DirectDataProducer)
+    let res2 = service
+        .send_direct_data(Request::new(proto::SendDirectDataRequest {
+            router_id: r.router_id.clone(),
+            label: "server-announcement".to_string(),
+            protocol: "utf-8".to_string(),
+            payload: b"Hello room 2".to_vec(),
+        }))
+        .await;
+    assert!(res2.is_ok());
+
+    // Still exactly 1 entry in cache
+    assert_eq!(node.state.direct_data_producers.len(), 1);
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}

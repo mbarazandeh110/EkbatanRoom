@@ -26,14 +26,18 @@ pub fn standard_media_codecs() -> Vec<RtpCodecCapability> {
 pub fn router_codecs_from_config(config: &MediasoupRouterCodecsConfig) -> Vec<RtpCodecCapability> {
     let mut codecs = Vec::new();
 
-    // Audio: Opus
+    // Audio: Opus (with in-band FEC and minptime=10ms for packet-loss resilience and low latency)
     if config.enable_opus {
+        let mut opus_params = RtpCodecParametersParameters::default();
+        opus_params.insert("minptime", 10u32);
+        opus_params.insert("useinbandfec", 1u32);
+
         codecs.push(RtpCodecCapability::Audio {
             mime_type: MimeTypeAudio::Opus,
             preferred_payload_type: None,
             clock_rate: CLOCK_RATE_48K,
             channels: CHANNELS_OPUS,
-            parameters: RtpCodecParametersParameters::default(),
+            parameters: opus_params,
             rtcp_feedback: vec![RtcpFeedback::Nack, RtcpFeedback::TransportCc],
         });
     }
@@ -62,7 +66,7 @@ pub fn router_codecs_from_config(config: &MediasoupRouterCodecsConfig) -> Vec<Rt
         });
     }
 
-    // Video: VP9
+    // Video: VP9 (Profile 0 for standard WebRTC camera & screen-share SVC compatibility)
     if config.enable_vp9 {
         codecs.push(RtpCodecCapability::Video {
             mime_type: MimeTypeVideo::Vp9,
@@ -70,7 +74,7 @@ pub fn router_codecs_from_config(config: &MediasoupRouterCodecsConfig) -> Vec<Rt
             clock_rate: CLOCK_RATE_90K,
             parameters: {
                 let mut params = RtpCodecParametersParameters::default();
-                params.insert("profile-id", 2u32);
+                params.insert("profile-id", 0u32);
                 if config.google_start_bitrate > 0 {
                     params.insert("x-google-start-bitrate", config.google_start_bitrate);
                     params.insert("x-google-min-bitrate", 300u32);

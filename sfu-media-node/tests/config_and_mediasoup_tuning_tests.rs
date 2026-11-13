@@ -222,3 +222,39 @@ license:
         Err(sfu_media_node::config::ConfigError::FileReadError { .. })
     ));
 }
+
+#[tokio::test]
+async fn test_load_config_production_yaml_file() {
+    let yaml_path = std::path::Path::new("config.production.yaml");
+    assert!(
+        yaml_path.exists(),
+        "config.production.yaml must exist in repo root"
+    );
+
+    let config = Config::try_from_file(yaml_path).expect("Failed to parse config.production.yaml");
+    assert_eq!(config.port_range(), 40000..=49999);
+    assert_eq!(config.grpc_port, 50051);
+    assert_eq!(
+        config.webrtc_transport.initial_available_outgoing_bitrate,
+        2_500_000
+    );
+    assert_eq!(
+        config.webrtc_transport.max_incoming_bitrate,
+        Some(10_000_000)
+    );
+    assert_eq!(config.webrtc_transport.min_outgoing_bitrate, Some(0));
+    assert_eq!(
+        config.webrtc_transport.max_outgoing_bitrate,
+        Some(20_000_000)
+    );
+    assert_eq!(config.webrtc_transport.send_buffer_size, Some(4_194_304));
+    assert_eq!(config.webrtc_transport.recv_buffer_size, Some(4_194_304));
+    assert_eq!(config.worker_spillover_threshold_percent, 75.0);
+    assert_eq!(config.audio_level_observer.interval_ms, 400);
+    assert!(config.router_codecs.enable_opus);
+    assert!(config.router_codecs.enable_vp8);
+    assert!(config.router_codecs.enable_h264);
+    assert!(config.router_codecs.enable_vp9);
+    assert_eq!(config.router_codecs.google_start_bitrate, 1500);
+    assert!(config.observability.metrics_enabled);
+}

@@ -56,6 +56,8 @@ pub struct PlainTransportItem {
 pub struct DataProducerItem {
     pub data_producer: mediasoup::data_producer::DataProducer,
     pub router_id: String,
+    pub physical_router_id: String,
+    pub worker_index: usize,
     pub transport_id: String,
     pub peer_id: String,
     pub label: String,
@@ -72,6 +74,14 @@ pub struct DataConsumerItem {
     pub label: String,
     pub protocol: String,
     pub is_closed: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+pub struct PipedDataProducerEntry {
+    pub router_id: String,
+    pub pipe_data_consumer: mediasoup::data_consumer::DataConsumer,
+    pub pipe_data_producer: mediasoup::data_producer::DataProducer,
+    pub target_router_id: String,
 }
 
 #[derive(Clone)]
@@ -165,6 +175,8 @@ pub struct EngineState {
     pub pipe_transports: Arc<DashMap<String, PipeTransportItem>>,
     pub plain_transports: Arc<DashMap<String, PlainTransportItem>>,
     pub direct_transports: Arc<DashMap<String, mediasoup::direct_transport::DirectTransport>>,
+    pub direct_data_producers:
+        Arc<DashMap<(String, String, String), mediasoup::data_producer::DirectDataProducer>>,
     pub active_speaker_observers:
         Arc<DashMap<String, mediasoup::active_speaker_observer::ActiveSpeakerObserver>>,
     pub router_transports: Arc<DashMap<String, DashSet<String>>>,
@@ -174,11 +186,13 @@ pub struct EngineState {
     pub transport_producers: Arc<DashMap<String, DashSet<String>>>,
     pub producer_consumers: Arc<DashMap<String, DashSet<String>>>,
     pub consumers: Arc<DashMap<String, ConsumerItem>>,
+    pub worker_consumer_counts: Arc<DashMap<usize, AtomicUsize>>,
     pub transport_consumers: Arc<DashMap<String, DashSet<String>>>,
     pub data_producers: Arc<DashMap<(String, String), DataProducerItem>>,
     pub data_consumers: Arc<DashMap<String, DataConsumerItem>>,
     pub transport_data_producers: Arc<DashMap<String, DashSet<String>>>,
     pub transport_data_consumers: Arc<DashMap<String, DashSet<String>>>,
+    pub piped_data_producers: Arc<DashMap<String, Vec<PipedDataProducerEntry>>>,
     pub peer_worker_affinity: Arc<DashMap<(String, String), usize>>,
     pub piped_producers: Arc<DashMap<String, Vec<PipedProducerEntry>>>,
     pub dynacast_tracker: Arc<crate::domain::dynacast::DynacastTracker>,
@@ -203,6 +217,7 @@ impl Default for EngineState {
             pipe_transports: Arc::new(DashMap::new()),
             plain_transports: Arc::new(DashMap::new()),
             direct_transports: Arc::new(DashMap::new()),
+            direct_data_producers: Arc::new(DashMap::new()),
             active_speaker_observers: Arc::new(DashMap::new()),
             router_transports: Arc::new(DashMap::new()),
             router_pipe_transports: Arc::new(DashMap::new()),
@@ -211,17 +226,19 @@ impl Default for EngineState {
             transport_producers: Arc::new(DashMap::new()),
             producer_consumers: Arc::new(DashMap::new()),
             consumers: Arc::new(DashMap::new()),
+            worker_consumer_counts: Arc::new(DashMap::new()),
             transport_consumers: Arc::new(DashMap::new()),
             data_producers: Arc::new(DashMap::new()),
             data_consumers: Arc::new(DashMap::new()),
             transport_data_producers: Arc::new(DashMap::new()),
             transport_data_consumers: Arc::new(DashMap::new()),
+            piped_data_producers: Arc::new(DashMap::new()),
             peer_worker_affinity: Arc::new(DashMap::new()),
             piped_producers: Arc::new(DashMap::new()),
             dynacast_tracker: Arc::new(crate::domain::dynacast::DynacastTracker::new()),
             room_singleflight: Arc::new(DashMap::new()),
             pipe_singleflight: Arc::new(DashMap::new()),
-            sub_router_singleflight: Arc::new(DashMap::new()),
+            sub_router_singleflight: Arc::new(SubRouterLockMap::new()),
             is_draining: Arc::new(AtomicBool::new(false)),
             active_license: Arc::new(parking_lot::RwLock::new(None)),
             license_public_key: Arc::new(parking_lot::RwLock::new(default_pubkey)),
@@ -230,6 +247,36 @@ impl Default for EngineState {
 }
 
 impl EngineState {
+    pub fn inc_worker_consumers(&self, worker_index: usize) {
+        self.worker_consumer_counts
+            .entry(worker_index)
+            .or_insert_with(|| AtomicUsize::new(0))
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn dec_worker_consumers(&self, worker_index: usize) {
+        if let Some(counter) = self.worker_consumer_counts.get(&worker_index) {
+            let mut cur = counter.load(Ordering::Relaxed);
+            while cur > 0 {
+                match counter.compare_exchange_weak(
+                    cur,
+                    cur - 1,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => cur = actual,
+                }
+            }
+        }
+    }
+
+    pub fn get_worker_consumers(&self, worker_index: usize) -> usize {
+        self.worker_consumer_counts
+            .get(&worker_index)
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
     pub fn get_active_license(&self) -> Option<crate::domain::license::LicenseClaims> {
         self.active_license.read().clone()
     }
@@ -354,6 +401,7 @@ impl EngineState {
     pub fn cascade_remove_consumer(&self, consumer_id: &str) -> Option<ConsumerItem> {
         if let Some((_, item)) = self.consumers.remove(consumer_id) {
             item.is_closed.store(true, Ordering::SeqCst);
+            self.dec_worker_consumers(item.worker_index);
             if let Some(set) = self.transport_consumers.get(&item.transport_id) {
                 set.remove(consumer_id);
             }
@@ -430,6 +478,8 @@ impl EngineState {
         metrics: &dyn crate::ports::outbound::MetricsPort,
         event_publisher: &dyn crate::ports::outbound::EventPublisherPort,
     ) {
+        self.worker_consumer_counts.remove(&worker_index);
+
         // 1. Identify and close all WebRtcTransports on this worker
         let dead_transports: Vec<(String, String, bool)> = self
             .transports
@@ -453,6 +503,38 @@ impl EngineState {
                 }
                 self.transport_producers.remove(&tid);
                 self.transport_consumers.remove(&tid);
+
+                if let Some((_, dp_ids)) = self.transport_data_producers.remove(&tid) {
+                    for dpid in dp_ids {
+                        if let Some((_, dp)) = self
+                            .data_producers
+                            .remove(&(router_id.clone(), dpid.clone()))
+                        {
+                            dp.is_closed.store(true, Ordering::SeqCst);
+                            self.piped_data_producers.remove(&dpid);
+                            event_publisher.publish_resource_closed(
+                                &router_id,
+                                "data_producer",
+                                &dpid,
+                                "worker_died",
+                            );
+                        }
+                    }
+                }
+                if let Some((_, dc_ids)) = self.transport_data_consumers.remove(&tid) {
+                    for dcid in dc_ids {
+                        if let Some((_, dc)) = self.data_consumers.remove(&dcid) {
+                            dc.is_closed.store(true, Ordering::SeqCst);
+                            event_publisher.publish_resource_closed(
+                                &router_id,
+                                "data_consumer",
+                                &dcid,
+                                "worker_died",
+                            );
+                        }
+                    }
+                }
+
                 event_publisher.publish_resource_closed(
                     &router_id,
                     "transport",
@@ -711,10 +793,19 @@ impl EngineState {
                                 &ptid,
                                 "worker_died",
                             );
+                            crate::application::transport_service::cascade_close_producers_and_consumers(
+                                self,
+                                worker_pool,
+                                metrics,
+                                event_publisher,
+                                &router_id,
+                                &ptid,
+                            );
                         }
                     }
                 }
 
+                self.direct_data_producers.retain(|k, _| k.0 != router_id);
                 self.direct_transports.remove(&router_id);
                 self.active_speaker_observers.remove(&router_id);
 

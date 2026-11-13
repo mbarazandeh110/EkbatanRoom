@@ -1,0 +1,116 @@
+# ==============================================================================
+# SFU Media Node Production Configuration File (YAML)
+# ==============================================================================
+# این فایل پیکربندی بهینه‌شده برای محیط عملیاتی (Production) با ترافیک بالا،
+# استریم‌های Simulcast و SVC (VP9/H.264/VP8/Opus)، و توزیع هوشمند بین ورکرها است.
+#
+# پیش‌نیازهای بهینه‌سازی سیستم‌عامل لینوکس (Linux Kernel sysctl & Limits):
+# برای جلوگیری از Packet Loss روی UDP و پشتیبانی از بافرهای بزرگ سوکت:
+#   sudo sysctl -w net.core.rmem_max=16777216
+#   sudo sysctl -w net.core.wmem_max=16777216
+#   sudo sysctl -w net.core.rmem_default=4194304
+#   sudo sysctl -w net.core.wmem_default=4194304
+#   sudo sysctl -w net.core.netdev_max_backlog=10000
+#   sudo sysctl -w fs.file-max=2097152
+# در فایل /etc/security/limits.conf:
+#   * soft nofile 65535
+#   * hard nofile 65535
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# ۱. تنظیمات شبکه و ListenInfo (Network & ListenInfo)
+# ------------------------------------------------------------------------------
+network:
+  listen_ip: "0.0.0.0"
+  announced_address: null
+  port_range: "40000-49999"
+  grpc_port: 50051
+
+# ------------------------------------------------------------------------------
+# ۲. استخر ورکرها و مقیاس‌پذیری داخلی نود (Worker Pool & Intra-Node Scaling)
+# ------------------------------------------------------------------------------
+worker:
+  # مقدار 0: تخصیص خودکار به تعداد هسته‌های فیزیکی/منطقی پردازنده
+  worker_count: 0
+  capacity_weight: 1000
+  # آستانه ۷۵ درصد جهت سرریز پیشگیرانه پیش از اشباع CPU ورکر
+  spillover_threshold_percent: 75.0
+  log_level: "warn"
+  log_tags:
+    - info
+    - ice
+    - dtls
+    - rtp
+    - srtp
+    - rtcp
+    - rtx
+    - bwe
+    - score
+
+# ------------------------------------------------------------------------------
+# ۳. تنظیمات ترنسپورت وب‌آرتی‌سی (WebRtcTransport Tuning)
+# ------------------------------------------------------------------------------
+webrtc_transport:
+  # شروع سریع با کیفیت بالا (2.5 Mbps)
+  initial_available_outgoing_bitrate: 2500000
+  # سقف منطقی پهنای باند ورودی برای هر کاربر (10 Mbps برای 1080p/4K screen share)
+  max_incoming_bitrate: 10000000
+  # مقدار 0 یا null: جلوگیری مطلق از قفل شدن BWE روی اینترنت‌های ضعیف و رفع Bufferbloat
+  min_outgoing_bitrate: 0
+  # سقف خروجی برای استریم‌های چندگانه (20 Mbps)
+  max_outgoing_bitrate: 20000000
+  # بافر ۴ مگابایتی UDP سوکت لینوکس برای جلوگیری از Packet Drop هنگام ارسال و دریافت فریم‌های بزرگ I-Frame
+  send_buffer_size: 4194304
+  recv_buffer_size: 4194304
+  # تنظیمات دیتاچنل SCTP برای چت، وضعیت و وایت‌برد
+  max_send_message_size: 5000000
+  max_receive_message_size: 5000000
+  sctp_send_buffer_size: 7000000
+  sctp_per_stream_send_queue_limit: 5000000
+  sctp_max_receiver_window_buffer_size: 7000000
+
+# ------------------------------------------------------------------------------
+# ۴. تنظیمات ترنسپورت عمومی (PlainTransport Parameters for Ingress/Egress/Recording)
+# ------------------------------------------------------------------------------
+plain_transport:
+  max_send_message_size: 5000000
+  max_receive_message_size: 5000000
+  sctp_send_buffer_size: 7000000
+
+# ------------------------------------------------------------------------------
+# ۵. مشاهده‌گر سطح صدا (Audio Level Observer)
+# ------------------------------------------------------------------------------
+audio_level_observer:
+  interval_ms: 400
+  threshold_dbov: -80
+
+# ------------------------------------------------------------------------------
+# ۶. کدک‌های روتر مدیا (Router Codecs - Opus FEC + VP9 SVC + VP8 + H264)
+# ------------------------------------------------------------------------------
+router_codecs:
+  enable_opus: true
+  enable_vp8: true
+  enable_h264: true
+  # فعال‌سازی کدک پیشرفته VP9 (Profile 0) برای اشتراک تصویر با کیفیت بالا و مقیاس‌پذیری SVC
+  enable_vp9: true
+  google_start_bitrate: 1500
+
+# ------------------------------------------------------------------------------
+# ۷. مشاهده‌پذیری، لاگ و متریک‌ها (Observability & APM)
+# ------------------------------------------------------------------------------
+observability:
+  log_level: "info"
+  log_format: "json"
+  tracing_enabled: false
+  otlp_endpoint: "http://localhost:4317"
+  trace_sample_rate: 0.1
+  metrics_enabled: true
+  metrics_addr: "0.0.0.0:9090"
+  log_raw_sdp: false
+
+# ------------------------------------------------------------------------------
+# ۸. لایسنسینگ آفلاین نسخه سازمانی (Enterprise Ed25519 Licensing)
+# ------------------------------------------------------------------------------
+license:
+  token: null
+  public_key_hex: null

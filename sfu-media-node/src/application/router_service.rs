@@ -198,34 +198,6 @@ impl RouterUseCase for RouterService {
                             }
                         })
                         .detach();
-                    let mut aso_options =
-                        mediasoup::active_speaker_observer::ActiveSpeakerObserverOptions::default();
-                    aso_options.interval = self.config.audio_level_observer.interval_ms;
-                    if let Ok(aso) = router.create_active_speaker_observer(aso_options).await {
-                        let ep_aso = self.event_publisher.clone();
-                        let r_aso = router_id.clone();
-                        let state_aso = self.state.clone();
-                        let closed_aso = is_closed.clone();
-
-                        aso.on_dominant_speaker(move |dominant| {
-                            if closed_aso.load(Ordering::SeqCst)
-                                || !state_aso.is_router_active(&r_aso)
-                            {
-                                return;
-                            }
-                            let p_id = dominant.producer.id().to_string();
-                            let peer_id = state_aso
-                                .get_producer(&r_aso, &p_id)
-                                .map(|p| p.peer_id.clone())
-                                .unwrap_or_default();
-                            ep_aso.publish_active_speaker(&r_aso, &p_id, &peer_id, 0.0);
-                        })
-                        .detach();
-
-                        self.state
-                            .active_speaker_observers
-                            .insert(router_id.clone(), aso);
-                    }
 
                     let item = RouterItem {
                         router,
