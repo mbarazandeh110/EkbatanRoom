@@ -8,17 +8,6 @@ CHUNK_SIZE=2500
 # حذف فایل‌های خروجی قبلی
 rm -f "${OUTPUT_FILE}" "${OUTPUT_FILE}".part-*
 
-file="proto/sfu/v1/media_engine.proto"
-
-{
-    echo "================================================================================"
-    echo "FILE: $file"
-    echo "================================================================================"
-    cat "$file"
-    echo
-    echo
-} >> "$OUTPUT_FILE"
-
 # تجمیع تمام فایل‌های Markdown
 find . -type f -name "*.md" \
     ! -path "./.git/*" \

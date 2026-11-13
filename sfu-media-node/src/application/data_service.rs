@@ -54,7 +54,7 @@ impl AnyDataTransport {
 pub struct DataService {
     _config: Config,
     state: EngineState,
-    _worker_pool: Arc<dyn WorkerPoolPort>,
+    worker_pool: Arc<dyn WorkerPoolPort>,
     event_publisher: Arc<dyn EventPublisherPort>,
     metrics: Arc<dyn MetricsPort>,
     produce_data_cache: Arc<IdempotencyCache<ProduceDataResult>>,
@@ -79,7 +79,7 @@ impl DataService {
         Self {
             _config: config,
             state,
-            _worker_pool: worker_pool,
+            worker_pool,
             event_publisher,
             metrics,
             produce_data_cache,
@@ -171,25 +171,23 @@ impl DataUseCase for DataService {
         validation::validate_not_empty("transport_id", &params.transport_id)?;
         validation::validate_not_empty("peer_id", &params.peer_id)?;
 
-        let payload_bytes = format!(
-            "{}:{}:{}:{}:{}:{}",
-            params.request_id,
-            params.router_id,
-            params.transport_id,
-            params.peer_id,
-            params.label,
-            params.protocol
-        )
-        .into_bytes();
+        let payload_parts: [&[u8]; 6] = [
+            params.request_id.as_bytes(),
+            params.router_id.as_bytes(),
+            params.transport_id.as_bytes(),
+            params.peer_id.as_bytes(),
+            params.label.as_bytes(),
+            params.protocol.as_bytes(),
+        ];
 
         let state_for_valid = self.state.clone();
         let router_id_valid = params.router_id.clone();
         let metrics_ref = self.metrics.clone();
 
         self.produce_data_cache
-            .execute_or_get_validated(
+            .execute_or_get_validated_parts(
                 &params.request_id,
-                &payload_bytes,
+                &payload_parts,
                 move |cached: &ProduceDataResult| {
                     state_for_valid
                         .data_producers
@@ -273,11 +271,12 @@ impl DataUseCase for DataService {
                         .entry(params.transport_id.clone())
                         .or_default()
                         .insert(data_producer_id.clone());
+                    self.worker_pool.add_resource_score(worker_index, 1);
 
                     Ok(ProduceDataResult {
                         data_producer_id,
-                        label: params.label,
-                        protocol: params.protocol,
+                        label: params.label.clone(),
+                        protocol: params.protocol.clone(),
                         sctp_stream_parameters_json: sctp_json,
                     })
                 },
@@ -316,19 +315,20 @@ impl DataUseCase for DataService {
         validation::validate_not_empty("transport_id", &params.transport_id)?;
         validation::validate_not_empty("data_producer_id", &params.data_producer_id)?;
 
-        let payload_bytes = format!(
-            "{}:{}:{}:{}",
-            params.request_id, params.router_id, params.transport_id, params.data_producer_id
-        )
-        .into_bytes();
+        let payload_parts: [&[u8]; 4] = [
+            params.request_id.as_bytes(),
+            params.router_id.as_bytes(),
+            params.transport_id.as_bytes(),
+            params.data_producer_id.as_bytes(),
+        ];
 
         let state_for_valid = self.state.clone();
         let metrics_ref = self.metrics.clone();
 
         self.consume_data_cache
-            .execute_or_get_validated(
+            .execute_or_get_validated_parts(
                 &params.request_id,
-                &payload_bytes,
+                &payload_parts,
                 move |cached: &ConsumeDataResult| {
                     state_for_valid
                         .data_consumers
@@ -375,6 +375,23 @@ impl DataUseCase for DataService {
                         })?;
 
                     if pub_physical_router_id != sub_physical_router_id {
+                        let sf_key = format!(
+                            "data:{}:{}:{}",
+                            params.router_id, params.data_producer_id, sub_physical_router_id
+                        );
+                        let lock = self
+                            .state
+                            .pipe_singleflight
+                            .entry(sf_key.clone())
+                            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                            .clone();
+
+                        let _key_guard = crate::application::state::SingleflightKeyGuard::new(
+                            self.state.pipe_singleflight.clone(),
+                            sf_key,
+                        );
+                        let _guard = lock.lock().await;
+
                         let already_piped = self
                             .state
                             .piped_data_producers
@@ -497,6 +514,7 @@ impl DataUseCase for DataService {
                         data_producer_id: params.data_producer_id.clone(),
                         label: label.clone(),
                         protocol: protocol.clone(),
+                        worker_index: sub_worker_index,
                         is_closed: Arc::new(AtomicBool::new(false)),
                     };
 
@@ -508,10 +526,11 @@ impl DataUseCase for DataService {
                         .entry(params.transport_id.clone())
                         .or_default()
                         .insert(data_consumer_id.clone());
+                    self.worker_pool.add_resource_score(sub_worker_index, 1);
 
                     Ok(ConsumeDataResult {
                         data_consumer_id,
-                        data_producer_id: params.data_producer_id,
+                        data_producer_id: params.data_producer_id.clone(),
                         label,
                         protocol,
                         sctp_stream_parameters_json: sctp_json,
@@ -639,6 +658,7 @@ impl DataUseCase for DataService {
             .remove(&(router_id.to_string(), data_producer_id.to_string()))
         {
             dp.is_closed.store(true, Ordering::SeqCst);
+            self.worker_pool.sub_resource_score(dp.worker_index, 1);
             if let Some(set) = self
                 .state
                 .transport_data_producers
@@ -664,6 +684,7 @@ impl DataUseCase for DataService {
     ) -> Result<(), SfuDomainError> {
         if let Some((_, dc)) = self.state.data_consumers.remove(data_consumer_id) {
             dc.is_closed.store(true, Ordering::SeqCst);
+            self.worker_pool.sub_resource_score(dc.worker_index, 1);
             if let Some(set) = self
                 .state
                 .transport_data_consumers

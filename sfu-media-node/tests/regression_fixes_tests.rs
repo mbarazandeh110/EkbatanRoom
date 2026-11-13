@@ -1366,3 +1366,92 @@ async fn test_direct_data_producer_persistence_and_reuse() {
 
     let _ = node.shutdown(Duration::from_secs(1)).await;
 }
+
+/// Verify PlainTransport close restores worker score and cleans up state properly
+#[tokio::test]
+async fn test_plain_transport_close_cascades_and_restores_worker_score() {
+    let node = Arc::new(MediaNode::new(test_config(1)).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let initial_score = node.worker_pool().worker_resource_score(0);
+
+    let r = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-plain-score".to_string(),
+            room_id: "room-plain-score".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let pt = service
+        .create_plain_transport(Request::new(proto::CreatePlainTransportRequest {
+            request_id: "req-pt-plain-score".to_string(),
+            router_id: r.router_id.clone(),
+            rtcp_mux: true,
+            comedia: false,
+            enable_sctp: false,
+            listening_ip: "127.0.0.1".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // PlainTransport creation increments worker score by 1
+    assert_eq!(
+        node.worker_pool().worker_resource_score(0),
+        initial_score + 1,
+        "Worker score must increment by 1 when PlainTransport is created"
+    );
+
+    // Verify plain transport is present in state
+    assert!(node.state.plain_transports.contains_key(&pt.transport_id));
+
+    // Close the plain transport
+    let close_res = service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r.router_id.clone(),
+            resource_type: proto::ResourceType::Transport as i32,
+            resource_id: pt.transport_id.clone(),
+        }))
+        .await;
+    assert!(close_res.is_ok());
+
+    // Worker score must return to baseline
+    assert_eq!(
+        node.worker_pool().worker_resource_score(0),
+        initial_score,
+        "Worker score must return to initial baseline after PlainTransport is closed"
+    );
+
+    // Verify plain transport is cleaned up from state
+    assert!(
+        !node.state.plain_transports.contains_key(&pt.transport_id),
+        "PlainTransport must be removed from state"
+    );
+
+    // Connecting or getting stats for the closed transport must return NotFound
+    let connect_again = service
+        .connect_plain_transport(Request::new(proto::ConnectPlainTransportRequest {
+            router_id: r.router_id.clone(),
+            transport_id: pt.transport_id.clone(),
+            remote_ip: "127.0.0.1".to_string(),
+            remote_port: 5004,
+            remote_rtcp_port: 0,
+        }))
+        .await;
+    assert!(connect_again.is_err());
+    assert_eq!(connect_again.unwrap_err().code(), tonic::Code::NotFound);
+
+    let stats_again = service
+        .get_stats(Request::new(proto::GetStatsRequest {
+            router_id: r.router_id.clone(),
+            resource_id: pt.transport_id.clone(),
+            resource_type: proto::ResourceType::Transport as i32,
+        }))
+        .await;
+    assert!(stats_again.is_err());
+    assert_eq!(stats_again.unwrap_err().code(), tonic::Code::NotFound);
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}

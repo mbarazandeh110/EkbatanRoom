@@ -52,7 +52,6 @@ pub fn router_codecs_from_config(config: &MediasoupRouterCodecsConfig) -> Vec<Rt
                 let mut params = RtpCodecParametersParameters::default();
                 if config.google_start_bitrate > 0 {
                     params.insert("x-google-start-bitrate", config.google_start_bitrate);
-                    params.insert("x-google-min-bitrate", 300u32);
                 }
                 params
             },
@@ -77,7 +76,6 @@ pub fn router_codecs_from_config(config: &MediasoupRouterCodecsConfig) -> Vec<Rt
                 params.insert("profile-id", 0u32);
                 if config.google_start_bitrate > 0 {
                     params.insert("x-google-start-bitrate", config.google_start_bitrate);
-                    params.insert("x-google-min-bitrate", 300u32);
                 }
                 params
             },
@@ -104,7 +102,6 @@ pub fn router_codecs_from_config(config: &MediasoupRouterCodecsConfig) -> Vec<Rt
                 params.insert("profile-level-id", "42e01f");
                 if config.google_start_bitrate > 0 {
                     params.insert("x-google-start-bitrate", config.google_start_bitrate);
-                    params.insert("x-google-min-bitrate", 300u32);
                 }
                 params
             },

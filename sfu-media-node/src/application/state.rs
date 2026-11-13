@@ -74,6 +74,7 @@ pub struct DataConsumerItem {
     pub label: String,
     pub protocol: String,
     pub is_closed: Arc<AtomicBool>,
+    pub worker_index: usize,
 }
 
 #[derive(Clone)]
@@ -177,8 +178,6 @@ pub struct EngineState {
     pub direct_transports: Arc<DashMap<String, mediasoup::direct_transport::DirectTransport>>,
     pub direct_data_producers:
         Arc<DashMap<(String, String, String), mediasoup::data_producer::DirectDataProducer>>,
-    pub active_speaker_observers:
-        Arc<DashMap<String, mediasoup::active_speaker_observer::ActiveSpeakerObserver>>,
     pub router_transports: Arc<DashMap<String, DashSet<String>>>,
     pub router_pipe_transports: Arc<DashMap<String, DashSet<String>>>,
     pub router_plain_transports: Arc<DashMap<String, DashSet<String>>>,
@@ -218,7 +217,6 @@ impl Default for EngineState {
             plain_transports: Arc::new(DashMap::new()),
             direct_transports: Arc::new(DashMap::new()),
             direct_data_producers: Arc::new(DashMap::new()),
-            active_speaker_observers: Arc::new(DashMap::new()),
             router_transports: Arc::new(DashMap::new()),
             router_pipe_transports: Arc::new(DashMap::new()),
             router_plain_transports: Arc::new(DashMap::new()),
@@ -556,6 +554,7 @@ impl EngineState {
             if let Some((_, pt)) = self.pipe_transports.remove(&ptid) {
                 pt.is_closed.store(true, Ordering::SeqCst);
                 metrics.dec_active_transports(false);
+                metrics.dec_active_pipe_transports();
                 if let Some(set) = self.router_pipe_transports.get_mut(&router_id) {
                     set.remove(&ptid);
                 }
@@ -581,9 +580,14 @@ impl EngineState {
         for (ptid, router_id) in dead_plain_transports {
             if let Some((_, pt)) = self.plain_transports.remove(&ptid) {
                 pt.is_closed.store(true, Ordering::SeqCst);
+                metrics.dec_active_transports(false);
                 if let Some(set) = self.router_plain_transports.get_mut(&router_id) {
                     set.remove(&ptid);
                 }
+                self.transport_producers.remove(&ptid);
+                self.transport_consumers.remove(&ptid);
+                self.transport_data_producers.remove(&ptid);
+                self.transport_data_consumers.remove(&ptid);
                 event_publisher.publish_resource_closed(
                     &router_id,
                     "transport",
@@ -764,6 +768,7 @@ impl EngineState {
                             pt.is_closed.store(true, Ordering::SeqCst);
                             worker_pool.sub_resource_score(pt.worker_index, 1);
                             metrics.dec_active_transports(false);
+                            metrics.dec_active_pipe_transports();
                             event_publisher.publish_resource_closed(
                                 &router_id,
                                 "transport",
@@ -787,6 +792,8 @@ impl EngineState {
                     for ptid in plain_ids {
                         if let Some((_, pt)) = self.plain_transports.remove(&ptid) {
                             pt.is_closed.store(true, Ordering::SeqCst);
+                            worker_pool.sub_resource_score(pt.worker_index, 1);
+                            metrics.dec_active_transports(false);
                             event_publisher.publish_resource_closed(
                                 &router_id,
                                 "transport",
@@ -807,7 +814,6 @@ impl EngineState {
 
                 self.direct_data_producers.retain(|k, _| k.0 != router_id);
                 self.direct_transports.remove(&router_id);
-                self.active_speaker_observers.remove(&router_id);
 
                 metrics.dec_active_routers();
                 event_publisher.publish_resource_closed(

@@ -45,6 +45,17 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
         hex::encode(hasher.finalize())
     }
 
+    pub fn compute_payload_hash_parts(parts: &[&[u8]]) -> String {
+        let mut hasher = Sha256::new();
+        for (i, part) in parts.iter().enumerate() {
+            if i > 0 {
+                hasher.update(b":");
+            }
+            hasher.update(part);
+        }
+        hex::encode(hasher.finalize())
+    }
+
     pub fn clean_expired(&self) {
         let now = Instant::now();
         self.entries.retain(|_, entry| match entry {
@@ -89,6 +100,20 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
             .await
     }
 
+    pub async fn execute_or_get_parts<F, Fut>(
+        &self,
+        request_id: &str,
+        payload_parts: &[&[u8]],
+        action: F,
+    ) -> Result<T, SfuDomainError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, SfuDomainError>>,
+    {
+        self.execute_or_get_validated_parts(request_id, payload_parts, |_| true, action, || {})
+            .await
+    }
+
     pub async fn execute_or_get_with_hook<F, Fut, H>(
         &self,
         request_id: &str,
@@ -119,6 +144,24 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
         V: FnOnce(&T) -> bool,
         H: FnOnce(),
     {
+        self.execute_or_get_validated_parts(request_id, &[payload], is_valid, action, on_hit)
+            .await
+    }
+
+    pub async fn execute_or_get_validated_parts<F, Fut, V, H>(
+        &self,
+        request_id: &str,
+        payload_parts: &[&[u8]],
+        is_valid: V,
+        action: F,
+        on_hit: H,
+    ) -> Result<T, SfuDomainError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, SfuDomainError>>,
+        V: FnOnce(&T) -> bool,
+        H: FnOnce(),
+    {
         let request_id = request_id.trim();
         if request_id.is_empty() {
             return Err(SfuDomainError::InvalidArgument(
@@ -126,7 +169,7 @@ impl<T: Clone + Send + Sync + 'static> IdempotencyCache<T> {
             ));
         }
 
-        let hash = Self::compute_payload_hash(payload);
+        let hash = Self::compute_payload_hash_parts(payload_parts);
         let now = Instant::now();
 
         // 1. Atomic check and transition to InFlight in an isolated synchronous scope
@@ -417,5 +460,46 @@ mod tests {
             .unwrap();
         assert_eq!(res2, "resource-1");
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_parts_hash_and_execution() {
+        let parts: &[&[u8]] = &[b"req1", b"room1", b"audio", b"{\"key\":\"val\"}", b"false"];
+        let joined = b"req1:room1:audio:{\"key\":\"val\"}:false";
+
+        assert_eq!(
+            IdempotencyCache::<()>::compute_payload_hash_parts(parts),
+            IdempotencyCache::<()>::compute_payload_hash(joined)
+        );
+
+        let cache = IdempotencyCache::new(Duration::from_secs(60), Duration::from_secs(5));
+        let res = cache
+            .execute_or_get_validated_parts(
+                "req-parts",
+                parts,
+                |_| true,
+                || async { Ok(42) },
+                || {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(res, 42);
+
+        // Cached hit
+        let mut hit = false;
+        let res_hit = cache
+            .execute_or_get_validated_parts(
+                "req-parts",
+                parts,
+                |_| true,
+                || async { Ok(99) },
+                || {
+                    hit = true;
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res_hit, 42);
+        assert!(hit);
     }
 }

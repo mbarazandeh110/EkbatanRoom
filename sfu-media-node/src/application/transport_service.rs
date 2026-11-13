@@ -95,23 +95,23 @@ impl TransportUseCase for TransportService {
         validation::validate_not_empty("router_id", &params.router_id)?;
         validation::validate_not_empty("peer_id", &params.peer_id)?;
 
-        let payload_bytes = format!(
-            "{}:{}:{}:{}:{}",
-            params.request_id,
-            params.router_id,
-            params.peer_id,
-            params.is_publisher,
-            params.enable_sctp
-        )
-        .into_bytes();
+        let is_pub_bytes = if params.is_publisher { b"1" } else { b"0" };
+        let sctp_bytes = if params.enable_sctp { b"1" } else { b"0" };
+        let payload_parts: [&[u8]; 5] = [
+            params.request_id.as_bytes(),
+            params.router_id.as_bytes(),
+            params.peer_id.as_bytes(),
+            is_pub_bytes,
+            sctp_bytes,
+        ];
 
         let metrics_ref = self.metrics.clone();
         let state_for_valid = self.state.clone();
 
         self.create_transport_cache
-            .execute_or_get_validated(
+            .execute_or_get_validated_parts(
                 &params.request_id,
-                &payload_bytes,
+                &payload_parts,
                 move |cached: &CreateTransportResult| {
                     state_for_valid
                         .transports
@@ -230,51 +230,17 @@ impl TransportUseCase for TransportService {
                                         ))
                                     })?;
 
-                                    let mut observer_options =
-                                        mediasoup::audio_level_observer::AudioLevelObserverOptions::default();
-                                    observer_options.interval =
-                                        self.config.audio_level_observer.interval_ms;
-                                    observer_options.threshold =
-                                        self.config.audio_level_observer.threshold_dbov;
-                                    let audio_level_observer = new_sub
-                                        .create_audio_level_observer(observer_options)
-                                        .await
-                                        .map_err(|e| {
-                                            SfuDomainError::Mediasoup(format!(
-                                                "Failed to create AudioLevelObserver for sub-router: {e}"
-                                            ))
-                                        })?;
-
                                     let is_closed = Arc::new(AtomicBool::new(false));
-                                    let event_publisher = self.event_publisher.clone();
-                                    let r_id = params.router_id.clone();
-                                    let state_ref = self.state.clone();
-                                    let closed_ref = is_closed.clone();
-
-                                    audio_level_observer
-                                        .on_volumes(move |volumes| {
-                                            if closed_ref.load(Ordering::SeqCst)
-                                                || !state_ref.is_router_active(&r_id)
-                                            {
-                                                return;
-                                            }
-
-                                            for v in volumes {
-                                                let p_id = v.producer.id().to_string();
-                                                let peer_id = state_ref
-                                                    .get_producer(&r_id, &p_id)
-                                                    .map(|p| p.peer_id.clone())
-                                                    .unwrap_or_default();
-
-                                                event_publisher.publish_active_speaker(
-                                                    &r_id,
-                                                    &p_id,
-                                                    &peer_id,
-                                                    v.volume as f32,
-                                                );
-                                            }
-                                        })
-                                        .detach();
+                                    let audio_level_observer =
+                                        crate::application::router_service::create_and_attach_audio_level_observer(
+                                            &new_sub,
+                                            &params.router_id,
+                                            &self.config.audio_level_observer,
+                                            &self.state,
+                                            self.event_publisher.clone(),
+                                            is_closed.clone(),
+                                        )
+                                        .await?;
 
                                     let sub_item = crate::application::state::SubRouterItem {
                                         router: new_sub.clone(),
@@ -304,10 +270,9 @@ impl TransportUseCase for TransportService {
                             (sub_router, id, target_worker)
                         };
 
-                    let listen_info = self.config.create_listen_info(Protocol::Udp);
+                    let listen_infos = self.config.create_webrtc_listen_infos();
 
-                    let mut options =
-                        WebRtcTransportOptions::new(WebRtcTransportListenInfos::new(listen_info));
+                    let mut options = WebRtcTransportOptions::new(listen_infos);
                     options.enable_sctp = params.enable_sctp;
                     options.initial_available_outgoing_bitrate =
                         self.config.webrtc_transport.initial_available_outgoing_bitrate;
@@ -747,6 +712,7 @@ impl TransportUseCase for TransportService {
             p_item.is_closed.store(true, Ordering::SeqCst);
             self.worker_pool.sub_resource_score(p_item.worker_index, 1);
             self.metrics.dec_active_transports(false);
+            self.metrics.dec_active_pipe_transports();
 
             if let Some(set) = self.state.router_pipe_transports.get_mut(router_id) {
                 set.remove(transport_id);
@@ -767,6 +733,15 @@ impl TransportUseCase for TransportService {
                 router_id,
                 transport_id,
             );
+            return Ok(());
+        }
+
+        if let Some(pt_ref) = self.state.plain_transports.get(transport_id) {
+            if pt_ref.router_id != router_id {
+                return Err(SfuDomainError::NotFound(format!(
+                    "PlainTransport '{transport_id}' does not belong to router '{router_id}'"
+                )));
+            }
         }
 
         if let Some((_, pt)) = self
@@ -775,6 +750,8 @@ impl TransportUseCase for TransportService {
             .remove_if(transport_id, |_, item| item.router_id == router_id)
         {
             pt.is_closed.store(true, Ordering::SeqCst);
+            self.worker_pool.sub_resource_score(pt.worker_index, 1);
+            self.metrics.dec_active_transports(false);
             if let Some(set) = self.state.router_plain_transports.get_mut(router_id) {
                 set.remove(transport_id);
             }
@@ -784,6 +761,15 @@ impl TransportUseCase for TransportService {
                 transport_id,
                 "plain_transport_closed",
             );
+            cascade_close_producers_and_consumers(
+                &self.state,
+                self.worker_pool.as_ref(),
+                self.metrics.as_ref(),
+                self.event_publisher.as_ref(),
+                router_id,
+                transport_id,
+            );
+            return Ok(());
         }
 
         Ok(())
@@ -813,24 +799,26 @@ impl TransportUseCase for TransportService {
         validation::validate_not_empty("request_id", &params.request_id)?;
         validation::validate_not_empty("router_id", &params.router_id)?;
 
-        let payload_bytes = format!(
-            "{}:{}:{}:{}:{}:{:?}",
-            params.request_id,
-            params.router_id,
-            params.rtcp_mux,
-            params.comedia,
-            params.enable_sctp,
-            params.listening_ip
-        )
-        .into_bytes();
+        let rtcp_mux_bytes = if params.rtcp_mux { b"1" } else { b"0" };
+        let comedia_bytes = if params.comedia { b"1" } else { b"0" };
+        let enable_sctp_bytes = if params.enable_sctp { b"1" } else { b"0" };
+        let listening_ip_bytes = params.listening_ip.as_deref().unwrap_or("").as_bytes();
+        let payload_parts: [&[u8]; 6] = [
+            params.request_id.as_bytes(),
+            params.router_id.as_bytes(),
+            rtcp_mux_bytes,
+            comedia_bytes,
+            enable_sctp_bytes,
+            listening_ip_bytes,
+        ];
 
         let metrics_ref = self.metrics.clone();
         let state_for_valid = self.state.clone();
 
         self.create_plain_transport_cache
-            .execute_or_get_validated(
+            .execute_or_get_validated_parts(
                 &params.request_id,
-                &payload_bytes,
+                &payload_parts,
                 move |cached: &CreatePlainTransportResult| {
                     state_for_valid
                         .plain_transports
@@ -927,6 +915,13 @@ impl TransportUseCase for TransportService {
                     self.state
                         .transport_consumers
                         .insert(transport_id.clone(), DashSet::new());
+                    self.state
+                        .transport_data_producers
+                        .insert(transport_id.clone(), DashSet::new());
+                    self.state
+                        .transport_data_consumers
+                        .insert(transport_id.clone(), DashSet::new());
+                    self.metrics.inc_active_transports(false);
                     self.worker_pool.add_resource_score(worker_index, 1);
 
                     Ok(CreatePlainTransportResult {
@@ -1116,6 +1111,7 @@ pub(crate) fn cascade_close_producers_and_consumers(
                 .remove(&(router_id.to_string(), dpid.clone()))
             {
                 dp.is_closed.store(true, Ordering::SeqCst);
+                worker_pool.sub_resource_score(dp.worker_index, 1);
                 state.piped_data_producers.remove(&dpid);
                 event_publisher.publish_resource_closed(
                     router_id,
@@ -1132,6 +1128,7 @@ pub(crate) fn cascade_close_producers_and_consumers(
         for dcid in dc_ids {
             if let Some((_, dc)) = state.data_consumers.remove(&dcid) {
                 dc.is_closed.store(true, Ordering::SeqCst);
+                worker_pool.sub_resource_score(dc.worker_index, 1);
                 event_publisher.publish_resource_closed(
                     router_id,
                     "data_consumer",

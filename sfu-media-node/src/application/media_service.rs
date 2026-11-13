@@ -175,6 +175,108 @@ pub fn resolve_default_video_preferred_spatial_layer(producer_encodings_count: u
     }
 }
 
+pub(crate) fn extract_simulcast_encodings(
+    rtp_parameters: &RtpParameters,
+) -> Vec<SimulcastEncodingInfo> {
+    rtp_parameters
+        .encodings
+        .iter()
+        .map(|enc| SimulcastEncodingInfo {
+            rid: enc.rid.clone().unwrap_or_default(),
+            ssrc: enc.ssrc.unwrap_or(0),
+            rtx_ssrc: enc.rtx.as_ref().map(|r| r.ssrc).unwrap_or(0),
+            max_bitrate: enc.max_bitrate.unwrap_or(0) as u32,
+            scalability_mode: if enc.scalability_mode == ScalabilityMode::None {
+                String::new()
+            } else {
+                enc.scalability_mode.to_string()
+            },
+        })
+        .collect()
+}
+
+pub(crate) fn attach_producer_score_listener(
+    producer: &Producer,
+    is_closed: &Arc<AtomicBool>,
+    state: &EngineState,
+    event_publisher: &Arc<dyn EventPublisherPort>,
+    router_id: &str,
+    producer_id: &str,
+    peer_id: &str,
+) {
+    let event_publisher = event_publisher.clone();
+    let r_id = router_id.to_string();
+    let p_id = producer_id.to_string();
+    let peer_id = peer_id.to_string();
+    let state_ref = state.clone();
+    let closed_ref = is_closed.clone();
+    let last_score = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
+
+    producer
+        .on_score(move |scores| {
+            if closed_ref.load(Ordering::SeqCst) || !state_ref.is_router_active(&r_id) {
+                return;
+            }
+
+            let avg_score = if scores.is_empty() {
+                10
+            } else {
+                (scores.iter().map(|s| s.score as u32).sum::<u32>()) / (scores.len() as u32)
+            };
+
+            let prev = last_score.swap(avg_score, Ordering::Relaxed);
+            if prev == avg_score {
+                return; // Skip if score hasn't changed (Hot-path throttling)
+            }
+
+            let all_scores = scores.iter().map(|s| s.score as u32).collect();
+
+            event_publisher.publish_score(&r_id, &p_id, &peer_id, true, avg_score, all_scores);
+        })
+        .detach();
+}
+
+pub(crate) fn attach_consumer_score_listener(
+    consumer: &Consumer,
+    is_closed: &Arc<AtomicBool>,
+    state: &EngineState,
+    event_publisher: &Arc<dyn EventPublisherPort>,
+    router_id: &str,
+    consumer_id: &str,
+    peer_id: &str,
+) {
+    let r_id = router_id.to_string();
+    let c_id = consumer_id.to_string();
+    let peer_id = peer_id.to_string();
+    let event_publisher = event_publisher.clone();
+    let state_ref = state.clone();
+    let closed_ref = is_closed.clone();
+    let last_consumer_score = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
+
+    consumer
+        .on_score(move |score| {
+            if closed_ref.load(Ordering::SeqCst) || !state_ref.is_router_active(&r_id) {
+                return;
+            }
+
+            let cur_score = score.score as u32;
+            let prev = last_consumer_score.swap(cur_score, Ordering::Relaxed);
+            if prev == cur_score {
+                return;
+            }
+
+            event_publisher.publish_score(
+                &r_id,
+                &c_id,
+                &peer_id,
+                false,
+                cur_score,
+                score.producer_scores.iter().map(|&s| s as u32).collect(),
+            );
+        })
+        .detach();
+}
+
 #[async_trait]
 impl MediaUseCase for MediaService {
     #[tracing::instrument(
@@ -202,27 +304,29 @@ impl MediaUseCase for MediaService {
         validation::validate_not_empty("transport_id", &params.transport_id)?;
         validation::validate_not_empty("peer_id", &params.peer_id)?;
 
-        // Include params.paused in payload hash (Logic bug fix)
-        let payload_bytes = format!(
-            "{}:{}:{}:{}:{}:{}:{}",
-            params.request_id,
-            params.router_id,
-            params.transport_id,
-            params.peer_id,
-            params.kind,
-            params.raw_rtp_parameters_json,
-            params.paused
-        )
-        .into_bytes();
+        let paused_bytes = if params.paused { b"1" } else { b"0" };
+        let kind_bytes = match params.kind {
+            MediaKind::Audio => b"audio",
+            MediaKind::Video => b"video",
+        };
+        let payload_parts: [&[u8]; 7] = [
+            params.request_id.as_bytes(),
+            params.router_id.as_bytes(),
+            params.transport_id.as_bytes(),
+            params.peer_id.as_bytes(),
+            kind_bytes,
+            params.raw_rtp_parameters_json.as_bytes(),
+            paused_bytes,
+        ];
 
         let metrics_ref = self.metrics.clone();
         let state_for_valid = self.state.clone();
         let router_id_for_valid = params.router_id.clone();
 
         self.produce_cache
-            .execute_or_get_validated(
+            .execute_or_get_validated_parts(
                 &params.request_id,
-                &payload_bytes,
+                &payload_parts,
                 move |cached: &ProduceResult| {
                     state_for_valid
                         .get_producer(&router_id_for_valid, &cached.producer_id)
@@ -276,58 +380,17 @@ impl MediaUseCase for MediaService {
                     let producer_id = producer.id().to_string();
                     let is_closed = Arc::new(AtomicBool::new(false));
 
-                    // Register score callback with hot-path change throttling
-                    let event_publisher = self.event_publisher.clone();
-                    let r_id = params.router_id.clone();
-                    let p_id = producer_id.clone();
-                    let peer_id = params.peer_id.clone();
-                    let state_ref = self.state.clone();
-                    let closed_ref = is_closed.clone();
-                    let last_score = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
+                    attach_producer_score_listener(
+                        &producer,
+                        &is_closed,
+                        &self.state,
+                        &self.event_publisher,
+                        &params.router_id,
+                        &producer_id,
+                        &params.peer_id,
+                    );
 
-                    producer
-                        .on_score(move |scores| {
-                            if closed_ref.load(Ordering::SeqCst)
-                                || !state_ref.is_router_active(&r_id)
-                            {
-                                return;
-                            }
-
-                            let avg_score = if scores.is_empty() {
-                                10
-                            } else {
-                                (scores.iter().map(|s| s.score as u32).sum::<u32>())
-                                    / (scores.len() as u32)
-                            };
-
-                            let prev = last_score.swap(avg_score, Ordering::Relaxed);
-                            if prev == avg_score {
-                                return; // Skip if score hasn't changed (Hot-path throttling)
-                            }
-
-                            let all_scores = scores.iter().map(|s| s.score as u32).collect();
-
-                            event_publisher
-                                .publish_score(&r_id, &p_id, &peer_id, true, avg_score, all_scores);
-                        })
-                        .detach();
-
-                    let encodings = producer
-                        .rtp_parameters()
-                        .encodings
-                        .iter()
-                        .map(|enc| SimulcastEncodingInfo {
-                            rid: enc.rid.clone().unwrap_or_default(),
-                            ssrc: enc.ssrc.unwrap_or(0),
-                            rtx_ssrc: enc.rtx.as_ref().map(|r| r.ssrc).unwrap_or(0),
-                            max_bitrate: enc.max_bitrate.unwrap_or(0) as u32,
-                            scalability_mode: if enc.scalability_mode == ScalabilityMode::None {
-                                String::new()
-                            } else {
-                                enc.scalability_mode.to_string()
-                            },
-                        })
-                        .collect();
+                    let encodings = extract_simulcast_encodings(producer.rtp_parameters());
 
                     if params.kind == MediaKind::Audio {
                         let observer_opt =
@@ -446,25 +509,23 @@ impl MediaUseCase for MediaService {
         validation::validate_not_empty("subscriber_transport_id", &params.subscriber_transport_id)?;
         validation::validate_not_empty("producer_id", &params.producer_id)?;
 
-        // Include params.paused in payload hash (Logic bug fix)
-        let payload_bytes = format!(
-            "{}:{}:{}:{}:{}:{}",
-            params.request_id,
-            params.router_id,
-            params.subscriber_transport_id,
-            params.producer_id,
-            params.raw_rtp_capabilities_json,
-            params.paused
-        )
-        .into_bytes();
+        let paused_bytes = if params.paused { b"1" } else { b"0" };
+        let payload_parts: [&[u8]; 6] = [
+            params.request_id.as_bytes(),
+            params.router_id.as_bytes(),
+            params.subscriber_transport_id.as_bytes(),
+            params.producer_id.as_bytes(),
+            params.raw_rtp_capabilities_json.as_bytes(),
+            paused_bytes,
+        ];
 
         let metrics_ref = self.metrics.clone();
         let state_for_valid = self.state.clone();
 
         self.consume_cache
-            .execute_or_get_validated(
+            .execute_or_get_validated_parts(
                 &params.request_id,
-                &payload_bytes,
+                &payload_parts,
                 move |cached: &ConsumeResult| {
                     state_for_valid
                         .consumers
@@ -769,8 +830,14 @@ impl MediaUseCase for MediaService {
                     options.paused = params.paused;
 
                     let video_preferred_layers = if producer_kind == MediaKind::Video {
-                        let spatial_layer =
-                            resolve_default_video_preferred_spatial_layer(producer_encodings_count);
+                        let spatial_layer = self
+                            .config
+                            .default_video_preferred_spatial_layer
+                            .unwrap_or_else(|| {
+                                resolve_default_video_preferred_spatial_layer(
+                                    producer_encodings_count,
+                                )
+                            });
                         let layers = ConsumerLayers {
                             spatial_layer,
                             temporal_layer: Some(2),
@@ -796,6 +863,14 @@ impl MediaUseCase for MediaService {
                         }
                     };
 
+                    if producer_kind == MediaKind::Audio {
+                        let _ = consumer.set_priority(255).await;
+                    } else if producer_encodings_count == 1 {
+                        let _ = consumer.set_priority(192).await;
+                    } else {
+                        let _ = consumer.set_priority(128).await;
+                    }
+
                     let consumer_id = consumer.id().to_string();
                     let is_closed = Arc::new(AtomicBool::new(false));
 
@@ -807,41 +882,15 @@ impl MediaUseCase for MediaService {
                     let state_ref = self.state.clone();
                     let closed_ref = is_closed.clone();
 
-                    let last_consumer_score = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
-                    consumer
-                        .on_score({
-                            let r_id = r_id.clone();
-                            let c_id = c_id.clone();
-                            let peer_id = peer_id_clone.clone();
-                            let event_publisher = event_publisher.clone();
-                            let state_ref = state_ref.clone();
-                            let closed_ref = closed_ref.clone();
-                            let last_score_ref = last_consumer_score.clone();
-
-                            move |score| {
-                                if closed_ref.load(Ordering::SeqCst)
-                                    || !state_ref.is_router_active(&r_id)
-                                {
-                                    return;
-                                }
-
-                                let cur_score = score.score as u32;
-                                let prev = last_score_ref.swap(cur_score, Ordering::Relaxed);
-                                if prev == cur_score {
-                                    return;
-                                }
-
-                                event_publisher.publish_score(
-                                    &r_id,
-                                    &c_id,
-                                    &peer_id,
-                                    false,
-                                    cur_score,
-                                    score.producer_scores.iter().map(|&s| s as u32).collect(),
-                                );
-                            }
-                        })
-                        .detach();
+                    attach_consumer_score_listener(
+                        &consumer,
+                        &is_closed,
+                        &self.state,
+                        &self.event_publisher,
+                        &params.router_id,
+                        &consumer_id,
+                        &peer_id,
+                    );
 
                     // Issue 1.1 Fix: Use WeakConsumer to prevent Arc reference cycle and memory leak
                     let weak_consumer = consumer.downgrade();
@@ -933,21 +982,7 @@ impl MediaUseCase for MediaService {
                         .unwrap_or_default();
                     let clock_rate = first_codec.map(|c| c.clock_rate().get()).unwrap_or(0);
 
-                    let encodings = rtp_params
-                        .encodings
-                        .iter()
-                        .map(|enc| SimulcastEncodingInfo {
-                            rid: enc.rid.clone().unwrap_or_default(),
-                            ssrc: enc.ssrc.unwrap_or(0),
-                            rtx_ssrc: enc.rtx.as_ref().map(|r| r.ssrc).unwrap_or(0),
-                            max_bitrate: enc.max_bitrate.unwrap_or(0) as u32,
-                            scalability_mode: if enc.scalability_mode == ScalabilityMode::None {
-                                String::new()
-                            } else {
-                                enc.scalability_mode.to_string()
-                            },
-                        })
-                        .collect();
+                    let encodings = extract_simulcast_encodings(rtp_params);
 
                     let current_layers = consumer.current_layers();
                     let preferred_layers = consumer.preferred_layers();
@@ -985,10 +1020,7 @@ impl MediaUseCase for MediaService {
                         let retry_is_closed = is_closed.clone();
                         let retry_state = self.state.clone();
                         let retry_router_id = params.router_id.clone();
-                        let retry_attempts: usize = std::env::var("SFU_KEYFRAME_RETRY_COUNT")
-                            .ok()
-                            .and_then(|v| v.trim().parse().ok())
-                            .unwrap_or(3);
+                        let retry_attempts: usize = self.config.keyframe_retry_count;
 
                         tokio::spawn(async move {
                             for attempt in 1..=retry_attempts {
@@ -1132,7 +1164,7 @@ impl MediaUseCase for MediaService {
 
                     Ok(ConsumeResult {
                         consumer_id,
-                        producer_id: params.producer_id,
+                        producer_id: params.producer_id.clone(),
                         kind: consumer_kind.to_string(),
                         rtp_parameters_json: raw_rtp_json,
                         ssrc,
@@ -1656,6 +1688,48 @@ impl MediaUseCase for MediaService {
                     Pipe(mediasoup::pipe_transport::PipeTransport),
                 }
 
+                impl TargetTransport {
+                    async fn fetch_stats_summary(
+                        &self,
+                    ) -> Result<(String, u64, u64), SfuDomainError> {
+                        match self {
+                            Self::WebRtc(transport) => {
+                                let stats = transport
+                                    .get_stats()
+                                    .await
+                                    .map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
+                                let stats_json = serde_json::to_string(&stats)
+                                    .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
+                                let bytes_sent = stats.iter().map(|s| s.bytes_sent).sum();
+                                let bytes_received = stats.iter().map(|s| s.bytes_received).sum();
+                                Ok((stats_json, bytes_sent, bytes_received))
+                            }
+                            Self::Plain(transport) => {
+                                let stats = transport
+                                    .get_stats()
+                                    .await
+                                    .map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
+                                let stats_json = serde_json::to_string(&stats)
+                                    .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
+                                let bytes_sent = stats.iter().map(|s| s.bytes_sent).sum();
+                                let bytes_received = stats.iter().map(|s| s.bytes_received).sum();
+                                Ok((stats_json, bytes_sent, bytes_received))
+                            }
+                            Self::Pipe(transport) => {
+                                let stats = transport
+                                    .get_stats()
+                                    .await
+                                    .map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
+                                let stats_json = serde_json::to_string(&stats)
+                                    .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
+                                let bytes_sent = stats.iter().map(|s| s.bytes_sent).sum();
+                                let bytes_received = stats.iter().map(|s| s.bytes_received).sum();
+                                Ok((stats_json, bytes_sent, bytes_received))
+                            }
+                        }
+                    }
+                }
+
                 let (target_transport, peer_id) = {
                     if let Some(t_item) = self.state.transports.get(resource_id) {
                         if t_item.is_closed.load(Ordering::SeqCst) {
@@ -1746,81 +1820,12 @@ impl MediaUseCase for MediaService {
                     .map(|c| async move { c.get_stats().await.ok().unwrap_or_default() })
                     .collect();
 
-                let (stats_json, bytes_sent, bytes_received, p_stats_list, c_stats_list) =
-                    match target_transport {
-                        TargetTransport::WebRtc(transport) => {
-                            let (transport_stats_res, p_stats_list, c_stats_list) = tokio::join!(
-                                transport.get_stats(),
-                                futures_util::future::join_all(producer_futs),
-                                futures_util::future::join_all(consumer_futs),
-                            );
-
-                            let stats = transport_stats_res
-                                .map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
-
-                            let stats_json = serde_json::to_string(&stats)
-                                .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
-
-                            let bytes_sent = stats.iter().map(|s| s.bytes_sent).sum();
-                            let bytes_received = stats.iter().map(|s| s.bytes_received).sum();
-
-                            (
-                                stats_json,
-                                bytes_sent,
-                                bytes_received,
-                                p_stats_list,
-                                c_stats_list,
-                            )
-                        }
-                        TargetTransport::Plain(transport) => {
-                            let (transport_stats_res, p_stats_list, c_stats_list) = tokio::join!(
-                                transport.get_stats(),
-                                futures_util::future::join_all(producer_futs),
-                                futures_util::future::join_all(consumer_futs),
-                            );
-
-                            let stats = transport_stats_res
-                                .map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
-
-                            let stats_json = serde_json::to_string(&stats)
-                                .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
-
-                            let bytes_sent = stats.iter().map(|s| s.bytes_sent).sum();
-                            let bytes_received = stats.iter().map(|s| s.bytes_received).sum();
-
-                            (
-                                stats_json,
-                                bytes_sent,
-                                bytes_received,
-                                p_stats_list,
-                                c_stats_list,
-                            )
-                        }
-                        TargetTransport::Pipe(transport) => {
-                            let (transport_stats_res, p_stats_list, c_stats_list) = tokio::join!(
-                                transport.get_stats(),
-                                futures_util::future::join_all(producer_futs),
-                                futures_util::future::join_all(consumer_futs),
-                            );
-
-                            let stats = transport_stats_res
-                                .map_err(|e| SfuDomainError::Mediasoup(e.to_string()))?;
-
-                            let stats_json = serde_json::to_string(&stats)
-                                .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
-
-                            let bytes_sent = stats.iter().map(|s| s.bytes_sent).sum();
-                            let bytes_received = stats.iter().map(|s| s.bytes_received).sum();
-
-                            (
-                                stats_json,
-                                bytes_sent,
-                                bytes_received,
-                                p_stats_list,
-                                c_stats_list,
-                            )
-                        }
-                    };
+                let (transport_res, p_stats_list, c_stats_list) = tokio::join!(
+                    target_transport.fetch_stats_summary(),
+                    futures_util::future::join_all(producer_futs),
+                    futures_util::future::join_all(consumer_futs),
+                );
+                let (stats_json, bytes_sent, bytes_received) = transport_res?;
 
                 // Aggregate packet counts from attached producers and consumers
                 let mut packets_sent = 0u64;

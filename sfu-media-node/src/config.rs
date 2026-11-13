@@ -149,6 +149,8 @@ pub struct MediasoupWebRtcTransportConfig {
     pub send_buffer_size: Option<u32>,
     #[serde(default)]
     pub recv_buffer_size: Option<u32>,
+    #[serde(default = "default_true")]
+    pub enable_tcp: bool,
 }
 
 impl Default for MediasoupWebRtcTransportConfig {
@@ -165,6 +167,7 @@ impl Default for MediasoupWebRtcTransportConfig {
             sctp_max_receiver_window_buffer_size: default_sctp_buffer_size(),
             send_buffer_size: None,
             recv_buffer_size: None,
+            enable_tcp: true,
         }
     }
 }
@@ -260,6 +263,10 @@ fn default_start_bitrate() -> u32 {
     1000
 }
 
+fn default_keyframe_retry_count() -> usize {
+    3
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub listen_ip: IpAddr,
@@ -290,6 +297,10 @@ pub struct Config {
     pub max_active_workers: Option<usize>,
     #[serde(default)]
     pub max_consumers_per_worker: Option<usize>,
+    #[serde(default = "default_keyframe_retry_count")]
+    pub keyframe_retry_count: usize,
+    #[serde(default)]
+    pub default_video_preferred_spatial_layer: Option<u8>,
 }
 
 impl Config {
@@ -320,6 +331,17 @@ impl Config {
             recv_buffer_size: self.webrtc_transport.recv_buffer_size,
         }
     }
+
+    /// Construct WebRtcTransportListenInfos with UDP and optionally TCP candidate.
+    pub fn create_webrtc_listen_infos(&self) -> mediasoup::prelude::WebRtcTransportListenInfos {
+        let mut infos = mediasoup::prelude::WebRtcTransportListenInfos::new(
+            self.create_listen_info(mediasoup::prelude::Protocol::Udp),
+        );
+        if self.webrtc_transport.enable_tcp {
+            infos = infos.insert(self.create_listen_info(mediasoup::prelude::Protocol::Tcp));
+        }
+        infos
+    }
 }
 
 impl Default for Config {
@@ -338,6 +360,8 @@ pub struct RawConfigFile {
     pub router_codecs: Option<MediasoupRouterCodecsConfig>,
     pub observability: Option<RawObservabilityConfig>,
     pub license: Option<RawLicenseConfig>,
+    pub keyframe_retry_count: Option<usize>,
+    pub default_video_preferred_spatial_layer: Option<u8>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -452,6 +476,8 @@ impl Config {
             license_public_key_hex: None,
             max_active_workers: None,
             max_consumers_per_worker: None,
+            keyframe_retry_count: 3,
+            default_video_preferred_spatial_layer: None,
         }
     }
 
@@ -657,6 +683,14 @@ impl Config {
                     self.license_public_key_hex = Some(trimmed.to_string());
                 }
             }
+        }
+
+        if let Some(k) = raw.keyframe_retry_count {
+            self.keyframe_retry_count = k;
+        }
+
+        if let Some(l) = raw.default_video_preferred_spatial_layer {
+            self.default_video_preferred_spatial_layer = Some(l);
         }
 
         Ok(())
@@ -896,6 +930,20 @@ impl Config {
             let trimmed = s.trim();
             if !trimmed.is_empty() {
                 self.license_public_key_hex = Some(trimmed.to_string());
+            }
+        }
+
+        if let Ok(s) = std::env::var("SFU_KEYFRAME_RETRY_COUNT") {
+            if let Ok(val) = s.trim().parse::<usize>() {
+                self.keyframe_retry_count = val;
+            }
+        }
+
+        if let Ok(s) = std::env::var("MEDIASOUP_DEFAULT_VIDEO_PREFERRED_SPATIAL_LAYER")
+            .or_else(|_| std::env::var("SFU_DEFAULT_VIDEO_PREFERRED_SPATIAL_LAYER"))
+        {
+            if let Ok(val) = s.trim().parse::<u8>() {
+                self.default_video_preferred_spatial_layer = Some(val);
             }
         }
 

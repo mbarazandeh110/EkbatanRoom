@@ -348,6 +348,7 @@ impl MediaNode {
         self.router_service.abort_cleanup_tasks();
         self.transport_service.abort_cleanup_tasks();
         self.media_service.abort_cleanup_tasks();
+        self.data_service.abort_cleanup_tasks();
         self.pipe_service.abort_cleanup_tasks();
 
         let router_ids: Vec<String> = self.state.routers.iter().map(|r| r.key().clone()).collect();
@@ -436,6 +437,10 @@ impl MediaNode {
             }
         }
     }
+
+    pub fn worker_pool(&self) -> &Arc<WorkerPool> {
+        &self.worker_pool
+    }
 }
 
 #[async_trait::async_trait]
@@ -513,7 +518,9 @@ pub fn compute_node_capacity(
         max_worker_load_percent,
         effective_load_percent,
         active_routers: state.routers.len() as u32,
-        active_transports: (state.transports.len() + state.pipe_transports.len()) as u32,
+        active_transports: (state.transports.len()
+            + state.pipe_transports.len()
+            + state.plain_transports.len()) as u32,
         active_producers: state.producers.len() as u32,
         active_consumers: state.consumers.len() as u32,
         is_draining: state.is_draining.load(Ordering::SeqCst) || alive_workers == 0,

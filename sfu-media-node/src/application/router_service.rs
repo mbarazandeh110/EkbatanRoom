@@ -154,50 +154,16 @@ impl RouterUseCase for RouterService {
                     let caps_json = serde_json::to_string(&router.rtp_capabilities())
                         .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
 
-                    let mut observer_options =
-                        mediasoup::audio_level_observer::AudioLevelObserverOptions::default();
-                    observer_options.interval = self.config.audio_level_observer.interval_ms;
-                    observer_options.threshold = self.config.audio_level_observer.threshold_dbov;
-                    let audio_level_observer = router
-                        .create_audio_level_observer(observer_options)
-                        .await
-                        .map_err(|e| {
-                            SfuDomainError::Mediasoup(format!(
-                                "Failed to create AudioLevelObserver: {e}"
-                            ))
-                        })?;
-
                     let is_closed = Arc::new(AtomicBool::new(false));
-
-                    let event_publisher = self.event_publisher.clone();
-                    let r_id = router_id.clone();
-                    let state_ref = self.state.clone();
-                    let closed_ref = is_closed.clone();
-
-                    audio_level_observer
-                        .on_volumes(move |volumes| {
-                            if closed_ref.load(Ordering::SeqCst)
-                                || !state_ref.is_router_active(&r_id)
-                            {
-                                return;
-                            }
-
-                            for v in volumes {
-                                let p_id = v.producer.id().to_string();
-                                let peer_id = state_ref
-                                    .get_producer(&r_id, &p_id)
-                                    .map(|p| p.peer_id.clone())
-                                    .unwrap_or_default();
-
-                                event_publisher.publish_active_speaker(
-                                    &r_id,
-                                    &p_id,
-                                    &peer_id,
-                                    v.volume as f32,
-                                );
-                            }
-                        })
-                        .detach();
+                    let audio_level_observer = create_and_attach_audio_level_observer(
+                        &router,
+                        &router_id,
+                        &self.config.audio_level_observer,
+                        &self.state,
+                        self.event_publisher.clone(),
+                        is_closed.clone(),
+                    )
+                    .await?;
 
                     let item = RouterItem {
                         router,
@@ -292,6 +258,7 @@ impl RouterUseCase for RouterService {
                         pt.is_closed.store(true, Ordering::SeqCst);
                         self.worker_pool.sub_resource_score(pt.worker_index, 1);
                         self.metrics.dec_active_transports(false);
+                        self.metrics.dec_active_pipe_transports();
                     }
                     self.event_publisher.publish_resource_closed(
                         router_id,
@@ -315,12 +282,22 @@ impl RouterUseCase for RouterService {
                 for ptid in plain_ids {
                     if let Some((_, pt)) = self.state.plain_transports.remove(&ptid) {
                         pt.is_closed.store(true, Ordering::SeqCst);
+                        self.worker_pool.sub_resource_score(pt.worker_index, 1);
+                        self.metrics.dec_active_transports(false);
                     }
                     self.event_publisher.publish_resource_closed(
                         router_id,
                         "transport",
                         &ptid,
                         "cascade_closed",
+                    );
+                    crate::application::transport_service::cascade_close_producers_and_consumers(
+                        &self.state,
+                        self.worker_pool.as_ref(),
+                        self.metrics.as_ref(),
+                        self.event_publisher.as_ref(),
+                        router_id,
+                        &ptid,
                     );
                 }
             }
@@ -340,6 +317,8 @@ impl RouterUseCase for RouterService {
                     .remove(&(router_id.to_string(), dpid.clone()))
                 {
                     dp.is_closed.store(true, Ordering::SeqCst);
+                    self.worker_pool.sub_resource_score(dp.worker_index, 1);
+                    self.state.piped_data_producers.remove(&dpid);
                     self.event_publisher.publish_resource_closed(
                         router_id,
                         "data_producer",
@@ -359,6 +338,7 @@ impl RouterUseCase for RouterService {
             for dcid in dead_dcons {
                 if let Some((_, dc)) = self.state.data_consumers.remove(&dcid) {
                     dc.is_closed.store(true, Ordering::SeqCst);
+                    self.worker_pool.sub_resource_score(dc.worker_index, 1);
                     self.event_publisher.publish_resource_closed(
                         router_id,
                         "data_consumer",
@@ -368,10 +348,56 @@ impl RouterUseCase for RouterService {
                 }
             }
 
+            self.state
+                .direct_data_producers
+                .retain(|k, _| k.0 != router_id);
             self.state.direct_transports.remove(router_id);
-            self.state.active_speaker_observers.remove(router_id);
         }
 
         Ok(())
     }
+}
+
+pub(crate) async fn create_and_attach_audio_level_observer(
+    router: &mediasoup::router::Router,
+    logical_router_id: &str,
+    config: &crate::config::MediasoupAudioLevelObserverConfig,
+    state: &EngineState,
+    event_publisher: Arc<dyn EventPublisherPort>,
+    is_closed: Arc<AtomicBool>,
+) -> Result<mediasoup::audio_level_observer::AudioLevelObserver, SfuDomainError> {
+    let mut observer_options =
+        mediasoup::audio_level_observer::AudioLevelObserverOptions::default();
+    observer_options.interval = config.interval_ms;
+    observer_options.threshold = config.threshold_dbov;
+    let audio_level_observer = router
+        .create_audio_level_observer(observer_options)
+        .await
+        .map_err(|e| {
+            SfuDomainError::Mediasoup(format!("Failed to create AudioLevelObserver: {e}"))
+        })?;
+
+    let r_id = logical_router_id.to_string();
+    let state_ref = state.clone();
+    let closed_ref = is_closed;
+
+    audio_level_observer
+        .on_volumes(move |volumes| {
+            if closed_ref.load(Ordering::SeqCst) || !state_ref.is_router_active(&r_id) {
+                return;
+            }
+
+            for v in volumes {
+                let p_id = v.producer.id().to_string();
+                let peer_id = state_ref
+                    .get_producer(&r_id, &p_id)
+                    .map(|p| p.peer_id.clone())
+                    .unwrap_or_default();
+
+                event_publisher.publish_active_speaker(&r_id, &p_id, &peer_id, v.volume as f32);
+            }
+        })
+        .detach();
+
+    Ok(audio_level_observer)
 }

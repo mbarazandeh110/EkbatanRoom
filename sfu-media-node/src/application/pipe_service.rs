@@ -2,7 +2,7 @@ use crate::application::state::{
     ConsumerItem, EngineState, PipeTransportItem, PipedProducerEntry, ProducerItem,
 };
 use crate::config::Config;
-use crate::domain::entities::{MediaKind as DomainMediaKind, SimulcastEncodingInfo};
+use crate::domain::entities::MediaKind as DomainMediaKind;
 use crate::domain::errors::SfuDomainError;
 use crate::domain::idempotency::IdempotencyCache;
 use crate::domain::validation;
@@ -13,7 +13,6 @@ use mediasoup::pipe_transport::{PipeTransportOptions, PipeTransportRemoteParamet
 use mediasoup::prelude::*;
 use mediasoup::router::PipeToRouterOptions;
 use mediasoup::transport::Transport;
-use mediasoup::types::scalability_modes::ScalabilityMode;
 use mediasoup::types::srtp_parameters::SrtpParameters;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -156,19 +155,22 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         validation::validate_not_empty("request_id", &params.request_id)?;
         validation::validate_not_empty("router_id", &params.router_id)?;
 
-        let payload_bytes = format!(
-            "{}:{}:{}:{}",
-            params.request_id, params.router_id, params.enable_srtp, params.enable_rtx
-        )
-        .into_bytes();
+        let srtp_bytes = if params.enable_srtp { b"1" } else { b"0" };
+        let rtx_bytes = if params.enable_rtx { b"1" } else { b"0" };
+        let payload_parts: [&[u8]; 4] = [
+            params.request_id.as_bytes(),
+            params.router_id.as_bytes(),
+            srtp_bytes,
+            rtx_bytes,
+        ];
 
         let metrics_ref = self.metrics.clone();
         let state_for_valid = self.state.clone();
 
         self.create_pipe_transport_cache
-            .execute_or_get_validated(
+            .execute_or_get_validated_parts(
                 &params.request_id,
-                &payload_bytes,
+                &payload_parts,
                 move |cached: &CreatePipeTransportResult| {
                     state_for_valid
                         .pipe_transports
@@ -241,6 +243,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
 
                     self.worker_pool.add_resource_score(worker_index, 1);
                     self.metrics.inc_active_transports(false);
+                    self.metrics.inc_active_pipe_transports();
 
                     Ok(CreatePipeTransportResult {
                         pipe_transport_id,
@@ -370,26 +373,29 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         validation::validate_not_empty("pipe_transport_id", &params.pipe_transport_id)?;
         validation::validate_not_empty("producer_id", &params.producer_id)?;
 
-        let payload_bytes = format!(
-            "{}:{}:{}:{}:{}:{}:{}",
-            params.request_id,
-            params.router_id,
-            params.pipe_transport_id,
-            params.producer_id,
-            params.kind,
-            params.paused,
-            params.raw_rtp_parameters_json
-        )
-        .into_bytes();
+        let paused_bytes = if params.paused { b"1" } else { b"0" };
+        let kind_bytes = match params.kind {
+            DomainMediaKind::Audio => b"audio",
+            DomainMediaKind::Video => b"video",
+        };
+        let payload_parts: [&[u8]; 7] = [
+            params.request_id.as_bytes(),
+            params.router_id.as_bytes(),
+            params.pipe_transport_id.as_bytes(),
+            params.producer_id.as_bytes(),
+            kind_bytes,
+            paused_bytes,
+            params.raw_rtp_parameters_json.as_bytes(),
+        ];
 
         let metrics_ref = self.metrics.clone();
         let state_for_valid = self.state.clone();
         let router_id_for_valid = params.router_id.clone();
 
         self.pipe_produce_cache
-            .execute_or_get_validated(
+            .execute_or_get_validated_parts(
                 &params.request_id,
-                &payload_bytes,
+                &payload_parts,
                 move |cached: &ProduceResult| {
                     state_for_valid
                         .get_producer(&router_id_for_valid, &cached.producer_id)
@@ -482,58 +488,20 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                         mediasoup::prelude::MediaKind::Video => "video",
                     };
 
-                    let encodings = producer
-                        .rtp_parameters()
-                        .encodings
-                        .iter()
-                        .map(|e| SimulcastEncodingInfo {
-                            rid: e.rid.clone().unwrap_or_default(),
-                            ssrc: e.ssrc.unwrap_or(0),
-                            rtx_ssrc: e.rtx.as_ref().map(|r| r.ssrc).unwrap_or(0),
-                            max_bitrate: e.max_bitrate.unwrap_or(0) as u32,
-                            scalability_mode: if e.scalability_mode == ScalabilityMode::None {
-                                String::new()
-                            } else {
-                                e.scalability_mode.to_string()
-                            },
-                        })
-                        .collect();
+                    let encodings = crate::application::media_service::extract_simulcast_encodings(
+                        producer.rtp_parameters(),
+                    );
 
                     let is_closed = Arc::new(AtomicBool::new(false));
-                    let r_id = params.router_id.clone();
-                    let p_id = producer_id.clone();
-                    let peer_id = "inter-node-cascade".to_string();
-                    let state_ref = self.state.clone();
-                    let closed_ref = is_closed.clone();
-                    let last_score = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
-                    let event_publisher = self.event_publisher.clone();
-
-                    producer
-                        .on_score(move |scores| {
-                            if closed_ref.load(Ordering::SeqCst)
-                                || !state_ref.is_router_active(&r_id)
-                            {
-                                return;
-                            }
-
-                            let avg_score = if scores.is_empty() {
-                                10
-                            } else {
-                                (scores.iter().map(|s| s.score as u32).sum::<u32>())
-                                    / (scores.len() as u32)
-                            };
-
-                            let prev = last_score.swap(avg_score, Ordering::Relaxed);
-                            if prev == avg_score {
-                                return; // Skip if score hasn't changed (Hot-path throttling)
-                            }
-
-                            let all_scores = scores.iter().map(|s| s.score as u32).collect();
-
-                            event_publisher
-                                .publish_score(&r_id, &p_id, &peer_id, true, avg_score, all_scores);
-                        })
-                        .detach();
+                    crate::application::media_service::attach_producer_score_listener(
+                        &producer,
+                        &is_closed,
+                        &self.state,
+                        &self.event_publisher,
+                        &params.router_id,
+                        &producer_id,
+                        "inter-node-cascade",
+                    );
 
                     if !self.state.is_router_active(&params.router_id) {
                         drop(producer);
@@ -634,19 +602,20 @@ impl InterNodePipeUseCase for EnterprisePipeService {
         validation::validate_not_empty("pipe_transport_id", &params.pipe_transport_id)?;
         validation::validate_not_empty("producer_id", &params.producer_id)?;
 
-        let payload_bytes = format!(
-            "{}:{}:{}:{}",
-            params.request_id, params.router_id, params.pipe_transport_id, params.producer_id
-        )
-        .into_bytes();
+        let payload_parts: [&[u8]; 4] = [
+            params.request_id.as_bytes(),
+            params.router_id.as_bytes(),
+            params.pipe_transport_id.as_bytes(),
+            params.producer_id.as_bytes(),
+        ];
 
         let metrics_ref = self.metrics.clone();
         let state_for_valid = self.state.clone();
 
         self.pipe_consume_cache
-            .execute_or_get_validated(
+            .execute_or_get_validated_parts(
                 &params.request_id,
-                &payload_bytes,
+                &payload_parts,
                 move |cached: &ConsumeResult| {
                     state_for_valid
                         .consumers
@@ -977,21 +946,10 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     let rtp_parameters_json =
                         serde_json::to_string(&rtp_parameters).unwrap_or_else(|_| "{}".to_string());
 
-                    let encodings: Vec<SimulcastEncodingInfo> = rtp_parameters
-                        .encodings
-                        .iter()
-                        .map(|e| SimulcastEncodingInfo {
-                            rid: e.rid.clone().unwrap_or_default(),
-                            ssrc: e.ssrc.unwrap_or(0),
-                            rtx_ssrc: e.rtx.as_ref().map(|r| r.ssrc).unwrap_or(0),
-                            max_bitrate: e.max_bitrate.unwrap_or(0) as u32,
-                            scalability_mode: if e.scalability_mode == ScalabilityMode::None {
-                                String::new()
-                            } else {
-                                e.scalability_mode.to_string()
-                            },
-                        })
-                        .collect();
+                    let encodings =
+                        crate::application::media_service::extract_simulcast_encodings(
+                            rtp_parameters,
+                        );
 
                     let ssrc = encodings.first().map(|e| e.ssrc).unwrap_or(0);
                     let rtx_ssrc = encodings.first().map(|e| e.rtx_ssrc).unwrap_or(0);
@@ -1009,40 +967,15 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     let clock_rate = first_codec.map(|c| c.clock_rate().get()).unwrap_or(0);
 
                     let is_closed = Arc::new(AtomicBool::new(false));
-                    let r_id = params.router_id.clone();
-                    let c_id = consumer_id.clone();
-                    let peer_id = "inter-node-cascade".to_string();
-                    let state_ref = self.state.clone();
-                    let closed_ref = is_closed.clone();
-                    let last_consumer_score = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
-                    let event_publisher = self.event_publisher.clone();
-
-                    consumer
-                        .on_score(move |score| {
-                            if closed_ref.load(Ordering::SeqCst)
-                                || !state_ref.is_router_active(&r_id)
-                            {
-                                return;
-                            }
-
-                            let s_val = score.score as u32;
-                            let prev = last_consumer_score.swap(s_val, Ordering::Relaxed);
-                            if prev == s_val {
-                                return;
-                            }
-
-                            let p_scores =
-                                score.producer_scores.iter().map(|&s| s as u32).collect();
-                            event_publisher.publish_score(
-                                &r_id,
-                                &c_id,
-                                &peer_id,
-                                false,
-                                s_val,
-                                p_scores,
-                            );
-                        })
-                        .detach();
+                    crate::application::media_service::attach_consumer_score_listener(
+                        &consumer,
+                        &is_closed,
+                        &self.state,
+                        &self.event_publisher,
+                        &params.router_id,
+                        &consumer_id,
+                        "inter-node-cascade",
+                    );
 
                     let item = ConsumerItem {
                         consumer,
@@ -1082,7 +1015,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
 
                     Ok(ConsumeResult {
                         consumer_id,
-                        producer_id: params.producer_id,
+                        producer_id: params.producer_id.clone(),
                         kind: kind_str.to_string(),
                         rtp_parameters_json,
                         ssrc,

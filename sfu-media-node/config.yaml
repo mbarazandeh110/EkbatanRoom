@@ -1,70 +1,70 @@
-# ==============================================================================
-# SFU Media Node Configuration File (YAML)
-# ==============================================================================
-
 network:
   listen_ip: "0.0.0.0"
-  announced_address: null # Auto-detects primary non-loopback IP (or specify manually)
-  port_range: "40000-49999" # UDP port range for RTC
+  # در محیط Production حتماً IP عمومی سرور را به صورت صریح وارد کنید
+  announced_address: "auto"
+  port_range: "40000-49999"
   grpc_port: 50051
 
 worker:
-  worker_count: 1
+  # 0 = به تعداد هسته‌های پردازنده (توصیه: برابر با تعداد Physical Cores)
+  worker_count: 0
   capacity_weight: 1000
-  spillover_threshold_percent: 80.0
-  log_level: "debug"
+  spillover_threshold_percent: 75.0
+  # حیاتی برای Performance: هرگز در پروداکشن روی debug نباشد!
+  log_level: "warn"
   log_tags:
     - info
     - ice
     - dtls
-    - rtp
-    - srtp
-    - rtcp
-    - rtx
     - bwe
-    - score
   dtls_certificate_file: null
   dtls_private_key_file: null
 
 webrtc_transport:
-  initial_available_outgoing_bitrate: 3000000 # 3 Mbps initial outgoing bandwidth per subscriber transport
-  max_incoming_bitrate: 4000000 # 4 Mbps incoming cap per publisher
-  min_outgoing_bitrate: 600000 # 600 kbps minimum floor to prevent BWE collapse & video freezing
-  max_outgoing_bitrate: 15000000 # 15 Mbps max limit
-  max_send_message_size: 5000000
-  max_receive_message_size: 5000000
-  sctp_send_buffer_size: 7000000
-  sctp_per_stream_send_queue_limit: 5000000
-  sctp_max_receiver_window_buffer_size: 7000000
-  send_buffer_size: 1048576 # 1 MB UDP send buffer (prevents kernel buffer overruns on bursts)
-  recv_buffer_size: 1048576 # 1 MB UDP recv buffer
+  # شروع متعادل (1.5 Mbps) برای جلوگیری از اشباع اولیه لینک‌های ضعیف و شروع سریع کیفیت HD
+  initial_available_outgoing_bitrate: 1500000
+  # سقف دریافت از هر کلاینت (6 Mbps برای ویدئوی 1080p و Screen Share کاملاً کافی و امن است)
+  max_incoming_bitrate: 6000000
+  # حتماً 0 یا null باشد تا BWE در شبکه‌های ضعیف بتواند نرخ ارسال را تا لایه‌های پایین کاهش دهد
+  min_outgoing_bitrate: 0
+  # سقف ارسال به هر کلاینت (15 Mbps برای دریافت همزمان گرید ویدیوها + اشتراک تصویر)
+  max_outgoing_bitrate: 15000000
+  # بافر ۴ مگابایتی سوکت کرنل برای جلوگیری از حذف بسته‌های Burst در Keyframeهای اشتراک تصویر
+  send_buffer_size: 4194304
+  recv_buffer_size: 4194304
+  max_send_message_size: 262144
+  max_receive_message_size: 262144
+  sctp_send_buffer_size: 1048576
+  sctp_per_stream_send_queue_limit: 524288
+  sctp_max_receiver_window_buffer_size: 1048576
+  enable_tcp: true
 
 plain_transport:
-  max_send_message_size: 5000000
-  max_receive_message_size: 5000000
-  sctp_send_buffer_size: 7000000
+  max_send_message_size: 262144
+  max_receive_message_size: 262144
+  sctp_send_buffer_size: 1048576
 
 audio_level_observer:
-  interval_ms: 500
-  threshold_dbov: -80
+  # بازه 300ms تعادل عالی بین تشخیص سریع گوینده فعال و سربار پیام‌های gRPC ایجاد می‌کند
+  interval_ms: 300
+  threshold_dbov: -75
 
 router_codecs:
   enable_opus: true
   enable_vp8: true
   enable_h264: true
-  enable_vp9: false
-  google_start_bitrate: 1000
+  # فعال‌سازی VP9 برای پشتیبانی از SVC در اشتراک تصویر و دوربین
+  enable_vp9: true
+  # شروع با 800kbps برای جلوگیری از Bufferbloat اولیه روی اینترنت همراه
+  google_start_bitrate: 800
 
 observability:
-  log_level: "debug"
+  # در محیط عملیاتی حتماً info باشد
+  log_level: "info"
   log_format: "json"
-  metrics_enabled: true
-  metrics_addr: "0.0.0.0:9090"
   tracing_enabled: false
   otlp_endpoint: "http://localhost:4317"
-  trace_sample_rate: 1.0
-  log_raw_sdp: true
-
-license:
-  token: null
-  public_key_hex: null
+  trace_sample_rate: 0.05
+  metrics_enabled: true
+  metrics_addr: "0.0.0.0:9090"
+  log_raw_sdp: false
