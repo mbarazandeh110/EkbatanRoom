@@ -158,6 +158,26 @@ impl MediaService {
     }
 }
 
+pub fn parse_scalability_mode_layers(mode_str: &str) -> (u8, u8) {
+    let trimmed = mode_str.trim();
+    let mut chars = trimmed.chars();
+    if chars.next() == Some('L') {
+        if let Some(s_digit) = chars.next().and_then(|c| c.to_digit(10)) {
+            if let Some(t_pos) = trimmed.find('T') {
+                if let Some(t_digit) = trimmed[t_pos + 1..]
+                    .chars()
+                    .next()
+                    .and_then(|c| c.to_digit(10))
+                {
+                    return (s_digit as u8, t_digit as u8);
+                }
+            }
+            return (s_digit as u8, 1);
+        }
+    }
+    (1, 1)
+}
+
 pub fn resolve_default_video_preferred_spatial_layer(producer_encodings_count: usize) -> u8 {
     if let Ok(val) = std::env::var("MEDIASOUP_DEFAULT_VIDEO_PREFERRED_SPATIAL_LAYER")
         .or_else(|_| std::env::var("SFU_DEFAULT_VIDEO_PREFERRED_SPATIAL_LAYER"))
@@ -172,6 +192,36 @@ pub fn resolve_default_video_preferred_spatial_layer(producer_encodings_count: u
     } else {
         // Single-layer stream: layer 0
         0
+    }
+}
+
+pub fn resolve_default_video_preferred_spatial_layer_with_mode(
+    producer_encodings_count: usize,
+    scalability_mode_str: &str,
+) -> (u8, Option<u8>) {
+    if producer_encodings_count > 1 {
+        let spatial = (producer_encodings_count.saturating_sub(1)).min(2) as u8;
+        (spatial, Some(2))
+    } else {
+        let (s, t) = parse_scalability_mode_layers(scalability_mode_str);
+        if s > 1 {
+            let spatial = (s.saturating_sub(1)).min(2);
+            let temporal = if t > 0 {
+                Some((t.saturating_sub(1)).min(2))
+            } else {
+                Some(2)
+            };
+            (spatial, temporal)
+        } else {
+            (
+                0,
+                if t > 1 {
+                    Some(t.saturating_sub(1))
+                } else {
+                    Some(2)
+                },
+            )
+        }
     }
 }
 
@@ -457,6 +507,14 @@ impl MediaUseCase for MediaService {
                         .insert((params.router_id.clone(), producer_id.clone()), item);
                     if let Some(set) = self.state.transport_producers.get(&params.transport_id) {
                         set.insert(producer_id.clone());
+                    } else {
+                        self.state
+                            .producers
+                            .remove(&(params.router_id.clone(), producer_id.clone()));
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Transport '{}' was closed concurrently during produce",
+                            params.transport_id
+                        )));
                     }
                     self.state
                         .producer_consumers
@@ -539,6 +597,7 @@ impl MediaUseCase for MediaService {
                         producer_worker_index,
                         producer_kind,
                         producer_encodings_count,
+                        producer_scalability_mode,
                     ) = {
                         let p_item = self
                             .state
@@ -557,11 +616,19 @@ impl MediaUseCase for MediaService {
                             )));
                         }
 
+                        let rtp_params = p_item.producer.rtp_parameters();
+                        let mode_str = rtp_params
+                            .encodings
+                            .first()
+                            .map(|e| e.scalability_mode.to_string())
+                            .unwrap_or_default();
+
                         (
                             p_item.physical_router_id.clone(),
                             p_item.worker_index,
                             p_item.kind,
-                            p_item.producer.rtp_parameters().encodings.len(),
+                            rtp_params.encodings.len(),
+                            mode_str,
                         )
                     };
 
@@ -697,10 +764,12 @@ impl MediaUseCase for MediaService {
                                 )));
                             }
 
+                            let mut pipe_options = PipeToRouterOptions::new(sub_router);
+                            pipe_options.enable_rtx = true;
                             let pipe_pair = pub_router
                                 .pipe_producer_to_router(
                                     producer_id_obj,
-                                    PipeToRouterOptions::new(sub_router),
+                                    pipe_options,
                                 )
                                 .await
                                 .map_err(|e| {
@@ -830,17 +899,18 @@ impl MediaUseCase for MediaService {
                     options.paused = params.paused;
 
                     let video_preferred_layers = if producer_kind == MediaKind::Video {
+                        let (default_spatial, default_temporal) =
+                            resolve_default_video_preferred_spatial_layer_with_mode(
+                                producer_encodings_count,
+                                &producer_scalability_mode,
+                            );
                         let spatial_layer = self
                             .config
                             .default_video_preferred_spatial_layer
-                            .unwrap_or_else(|| {
-                                resolve_default_video_preferred_spatial_layer(
-                                    producer_encodings_count,
-                                )
-                            });
+                            .unwrap_or(default_spatial);
                         let layers = ConsumerLayers {
                             spatial_layer,
-                            temporal_layer: Some(2),
+                            temporal_layer: default_temporal.or(Some(2)),
                         };
                         options.preferred_layers = Some(layers);
                         Some(layers)
@@ -937,23 +1007,10 @@ impl MediaUseCase for MediaService {
                                     },
                                 );
 
-                                if let Some(l) = layers {
-                                    let transitions = state_ref.dynacast_tracker.update_consumer(
-                                        &c_id,
-                                        &p_id,
-                                        Some(l.spatial_layer as i32),
-                                        false,
-                                    );
-                                    for t in transitions {
-                                        event_publisher.publish_dynacast_layer(
-                                            &r_id,
-                                            &p_id,
-                                            t.spatial_layer,
-                                            t.is_active,
-                                            t.active_consumers,
-                                        );
-                                    }
-                                }
+                                // Note: DynacastTracker tracks subscriber desired (preferred) layers and paused state,
+                                // not temporary BWE layer down-stepping reported by current_layers. Updating dynacast from
+                                // current_layers would cause transient network jitter to permanently shut down higher layers
+                                // at the publisher encoder.
                             }
                         })
                         .detach();
@@ -1023,8 +1080,17 @@ impl MediaUseCase for MediaService {
                         let retry_attempts: usize = self.config.keyframe_retry_count;
 
                         tokio::spawn(async move {
-                            for attempt in 1..=retry_attempts {
-                                tokio::time::sleep(Duration::from_millis(1500)).await;
+                            let backoff_delays = [
+                                Duration::from_millis(300),
+                                Duration::from_millis(700),
+                                Duration::from_millis(1200),
+                            ];
+                            for attempt in 0..retry_attempts {
+                                let delay = backoff_delays
+                                    .get(attempt)
+                                    .copied()
+                                    .unwrap_or(Duration::from_millis(1500));
+                                tokio::time::sleep(delay).await;
 
                                 let Some(retry_consumer) = retry_weak_consumer.upgrade() else {
                                     break;
@@ -1111,7 +1177,7 @@ impl MediaUseCase for MediaService {
                     let item = ConsumerItem {
                         consumer,
                         router_id: params.router_id.clone(),
-                        physical_router_id: sub_physical_router_id,
+                        physical_router_id: sub_physical_router_id.clone(),
                         worker_index: sub_worker_index,
                         transport_id: params.subscriber_transport_id.clone(),
                         producer_id: params.producer_id.clone(),
@@ -1128,6 +1194,19 @@ impl MediaUseCase for MediaService {
                         .get(&params.subscriber_transport_id)
                     {
                         set.insert(consumer_id.clone());
+                    } else {
+                        self.state.consumers.remove(&consumer_id);
+                        self.state.dec_worker_consumers(sub_worker_index);
+                        drop(_in_flight_guard);
+                        self.rollback_unused_pipe(
+                            &params.router_id,
+                            &params.producer_id,
+                            &sub_physical_router_id,
+                        );
+                        return Err(SfuDomainError::NotFound(format!(
+                            "Transport '{}' was closed concurrently during consume",
+                            params.subscriber_transport_id
+                        )));
                     }
                     self.state
                         .producer_consumers
@@ -1281,7 +1360,7 @@ impl MediaUseCase for MediaService {
             }
         } else {
             // Extract consumer and DROP guard before .await
-            let (consumer, peer_id, producer_id, c_kind) = {
+            let (consumer, peer_id, producer_id, c_kind, is_closed) = {
                 let c_item = self.state.consumers.get(resource_id).ok_or_else(|| {
                     SfuDomainError::NotFound(format!("Consumer '{resource_id}' not found"))
                 })?;
@@ -1303,6 +1382,7 @@ impl MediaUseCase for MediaService {
                     c_item.peer_id.clone(),
                     c_item.producer_id.clone(),
                     c_item.kind,
+                    c_item.is_closed.clone(),
                 )
             };
             tracing::Span::current().record("peer_id", peer_id.as_str());
@@ -1337,6 +1417,51 @@ impl MediaUseCase for MediaService {
                             "Requested keyframe on video consumer resume"
                         );
                     }
+
+                    let retry_weak = consumer.downgrade();
+                    let retry_cid = resource_id.to_string();
+                    let retry_rid = router_id.to_string();
+                    let retry_state = self.state.clone();
+                    let retry_is_closed = is_closed.clone();
+                    let retry_attempts = self.config.keyframe_retry_count;
+
+                    tokio::spawn(async move {
+                        let backoff_delays = [
+                            Duration::from_millis(300),
+                            Duration::from_millis(700),
+                            Duration::from_millis(1200),
+                        ];
+                        for attempt in 0..retry_attempts {
+                            let delay = backoff_delays
+                                .get(attempt)
+                                .copied()
+                                .unwrap_or(Duration::from_millis(1500));
+                            tokio::time::sleep(delay).await;
+
+                            let Some(c) = retry_weak.upgrade() else { break };
+                            if c.closed()
+                                || c.paused()
+                                || retry_is_closed.load(Ordering::SeqCst)
+                                || !retry_state.is_router_active(&retry_rid)
+                            {
+                                break;
+                            }
+                            if c.current_layers().is_some() {
+                                tracing::debug!(
+                                    consumer_id = %retry_cid,
+                                    "Video consumer layers active after resume; stopping keyframe retry loop"
+                                );
+                                break;
+                            }
+                            tracing::debug!(
+                                consumer_id = %retry_cid,
+                                attempt = attempt + 1,
+                                max_attempts = retry_attempts,
+                                "Retrying keyframe request for resumed video consumer"
+                            );
+                            let _ = c.request_key_frame().await;
+                        }
+                    });
                 }
             }
 

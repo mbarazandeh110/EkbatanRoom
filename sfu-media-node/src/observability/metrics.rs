@@ -12,6 +12,7 @@ pub const METRIC_IDEMPOTENCY_HITS_TOTAL: &str = "sfu_idempotency_hits_total";
 pub const METRIC_NODE_CAPACITY_WEIGHT: &str = "sfu_node_capacity_weight";
 pub const METRIC_NODE_LOGICAL_LOAD_PERCENT: &str = "sfu_node_logical_load_percent";
 pub const METRIC_NODE_CPU_USAGE_PERCENT: &str = "sfu_node_cpu_usage_percent";
+pub const METRIC_WORKER_LOAD_PERCENT: &str = "sfu_worker_load_percent";
 pub const METRIC_WORKER_CPU_PERCENT: &str = "sfu_worker_cpu_percent";
 pub const METRIC_NODE_EFFECTIVE_LOAD_PERCENT: &str = "sfu_node_effective_load_percent";
 pub const METRIC_LICENSE_VALID: &str = "sfu_license_valid";
@@ -71,6 +72,9 @@ impl MetricsPort for PrometheusMetrics {
             effective_load_percent,
         );
     }
+    fn update_worker_load_percent(&self, worker_index: usize, load_percent: f32) {
+        update_worker_load_percent(worker_index, load_percent);
+    }
     fn update_worker_cpu_percent(&self, worker_index: usize, cpu_percent: f32) {
         update_worker_cpu_percent(worker_index, cpu_percent);
     }
@@ -111,10 +115,16 @@ pub fn dec_active_pipe_transports() {
     gauge!(METRIC_ACTIVE_PIPE_TRANSPORTS).decrement(1.0);
 }
 
-/// Update worker cpu percent gauge with worker_index label
-pub fn update_worker_cpu_percent(worker_index: usize, cpu_percent: f32) {
+/// Update worker logical load percent gauge with worker_index label (emits both load_percent and legacy cpu_percent)
+pub fn update_worker_load_percent(worker_index: usize, load_percent: f32) {
     let idx_str = worker_index.to_string();
-    gauge!(METRIC_WORKER_CPU_PERCENT, "worker_index" => idx_str).set(cpu_percent as f64);
+    gauge!(METRIC_WORKER_LOAD_PERCENT, "worker_index" => idx_str.clone()).set(load_percent as f64);
+    gauge!(METRIC_WORKER_CPU_PERCENT, "worker_index" => idx_str).set(load_percent as f64);
+}
+
+/// Update worker cpu percent gauge with worker_index label (legacy wrapper)
+pub fn update_worker_cpu_percent(worker_index: usize, cpu_percent: f32) {
+    update_worker_load_percent(worker_index, cpu_percent);
 }
 
 /// Increment active producers with kind label ("audio" or "video")

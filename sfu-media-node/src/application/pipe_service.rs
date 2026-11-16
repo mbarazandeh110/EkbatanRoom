@@ -460,6 +460,27 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                             ))
                         })?;
 
+                    if params.kind == DomainMediaKind::Audio {
+                        if let Some(r_item) = self.state.routers.get(&params.router_id) {
+                            use mediasoup::rtp_observer::{
+                                RtpObserver, RtpObserverAddProducerOptions,
+                            };
+                            let pid = producer.id();
+                            if let Err(e) = r_item
+                                .audio_level_observer
+                                .add_producer(RtpObserverAddProducerOptions::new(pid))
+                                .await
+                            {
+                                tracing::warn!(
+                                    router_id = %params.router_id,
+                                    producer_id = %producer.id(),
+                                    error = %e,
+                                    "Failed to add pipe audio producer to AudioLevelObserver"
+                                );
+                            }
+                        }
+                    }
+
                     if !self.state.is_router_active(&params.router_id) {
                         drop(producer);
                         return Err(SfuDomainError::NotFound(format!(
@@ -781,10 +802,12 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                                     ))
                                 })?;
 
+                            let mut pipe_options = PipeToRouterOptions::new(target_router);
+                            pipe_options.enable_rtx = true;
                             let pipe_pair = pub_router
                                 .pipe_producer_to_router(
                                     producer_id_obj,
-                                    PipeToRouterOptions::new(target_router),
+                                    pipe_options,
                                 )
                                 .await
                                 .map_err(|e| {
@@ -943,8 +966,8 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     };
 
                     let rtp_parameters = consumer.rtp_parameters();
-                    let rtp_parameters_json =
-                        serde_json::to_string(&rtp_parameters).unwrap_or_else(|_| "{}".to_string());
+                    let rtp_parameters_json = serde_json::to_string(&rtp_parameters)
+                        .map_err(|e| SfuDomainError::Internal(e.to_string()))?;
 
                     let encodings =
                         crate::application::media_service::extract_simulcast_encodings(
@@ -990,6 +1013,7 @@ impl InterNodePipeUseCase for EnterprisePipeService {
                     };
 
                     self.state.consumers.insert(consumer_id.clone(), item);
+                    self.state.inc_worker_consumers(main_worker_index);
                     self.state
                         .transport_consumers
                         .entry(params.pipe_transport_id.clone())

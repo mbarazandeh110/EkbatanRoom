@@ -13,11 +13,13 @@ fn test_config(workers: usize) -> Config {
     config.worker_count = workers;
     config.worker_capacity_weight = 20;
     config.worker_spillover_threshold_percent = 50.0;
+    config.license_public_key_hex =
+        Some(sfu_media_node::domain::license::TEST_PUBLIC_KEY_HEX.to_string());
     config
 }
 
 pub fn create_test_enterprise_license() -> String {
-    let priv_hex = "02dc0bfacd35d5f44baada453877d98d2dfadcfa175d67f211195a6eba102eb4";
+    let priv_hex = sfu_media_node::domain::license::TEST_PRIVATE_KEY_HEX;
     let priv_bytes = hex::decode(priv_hex).unwrap();
     let mut priv_arr = [0u8; 32];
     priv_arr.copy_from_slice(&priv_bytes);
@@ -1452,6 +1454,207 @@ async fn test_plain_transport_close_cascades_and_restores_worker_score() {
         .await;
     assert!(stats_again.is_err());
     assert_eq!(stats_again.unwrap_err().code(), tonic::Code::NotFound);
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}
+
+/// Verification: VP9/AV1 SVC ScalabilityMode parsing & preferred layer resolution
+#[test]
+fn test_scalability_mode_svc_vp9_layer_resolution() {
+    use sfu_media_node::application::media_service::{
+        parse_scalability_mode_layers, resolve_default_video_preferred_spatial_layer_with_mode,
+    };
+
+    // 1. Parsing correctness
+    assert_eq!(parse_scalability_mode_layers("L3T3"), (3, 3));
+    assert_eq!(parse_scalability_mode_layers("L2T2"), (2, 2));
+    assert_eq!(parse_scalability_mode_layers("L1T3"), (1, 3));
+    assert_eq!(parse_scalability_mode_layers("L3T1"), (3, 1));
+    assert_eq!(parse_scalability_mode_layers("NONE"), (1, 1));
+
+    // 2. VP9 SVC L3T3 with single encoding (encodings_count = 1) must resolve to spatial layer 2, not 0!
+    let (spatial, temporal) = resolve_default_video_preferred_spatial_layer_with_mode(1, "L3T3");
+    assert_eq!(
+        spatial, 2,
+        "VP9 L3T3 SVC must select spatial layer 2 (720p/highest), not 0 (180p)!"
+    );
+    assert_eq!(temporal, Some(2));
+
+    // 3. VP9 SVC L2T2
+    let (spatial_l2, temporal_l2) =
+        resolve_default_video_preferred_spatial_layer_with_mode(1, "L2T2");
+    assert_eq!(spatial_l2, 1);
+    assert_eq!(temporal_l2, Some(1));
+
+    // 4. Simulcast with 3 encodings
+    let (sim_spatial, sim_temporal) =
+        resolve_default_video_preferred_spatial_layer_with_mode(3, "");
+    assert_eq!(sim_spatial, 2);
+    assert_eq!(sim_temporal, Some(2));
+
+    // 5. Standard single layer stream
+    let (std_spatial, std_temporal) =
+        resolve_default_video_preferred_spatial_layer_with_mode(1, "");
+    assert_eq!(std_spatial, 0);
+    assert_eq!(std_temporal, Some(2));
+}
+
+/// Verification: connect_transport is idempotent when DTLS is already connected/established
+#[tokio::test]
+async fn test_connect_transport_already_connected_idempotent() {
+    let node = Arc::new(MediaNode::new(test_config(1)).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r_resp = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r-dtls-idem".to_string(),
+            room_id: "room-dtls-idem".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-tr-dtls-idem".to_string(),
+            router_id: r_resp.router_id.clone(),
+            peer_id: "peer-dtls-idem".to_string(),
+            is_publisher: true,
+            enable_sctp: false,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let remote_fp = proto::DtlsFingerprintInfo {
+        algorithm: "sha-256".to_string(),
+        value: "E4:87:72:DE:DE:D6:75:A5:C0:5E:2B:A3:8F:69:B8:31:84:87:C7:E2:03:7E:63:F6:FD:E5:5D:84:1F:B5:1D:93".to_string(),
+    };
+
+    // First connect call
+    let first_res = service
+        .connect_transport(Request::new(proto::ConnectTransportRequest {
+            router_id: r_resp.router_id.clone(),
+            transport_id: tr.transport_id.clone(),
+            dtls_role: "client".to_string(),
+            remote_fingerprints: vec![remote_fp.clone()],
+        }))
+        .await;
+    assert!(first_res.is_ok(), "First connect_transport must succeed");
+
+    // Second redundant connect call with DTLS role already established: must return Ok(()) idempotently
+    let second_res = service
+        .connect_transport(Request::new(proto::ConnectTransportRequest {
+            router_id: r_resp.router_id.clone(),
+            transport_id: tr.transport_id.clone(),
+            dtls_role: "client".to_string(),
+            remote_fingerprints: vec![remote_fp],
+        }))
+        .await;
+    assert!(second_res.is_ok(), "Redundant connect_transport when DTLS role is active must succeed idempotently without error!");
+
+    let _ = node.shutdown(Duration::from_secs(1)).await;
+}
+
+/// Verification: close_data_consumer rejects request with mismatched router_id
+#[tokio::test]
+async fn test_close_data_consumer_mismatched_router_rejected() {
+    let node = Arc::new(MediaNode::new(test_config(1)).await.unwrap());
+    let service = GrpcMediaEngineService::new(node.clone());
+
+    let r1 = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r1-dc".to_string(),
+            room_id: "room-dc-1".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let r2 = service
+        .create_router(Request::new(proto::CreateRouterRequest {
+            request_id: "req-r2-dc".to_string(),
+            room_id: "room-dc-2".to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let pub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-tr-pub-dc".to_string(),
+            router_id: r1.router_id.clone(),
+            peer_id: "peer-pub-dc".to_string(),
+            is_publisher: true,
+            enable_sctp: true,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sub_tr = service
+        .create_transport(Request::new(proto::CreateTransportRequest {
+            request_id: "req-tr-sub-dc".to_string(),
+            router_id: r1.router_id.clone(),
+            peer_id: "peer-sub-dc".to_string(),
+            is_publisher: false,
+            enable_sctp: true,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let prod_data = service
+        .produce_data(Request::new(proto::ProduceDataRequest {
+            request_id: "req-pd-1".to_string(),
+            router_id: r1.router_id.clone(),
+            transport_id: pub_tr.transport_id.clone(),
+            peer_id: "peer-pub-dc".to_string(),
+            label: "chat".to_string(),
+            protocol: "json".to_string(),
+            sctp_stream_parameters_json: r#"{"streamId": 1, "ordered": true}"#.to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let cons_data = service
+        .consume_data(Request::new(proto::ConsumeDataRequest {
+            request_id: "req-cd-1".to_string(),
+            router_id: r1.router_id.clone(),
+            transport_id: sub_tr.transport_id.clone(),
+            data_producer_id: prod_data.data_producer_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Attempt to close using wrong router_id (r2 instead of r1)
+    let close_err = service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r2.router_id.clone(),
+            resource_type: proto::ResourceType::DataConsumer as i32,
+            resource_id: cons_data.data_consumer_id.clone(),
+        }))
+        .await;
+    assert!(
+        close_err.is_err(),
+        "Closing DataConsumer with mismatched router_id must fail"
+    );
+    assert_eq!(close_err.unwrap_err().code(), tonic::Code::NotFound);
+
+    // Close with correct router_id must succeed
+    let close_ok = service
+        .close_resource(Request::new(proto::CloseResourceRequest {
+            router_id: r1.router_id.clone(),
+            resource_type: proto::ResourceType::DataConsumer as i32,
+            resource_id: cons_data.data_consumer_id.clone(),
+        }))
+        .await;
+    assert!(
+        close_ok.is_ok(),
+        "Closing DataConsumer with correct router_id must succeed"
+    );
 
     let _ = node.shutdown(Duration::from_secs(1)).await;
 }

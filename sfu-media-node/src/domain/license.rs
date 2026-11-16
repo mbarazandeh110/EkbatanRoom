@@ -5,8 +5,15 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// Default Ekbatan Root Public Key for Ed25519 offline license verification.
+/// The corresponding private key is held securely offline in cold storage / HSM.
 pub const DEFAULT_PUBLIC_KEY_HEX: &str =
+    "b2c6d1d3bb39ea6cfb6d264e1f94638a91605e8a2b0bf3f3e8cdc19cef9fee62";
+
+/// Dedicated test key constants for unit and integration testing.
+pub const TEST_PUBLIC_KEY_HEX: &str =
     "23a1aa3536a3863f3bd6b468d2537192d9ec9cdcb127486738e145fe64eb5436";
+pub const TEST_PRIVATE_KEY_HEX: &str =
+    "02dc0bfacd35d5f44baada453877d98d2dfadcfa175d67f211195a6eba102eb4";
 
 /// Required feature flag in license claims for inter-node room cascading.
 pub const FEATURE_INTER_NODE_CASCADING: &str = "inter_node_cascading";
@@ -243,11 +250,8 @@ mod tests {
     use super::*;
 
     fn test_keys() -> ([u8; 32], [u8; 32]) {
-        let priv_hex = "02dc0bfacd35d5f44baada453877d98d2dfadcfa175d67f211195a6eba102eb4";
-        let pub_hex = "23a1aa3536a3863f3bd6b468d2537192d9ec9cdcb127486738e145fe64eb5436";
-
-        let priv_bytes = hex::decode(priv_hex).unwrap();
-        let pub_bytes = hex::decode(pub_hex).unwrap();
+        let priv_bytes = hex::decode(TEST_PRIVATE_KEY_HEX).unwrap();
+        let pub_bytes = hex::decode(TEST_PUBLIC_KEY_HEX).unwrap();
 
         let mut priv_arr = [0u8; 32];
         let mut pub_arr = [0u8; 32];
@@ -255,6 +259,32 @@ mod tests {
         pub_arr.copy_from_slice(&pub_bytes);
 
         (priv_arr, pub_arr)
+    }
+
+    #[test]
+    fn test_production_root_key_rejects_test_key_signature() {
+        let (priv_key, _) = test_keys();
+        let prod_root_pubkey = parse_public_key_hex(DEFAULT_PUBLIC_KEY_HEX).unwrap();
+        let now = 1770000000;
+
+        let claims = LicenseClaims {
+            license_id: "forged-ent-001".to_string(),
+            customer_id: "attacker".to_string(),
+            tier: "enterprise".to_string(),
+            features: vec![FEATURE_INTER_NODE_CASCADING.to_string()],
+            cluster_limits: ClusterLimits::default(),
+            allowed_domains: vec![],
+            issued_at: now - 100,
+            expires_at: now + 86400,
+            grace_period_days: 0,
+        };
+
+        let token = generate_license_token(&claims, &priv_key).unwrap();
+        let res = verify_license_token(&token, &prod_root_pubkey, now);
+        assert!(
+            res.is_err(),
+            "Production root public key must reject test private key signatures"
+        );
     }
 
     #[test]

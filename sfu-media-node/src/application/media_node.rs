@@ -107,6 +107,10 @@ impl MediaNode {
                 config.worker_count,
                 config.port_range(),
                 &config.worker_settings,
+                config.enable_webrtc_server,
+                config.listen_ip,
+                config.announced_address.clone(),
+                config.webrtc_transport.enable_tcp,
             )
             .await?,
         );
@@ -248,10 +252,16 @@ impl MediaNode {
                     }
                 }
 
-                let info = compute_node_capacity(
+                let sampler = sampler_clone.clone();
+                let (cpu_usage, mem_usage) = tokio::task::spawn_blocking(move || sampler.sample())
+                    .await
+                    .unwrap_or((0.0, 0.0));
+
+                let info = compute_node_capacity_with_samples(
                     worker_pool_clone.as_ref(),
                     &config_clone,
-                    &sampler_clone,
+                    cpu_usage,
+                    mem_usage,
                     &state_clone,
                     current_is_enterprise,
                 );
@@ -271,7 +281,7 @@ impl MediaNode {
                     } else {
                         0.0
                     };
-                    metrics_clone.update_worker_cpu_percent(i, w_pct);
+                    metrics_clone.update_worker_load_percent(i, w_pct);
                 }
 
                 // Check hysteresis, heartbeat, or dynamic license state transition
@@ -466,10 +476,11 @@ impl Drop for MediaNode {
     }
 }
 
-pub fn compute_node_capacity(
+pub fn compute_node_capacity_with_samples(
     worker_pool: &dyn WorkerPoolPort,
     config: &Config,
-    system_sampler: &SystemSampler,
+    cpu_usage_percent: f32,
+    memory_usage_percent: f32,
     state: &EngineState,
     enterprise_cascading_enabled: bool,
 ) -> NodeCapacityInfo {
@@ -483,8 +494,6 @@ pub fn compute_node_capacity(
     } else {
         100.0
     };
-
-    let (cpu_usage_percent, memory_usage_percent) = system_sampler.sample();
 
     let mut max_worker_load_percent = 0.0f32;
     for i in 0..total_workers as usize {
@@ -527,4 +536,22 @@ pub fn compute_node_capacity(
         enterprise_cascading_enabled,
         license_tier,
     }
+}
+
+pub fn compute_node_capacity(
+    worker_pool: &dyn WorkerPoolPort,
+    config: &Config,
+    system_sampler: &SystemSampler,
+    state: &EngineState,
+    enterprise_cascading_enabled: bool,
+) -> NodeCapacityInfo {
+    let (cpu_usage_percent, memory_usage_percent) = system_sampler.sample();
+    compute_node_capacity_with_samples(
+        worker_pool,
+        config,
+        cpu_usage_percent,
+        memory_usage_percent,
+        state,
+        enterprise_cascading_enabled,
+    )
 }

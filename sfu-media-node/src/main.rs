@@ -96,6 +96,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let serve_future = Server::builder()
+        .tcp_nodelay(true)
+        .http2_keepalive_interval(Some(Duration::from_secs(15)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(5)))
         .add_service(SfuMediaEngineServiceServer::new(service))
         .serve_with_shutdown(grpc_addr, shutdown_signal);
 

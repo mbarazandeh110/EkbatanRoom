@@ -301,6 +301,8 @@ pub struct Config {
     pub keyframe_retry_count: usize,
     #[serde(default)]
     pub default_video_preferred_spatial_layer: Option<u8>,
+    #[serde(default)]
+    pub enable_webrtc_server: bool,
 }
 
 impl Config {
@@ -362,6 +364,7 @@ pub struct RawConfigFile {
     pub license: Option<RawLicenseConfig>,
     pub keyframe_retry_count: Option<usize>,
     pub default_video_preferred_spatial_layer: Option<u8>,
+    pub enable_webrtc_server: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -378,6 +381,7 @@ pub struct RawNetworkConfig {
     pub announced_address: Option<String>,
     pub port_range: Option<String>,
     pub grpc_port: Option<u16>,
+    pub enable_webrtc_server: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -478,6 +482,7 @@ impl Config {
             max_consumers_per_worker: None,
             keyframe_retry_count: 3,
             default_video_preferred_spatial_layer: None,
+            enable_webrtc_server: false,
         }
     }
 
@@ -582,6 +587,9 @@ impl Config {
             }
             if let Some(port) = net.grpc_port {
                 self.grpc_port = port;
+            }
+            if let Some(ws) = net.enable_webrtc_server {
+                self.enable_webrtc_server = ws;
             }
         }
 
@@ -691,6 +699,10 @@ impl Config {
 
         if let Some(l) = raw.default_video_preferred_spatial_layer {
             self.default_video_preferred_spatial_layer = Some(l);
+        }
+
+        if let Some(ws) = raw.enable_webrtc_server {
+            self.enable_webrtc_server = ws;
         }
 
         Ok(())
@@ -945,6 +957,14 @@ impl Config {
             if let Ok(val) = s.trim().parse::<u8>() {
                 self.default_video_preferred_spatial_layer = Some(val);
             }
+        }
+
+        if let Ok(s) = std::env::var("MEDIASOUP_ENABLE_WEBRTC_SERVER") {
+            self.enable_webrtc_server = s.eq_ignore_ascii_case("true") || s == "1";
+        }
+
+        if let Ok(s) = std::env::var("MEDIASOUP_ENABLE_TCP") {
+            self.webrtc_transport.enable_tcp = s.eq_ignore_ascii_case("true") || s == "1";
         }
 
         Ok(())

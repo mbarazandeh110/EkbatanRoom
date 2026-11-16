@@ -171,13 +171,14 @@ impl DataUseCase for DataService {
         validation::validate_not_empty("transport_id", &params.transport_id)?;
         validation::validate_not_empty("peer_id", &params.peer_id)?;
 
-        let payload_parts: [&[u8]; 6] = [
+        let payload_parts: [&[u8]; 7] = [
             params.request_id.as_bytes(),
             params.router_id.as_bytes(),
             params.transport_id.as_bytes(),
             params.peer_id.as_bytes(),
             params.label.as_bytes(),
             params.protocol.as_bytes(),
+            params.sctp_stream_parameters_json.as_bytes(),
         ];
 
         let state_for_valid = self.state.clone();
@@ -652,6 +653,9 @@ impl DataUseCase for DataService {
         router_id: &str,
         data_producer_id: &str,
     ) -> Result<(), SfuDomainError> {
+        validation::validate_not_empty("router_id", router_id)?;
+        validation::validate_not_empty("data_producer_id", data_producer_id)?;
+
         if let Some((_, dp)) = self
             .state
             .data_producers
@@ -682,6 +686,27 @@ impl DataUseCase for DataService {
         router_id: &str,
         data_consumer_id: &str,
     ) -> Result<(), SfuDomainError> {
+        validation::validate_not_empty("router_id", router_id)?;
+        validation::validate_not_empty("data_consumer_id", data_consumer_id)?;
+
+        let router_matches = self
+            .state
+            .data_consumers
+            .get(data_consumer_id)
+            .map(|dc| dc.router_id == router_id);
+
+        match router_matches {
+            Some(false) => {
+                return Err(SfuDomainError::NotFound(format!(
+                    "Data consumer '{data_consumer_id}' does not belong to router '{router_id}'"
+                )));
+            }
+            None => {
+                return Ok(()); // Idempotent close
+            }
+            Some(true) => {}
+        }
+
         if let Some((_, dc)) = self.state.data_consumers.remove(data_consumer_id) {
             dc.is_closed.store(true, Ordering::SeqCst);
             self.worker_pool.sub_resource_score(dc.worker_index, 1);

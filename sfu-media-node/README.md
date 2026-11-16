@@ -88,8 +88,11 @@ GRPC_PORT=50060 cargo run -- -c config.yaml
 | `MEDIASOUP_DTLS_CERT` | - | مسیر فایل گواهی سفارشی DTLS ورکر (پشتیبانی از `MEDIASOUP_WORKER_DTLS_CERT`) |
 | `MEDIASOUP_DTLS_KEY` | - | مسیر فایل کلید خصوصی سفارشی DTLS ورکر (پشتیبانی از `MEDIASOUP_WORKER_DTLS_KEY`) |
 | `MEDIASOUP_INITIAL_AVAILABLE_OUTGOING_BITRATE` | `1000000` | بیت‌ریت اولیه ارسالی WebRTC بر حسب bps (۱ مگابیت بر ثانیه) |
-| `MEDIASOUP_MIN_OUTGOING_BITRATE` | `600000` | حداقل کف خروجی WebRTC بر حسب bps (جلوگیری از فروپاشی BWE و فریز ویدیو در افت شبکه) |
+| `MEDIASOUP_MIN_OUTGOING_BITRATE` | بدون محدودیت (`None`) | کف بیت‌ریت خروجی WebRTC بر حسب bps (در صورت عدم تعیین، BWE در شبکه‌های پراتلاف آزادانه بدون Down-stepping کاذب لایه‌ها را تطبیق می‌دهد) |
 | `MEDIASOUP_MAX_OUTGOING_BITRATE` | بدون محدودیت (`None`) | سقف بیت‌ریت خروجی WebRTC بر حسب bps (در صورت تعیین اعمال می‌شود) |
+| `MEDIASOUP_ENABLE_TCP` | `true` | فعال‌سازی پشتیبانی از کاندیدهای TCP در WebRTC Transport برای عبور از فایروال‌های بسته |
+| `MEDIASOUP_ENABLE_WEBRTC_SERVER` | `false` | مالتی‌پلکس کردن ترافیک WebRTC کلاینت‌ها روی یک پورت مشترک بازای هر ورکر با WebRtcServer (جلوگیری از اتمام پورت‌های UDP) |
+| `MEDIASOUP_DEFAULT_VIDEO_PREFERRED_SPATIAL_LAYER` | بدون مقدار (`None`) | لایه فضایی دلخواه ویدیو (در صورت عدم تعیین، بر اساس انکودینگ‌ها یا ScalabilityMode مثل L3T3 به‌طور خودکار محاسبه می‌شود) |
 | `MEDIASOUP_CODECS_START_BITRATE` | `1000` | مقدار `x-google-start-bitrate` اولیه برای کدک‌های تصویری |
 | `SFU_WORKER_CAPACITY_WEIGHT` | `1000` | وزن ظرفیت اسمی هر ورکر جهت محاسبه درصد بار منابع فعال |
 | `SFU_WORKER_SPILLOVER_THRESHOLD_PERCENT` | `80.0` | درصد آستانه سرریز ورکر جهت ساخت Sub-Router روی کم‌بارترین ورکر دیگر |

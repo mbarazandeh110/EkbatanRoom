@@ -179,10 +179,27 @@ pub fn parse_rtp_parameters(json_str: &str) -> Result<RtpParameters, SfuDomainEr
             });
         }
 
-        // 2. Sanitize encodings (ssrc, rtx.ssrc, codecPayloadType, maxBitrate, rid)
+        // 2. Sanitize encodings (ssrc, rtx.ssrc, codecPayloadType, maxBitrate, rid, scalabilityMode)
         if let Some(encs) = root_obj.get_mut("encodings").and_then(|v| v.as_array_mut()) {
             for enc in encs {
                 if let Some(enc_map) = enc.as_object_mut() {
+                    // Normalize snake_case aliases
+                    if !enc_map.contains_key("codecPayloadType") {
+                        if let Some(val) = enc_map.remove("codec_payload_type") {
+                            enc_map.insert("codecPayloadType".to_string(), val);
+                        }
+                    }
+                    if !enc_map.contains_key("maxBitrate") {
+                        if let Some(val) = enc_map.remove("max_bitrate") {
+                            enc_map.insert("maxBitrate".to_string(), val);
+                        }
+                    }
+                    if !enc_map.contains_key("scalabilityMode") {
+                        if let Some(val) = enc_map.remove("scalability_mode") {
+                            enc_map.insert("scalabilityMode".to_string(), val);
+                        }
+                    }
+
                     // Sanitize rid if sent as number
                     if let Some(rid_val) = enc_map.get("rid") {
                         if let Some(num) = rid_val.as_i64() {
@@ -243,6 +260,22 @@ pub fn parse_rtp_parameters(json_str: &str) -> Result<RtpParameters, SfuDomainEr
         if let Some(codecs) = root_obj.get_mut("codecs").and_then(|v| v.as_array_mut()) {
             for codec in codecs {
                 if let Some(codec_map) = codec.as_object_mut() {
+                    // Normalize snake_case aliases
+                    if !codec_map.contains_key("payloadType") {
+                        if let Some(val) = codec_map.remove("payload_type") {
+                            codec_map.insert("payloadType".to_string(), val);
+                        }
+                    }
+                    if !codec_map.contains_key("clockRate") {
+                        if let Some(val) = codec_map.remove("clock_rate") {
+                            codec_map.insert("clockRate".to_string(), val);
+                        }
+                    }
+                    if !codec_map.contains_key("rtcpFeedback") {
+                        if let Some(val) = codec_map.remove("rtcp_feedback") {
+                            codec_map.insert("rtcpFeedback".to_string(), val);
+                        }
+                    }
                     if let Some(pt_val) = codec_map.get("payloadType") {
                         if let Some(pt_str) = pt_val.as_str() {
                             if let Ok(num) = pt_str.trim().parse::<u8>() {
@@ -416,6 +449,22 @@ pub fn parse_rtp_capabilities(json_str: &str) -> Result<RtpCapabilities, SfuDoma
         if let Some(codecs) = root_obj.get_mut("codecs").and_then(|v| v.as_array_mut()) {
             for codec in codecs {
                 if let Some(codec_map) = codec.as_object_mut() {
+                    // Normalize snake_case aliases
+                    if !codec_map.contains_key("preferredPayloadType") {
+                        if let Some(val) = codec_map.remove("preferred_payload_type") {
+                            codec_map.insert("preferredPayloadType".to_string(), val);
+                        }
+                    }
+                    if !codec_map.contains_key("clockRate") {
+                        if let Some(val) = codec_map.remove("clock_rate") {
+                            codec_map.insert("clockRate".to_string(), val);
+                        }
+                    }
+                    if !codec_map.contains_key("rtcpFeedback") {
+                        if let Some(val) = codec_map.remove("rtcp_feedback") {
+                            codec_map.insert("rtcpFeedback".to_string(), val);
+                        }
+                    }
                     if let Some(pt_val) = codec_map.get("preferredPayloadType") {
                         if let Some(pt_str) = pt_val.as_str() {
                             if let Ok(num) = pt_str.trim().parse::<u8>() {

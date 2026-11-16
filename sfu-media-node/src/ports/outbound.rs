@@ -1,3 +1,4 @@
+use mediasoup::webrtc_server::WebRtcServer;
 use mediasoup::worker::Worker;
 
 pub type WorkerDeadCallback = std::sync::Arc<dyn Fn(usize) + Send + Sync>;
@@ -15,6 +16,7 @@ pub trait WorkerPoolPort: Send + Sync {
     fn worker_resource_score(&self, index: usize) -> usize;
     fn total_resource_score(&self) -> usize;
     fn get_worker(&self, index: usize) -> Option<Worker>;
+    fn get_webrtc_server(&self, worker_index: usize) -> Option<WebRtcServer>;
     fn add_on_dead_callback(&self, callback: WorkerDeadCallback);
 }
 
@@ -91,6 +93,9 @@ pub trait MetricsPort: Send + Sync {
         cpu_usage_percent: f32,
         effective_load_percent: f32,
     );
-    fn update_worker_cpu_percent(&self, worker_index: usize, cpu_percent: f32);
+    fn update_worker_load_percent(&self, worker_index: usize, load_percent: f32);
+    fn update_worker_cpu_percent(&self, worker_index: usize, cpu_percent: f32) {
+        self.update_worker_load_percent(worker_index, cpu_percent);
+    }
     fn update_license_status(&self, is_valid: bool, expiry_timestamp_secs: u64);
 }

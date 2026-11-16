@@ -8,6 +8,7 @@ type OnDeadCallbacks = Arc<parking_lot::RwLock<Vec<WorkerDeadCallback>>>;
 
 pub struct WorkerPool {
     workers: Vec<Worker>,
+    webrtc_servers: Vec<Option<mediasoup::webrtc_server::WebRtcServer>>,
     load_counts: Vec<Arc<AtomicUsize>>,
     resource_scores: Vec<Arc<AtomicUsize>>,
     dead_flags: Vec<Arc<AtomicBool>>,
@@ -15,14 +16,20 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         worker_manager: &WorkerManager,
         count: usize,
         port_range: std::ops::RangeInclusive<u16>,
         worker_config: &crate::config::MediasoupWorkerConfig,
+        enable_webrtc_server: bool,
+        listen_ip: std::net::IpAddr,
+        announced_address: Option<String>,
+        enable_tcp: bool,
     ) -> Result<Self, SfuDomainError> {
         let count = count.max(1);
         let mut workers = Vec::with_capacity(count);
+        let mut webrtc_servers = Vec::with_capacity(count);
         let mut load_counts = Vec::with_capacity(count);
         let mut resource_scores = Vec::with_capacity(count);
         let mut dead_flags = Vec::with_capacity(count);
@@ -41,6 +48,61 @@ impl WorkerPool {
                 .create_worker(settings)
                 .await
                 .map_err(|e| SfuDomainError::Mediasoup(format!("Failed to spawn worker: {e}")))?;
+
+            let webrtc_server = if enable_webrtc_server {
+                let worker_port = port_range.start().saturating_add(i as u16);
+                let listen_info = mediasoup::prelude::ListenInfo {
+                    protocol: mediasoup::prelude::Protocol::Udp,
+                    ip: listen_ip,
+                    announced_address: announced_address.clone(),
+                    expose_internal_ip: false,
+                    port: Some(worker_port),
+                    port_range: None,
+                    flags: None,
+                    send_buffer_size: None,
+                    recv_buffer_size: None,
+                };
+                let mut server_listen_infos =
+                    mediasoup::webrtc_server::WebRtcServerListenInfos::new(listen_info);
+                if enable_tcp {
+                    let tcp_listen_info = mediasoup::prelude::ListenInfo {
+                        protocol: mediasoup::prelude::Protocol::Tcp,
+                        ip: listen_ip,
+                        announced_address: announced_address.clone(),
+                        expose_internal_ip: false,
+                        port: Some(worker_port),
+                        port_range: None,
+                        flags: None,
+                        send_buffer_size: None,
+                        recv_buffer_size: None,
+                    };
+                    server_listen_infos = server_listen_infos.insert(tcp_listen_info);
+                }
+                let server_opts =
+                    mediasoup::webrtc_server::WebRtcServerOptions::new(server_listen_infos);
+                match worker.create_webrtc_server(server_opts).await {
+                    Ok(srv) => {
+                        tracing::info!(
+                            worker_index = i,
+                            port = worker_port,
+                            enable_tcp = enable_tcp,
+                            "WebRtcServer port multiplexing created for worker"
+                        );
+                        Some(srv)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            worker_index = i,
+                            port = worker_port,
+                            error = %e,
+                            "Failed to create WebRtcServer on worker; falling back to dynamic per-transport ports"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
             let is_dead = Arc::new(AtomicBool::new(false));
             let is_dead_clone = is_dead.clone();
@@ -66,6 +128,7 @@ impl WorkerPool {
                 .detach();
 
             workers.push(worker);
+            webrtc_servers.push(webrtc_server);
             load_counts.push(load_counter);
             resource_scores.push(score_counter);
             dead_flags.push(is_dead);
@@ -73,6 +136,7 @@ impl WorkerPool {
 
         Ok(Self {
             workers,
+            webrtc_servers,
             load_counts,
             resource_scores,
             dead_flags,
@@ -106,7 +170,9 @@ impl WorkerPoolPort for WorkerPool {
 
         // If all workers are flagged dead, fallback to index 0
         if min_tuple == (usize::MAX, usize::MAX) && !self.workers.is_empty() {
-            tracing::warn!("All workers flagged dead! Falling back to worker 0");
+            tracing::error!(
+                "All mediasoup workers are flagged dead in WorkerPool! Falling back to worker 0"
+            );
             min_index = 0;
         }
 
@@ -220,6 +286,13 @@ impl WorkerPoolPort for WorkerPool {
 
     fn get_worker(&self, index: usize) -> Option<Worker> {
         self.workers.get(index).cloned()
+    }
+
+    fn get_webrtc_server(
+        &self,
+        worker_index: usize,
+    ) -> Option<mediasoup::webrtc_server::WebRtcServer> {
+        self.webrtc_servers.get(worker_index).cloned().flatten()
     }
 
     fn add_on_dead_callback(&self, callback: WorkerDeadCallback) {

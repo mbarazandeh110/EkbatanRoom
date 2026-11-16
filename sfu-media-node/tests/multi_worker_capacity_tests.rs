@@ -11,12 +11,14 @@ fn multi_worker_config() -> Config {
     config.worker_count = 2;
     config.worker_capacity_weight = 10;
     config.worker_spillover_threshold_percent = 50.0;
+    config.license_public_key_hex =
+        Some(sfu_media_node::domain::license::TEST_PUBLIC_KEY_HEX.to_string());
     config
 }
 
 #[cfg(feature = "enterprise")]
 fn create_test_enterprise_license() -> String {
-    let priv_hex = "02dc0bfacd35d5f44baada453877d98d2dfadcfa175d67f211195a6eba102eb4";
+    let priv_hex = sfu_media_node::domain::license::TEST_PRIVATE_KEY_HEX;
     let priv_bytes = hex::decode(priv_hex).unwrap();
     let mut priv_arr = [0u8; 32];
     priv_arr.copy_from_slice(&priv_bytes);

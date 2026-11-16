@@ -270,9 +270,12 @@ impl TransportUseCase for TransportService {
                             (sub_router, id, target_worker)
                         };
 
-                    let listen_infos = self.config.create_webrtc_listen_infos();
-
-                    let mut options = WebRtcTransportOptions::new(listen_infos);
+                    let mut options = if let Some(server) = self.worker_pool.get_webrtc_server(target_worker) {
+                        WebRtcTransportOptions::new_with_server(server)
+                    } else {
+                        let listen_infos = self.config.create_webrtc_listen_infos();
+                        WebRtcTransportOptions::new(listen_infos)
+                    };
                     options.enable_sctp = params.enable_sctp;
                     options.initial_available_outgoing_bitrate =
                         self.config.webrtc_transport.initial_available_outgoing_bitrate;
@@ -498,6 +501,17 @@ impl TransportUseCase for TransportService {
             )
         };
         tracing::Span::current().record("peer_id", peer_id.as_str());
+
+        // Idempotency guard: If DTLS role is already established, skip redundant connect to avoid worker errors on retry
+        let current_dtls_role = transport.dtls_parameters().role;
+        if current_dtls_role != mediasoup::types::data_structures::DtlsRole::Auto {
+            tracing::info!(
+                transport_id = %params.transport_id,
+                established_local_dtls_role = ?current_dtls_role,
+                "WebRtcTransport DTLS role already established; skipping redundant connect"
+            );
+            return Ok(());
+        }
 
         // In Mediasoup's ORTC model, WebRtcTransportRemoteParameters::dtls_parameters.role
         // represents the REMOTE endpoint's DTLS role (dtlsRemoteRole).
@@ -1050,6 +1064,18 @@ pub(crate) fn cascade_close_producers_and_consumers(
                 let c_ids = state.take_consumers_for_producer(router_id, &pid);
                 for cid in c_ids {
                     if let Some(c) = state.cascade_remove_consumer(&cid) {
+                        if c.kind == crate::domain::entities::MediaKind::Video {
+                            let transitions = state.dynacast_tracker.remove_consumer(&cid);
+                            for t in transitions {
+                                event_publisher.publish_dynacast_layer(
+                                    router_id,
+                                    &c.producer_id,
+                                    t.spatial_layer,
+                                    t.is_active,
+                                    t.active_consumers,
+                                );
+                            }
+                        }
                         let c_weight = if c.kind == crate::domain::entities::MediaKind::Audio {
                             1
                         } else {
@@ -1073,6 +1099,18 @@ pub(crate) fn cascade_close_producers_and_consumers(
     if let Some((_, c_ids)) = state.transport_consumers.remove(transport_id) {
         for cid in c_ids {
             if let Some(c) = state.cascade_remove_consumer(&cid) {
+                if c.kind == crate::domain::entities::MediaKind::Video {
+                    let transitions = state.dynacast_tracker.remove_consumer(&cid);
+                    for t in transitions {
+                        event_publisher.publish_dynacast_layer(
+                            router_id,
+                            &c.producer_id,
+                            t.spatial_layer,
+                            t.is_active,
+                            t.active_consumers,
+                        );
+                    }
+                }
                 let c_weight = if c.kind == crate::domain::entities::MediaKind::Audio {
                     1
                 } else {
